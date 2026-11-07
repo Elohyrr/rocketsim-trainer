@@ -1,0 +1,16 @@
+[package]
+name = "sim-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+rocketsim_rs.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+cxx = "=1.0.205"
+
+[dev-dependencies]
+serde_json.workspace = true
