@@ -1,0 +1,10 @@
+/target
+Cargo.lock.bak
+# Ne jamais commiter les meshes de collision (contenu du jeu, dumpé localement)
+collision_meshes/
+collision-meshes/
+*.cco
+# Checkpoints, replays générés
+/checkpoints/
+*.ckpt
+.env
