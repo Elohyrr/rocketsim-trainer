@@ -459,9 +459,13 @@ mod tests {
 
     #[test]
     fn customized_v1_gamepad_is_kept() {
-        let mut c = Config::default();
-        c.gamepad = gamepad_v1();
-        c.gamepad.jump = n(&["East"]);
+        let c = Config {
+            gamepad: Gamepad {
+                jump: n(&["East"]),
+                ..gamepad_v1()
+            },
+            ..Config::default()
+        };
         let (k, m) = migrate(c, 1);
         assert_eq!(m, Migration::KeptCustom);
         assert_eq!(k.gamepad.jump, n(&["East"]));
@@ -470,8 +474,13 @@ mod tests {
 
     #[test]
     fn current_version_is_untouched() {
-        let mut c = Config::default();
-        c.gamepad.jump = n(&["Circle"]);
+        let c = Config {
+            gamepad: Gamepad {
+                jump: n(&["Circle"]),
+                ..Gamepad::default()
+            },
+            ..Config::default()
+        };
         let (k, m) = migrate(c.clone(), CONFIG_VERSION);
         assert_eq!((k, m), (c, Migration::None));
     }
