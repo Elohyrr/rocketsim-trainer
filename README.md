@@ -46,6 +46,8 @@ ou à la **manette** (branchée avant ou pendant la partie).
 Un but fait gagner un point et remet en jeu après 2,5 s. Les touches sont dans
 `~/.config/rocketsim-trainer/config.toml` (créé au premier lancement, noms de touches documentés dedans et dans
 `crates/game/src/config.rs`) ; l'option `mouse_air_control = true` fait piloter tangage et lacet en l'air à la souris.
+![Rendu M1 (primitives originales)](docs/m1-jouable.png)
+
 Capture d'écran automatique : `rocketsim-trainer --screenshot out.png --frames 120 --demo`.
 
 ## Meshes de collision
