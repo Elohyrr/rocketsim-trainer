@@ -361,7 +361,14 @@ async fn main() {
     for w in &warnings {
         eprintln!("config : {w}");
     }
-    let arena = render::ArenaRender::new(&game::arena_geo::build());
+    // Coque exacte tirée des meshes de collision ; primitives seules si elle est illisible.
+    let arena = match game::shell::load(&dir) {
+        Ok(shell) => render::ArenaRender::new(&game::arena_geo::build_filler(), Some(&shell)),
+        Err(e) => {
+            eprintln!("terrain : {e} (primitives de secours)");
+            render::ArenaRender::new(&game::arena_geo::build(), None)
+        }
+    };
     let mut cam = camera::Cam::new(cfg.camera.clone());
     if binds.mouse_air {
         set_cursor_grab(true);

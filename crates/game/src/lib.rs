@@ -7,4 +7,5 @@ pub mod input;
 pub mod meshes;
 pub mod pad;
 pub mod rig;
+pub mod shell;
 pub mod world;

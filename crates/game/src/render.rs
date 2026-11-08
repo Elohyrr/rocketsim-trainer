@@ -3,6 +3,7 @@
 //! (la droite de la voiture reste à droite de l'image).
 
 use game::arena_geo::{ArenaGeo, BALL_RADIUS, LineKind, Surf};
+use game::shell::Shell;
 use game::world::World;
 use macroquad::prelude::*;
 
@@ -35,7 +36,9 @@ pub struct ArenaRender {
 }
 
 impl ArenaRender {
-    pub fn new(geo: &ArenaGeo) -> Self {
+    /// Terrain dessiné avec la coque des meshes de collision (rampes et coins exacts) devant les surfaces
+    /// de remplissage de `geo` ; sans coque, `geo` seul (primitives).
+    pub fn new(geo: &ArenaGeo, shell: Option<&Shell>) -> Self {
         let light = vec3(0.35, -0.25, 0.9).normalize();
         let (mut opaque, mut ceiling) = (Vec::<Vertex>::new(), Vec::<Vertex>::new());
         for t in &geo.tris {
@@ -58,6 +61,24 @@ impl ArenaRender {
                 dst.push(Vertex::new2(p, Vec2::ZERO, shade(base, k)));
             }
         }
+        if let Some(sh) = shell {
+            for t in &sh.tris {
+                let (a, b, c) = (g(t[0]), g(t[1]), g(t[2]));
+                let n = (b - a).cross(c - a).normalize_or_zero();
+                let k = 0.6 + 0.4 * n.dot(light).abs();
+                // Teinte selon l'orientation : sol, murs, plafond.
+                let base = if n.z > 0.7 {
+                    col(30, 74, 62, 255)
+                } else if n.z < -0.7 {
+                    col(80, 90, 140, 255)
+                } else {
+                    col(52, 62, 104, 255)
+                };
+                for p in [a, b, c] {
+                    opaque.push(Vertex::new2(p, Vec2::ZERO, shade(base, k)));
+                }
+            }
+        }
         let chunk = |verts: Vec<Vertex>| -> Vec<Mesh> {
             verts
                 .chunks(3 * 4000)
@@ -68,7 +89,7 @@ impl ArenaRender {
                 })
                 .collect()
         };
-        let lines = geo
+        let mut lines: Vec<(Vec3, Vec3, Color)> = geo
             .lines
             .iter()
             .map(|l| {
@@ -82,6 +103,10 @@ impl ArenaRender {
                 (g(l.a), g(l.b), c)
             })
             .collect();
+        if let Some(sh) = shell {
+            let edge = col(150, 170, 235, 190);
+            lines.extend(sh.creases.iter().map(|(a, b)| (g(*a), g(*b), edge)));
+        }
         Self {
             opaque: chunk(opaque),
             ceiling: chunk(ceiling),
