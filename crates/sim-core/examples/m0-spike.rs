@@ -1,6 +1,6 @@
 //! Spike M0 : simule 1800 ticks (15 s à 120 Hz) avec une voiture qui accélère.
 //!
-//! ROCKETSIM_MESHES_DIR=/chemin/vers/collision_meshes cargo run --release -p sim-core --example m0-spike
+//! scripts/fetch-meshes.sh && cargo run --release -p sim-core --example m0-spike
 
 use std::time::Instant;
 
@@ -11,7 +11,7 @@ fn main() {
         Ok(d) => d,
         Err(e) => {
             eprintln!(
-                "m0-spike : {e}\nDéfinir {} (dossier contenant soccar/*.cco).",
+                "m0-spike : {e}\nDéfinir {} (dossier contenant soccar/mesh_*.cmf ; voir scripts/fetch-meshes.sh).",
                 sim_core::MESHES_ENV
             );
             std::process::exit(2);

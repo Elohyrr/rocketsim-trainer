@@ -47,8 +47,8 @@ spécifique Rocket League. Hyperparamètres par défaut (README) : MLP partagée
 - **[rocketsim](https://crates.io/crates/rocketsim) 0.3.5** (Rust pur, §0) : `init_from_default` lit `collision_meshes/`
   (soccar 16 .cmf, hoops 12, dropshot 2), `init(dir)` ou `init_from_mem(buffers)`. Mode `TheVoid` sans mesh
   pour les tests.
-- **Meshes** : dumpés depuis une install du jeu via [RLArenaCollisionDumper](https://github.com/ZealanL/RLArenaCollisionDumper)
-  (19 stars, push 2025-04). Assets du jeu : ne pas les committer (dépôt public), les monter depuis un PVC.
+- **Meshes** : récupérés depuis le sdist PyPI `rlgym-rocket-league` 2.0.1 (`scripts/fetch-meshes.sh`) ; sinon dump via
+  [RLArenaCollisionDumper](https://github.com/ZealanL/RLArenaCollisionDumper) (outil Windows). Assets du jeu : ne pas les committer (dépôt public), les monter depuis un PVC.
 - **[rlgym_rs](https://github.com/VirxEC/rlgym_rs)** (crate `rlgym` 0.2.0, **non publié**, push 2026-10-21) :
   env gym sur `rocketsim` 0.3.1 (StateSetter, Obs, Action, Reward, Terminal, Truncate, SharedInfo).
   **Aucune licence déclarée** → réutilisation non permise en l'état ; s'en inspirer seulement.

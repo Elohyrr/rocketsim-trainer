@@ -50,7 +50,7 @@ comme la spec. Constats :
   backend. À faire pour clore M0 : spike comparatif des deux backends avec les vrais meshes ; si v3 est équivalent,
   le préférer (alignement avec la préférence Rust pur, image simple).
 
-**D10 — 2026-11-07 — Hygiène du dépôt public.** README avec avertissement « non officiel » et dumper, CI (fmt,
+**D10 — 2026-11-07 — Hygiène du dépôt public.** README avec avertissement « non officiel » et récupération des meshes, CI (fmt,
 clippy `-D warnings`, test, avec clang), CONTRIBUTING court, aucune info personnelle ou d'infrastructure.
 Versions : `rocketsim_rs` et `cxx` épinglés (`=`), autres dépendances résolues par `Cargo.lock` commité.
 

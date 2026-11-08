@@ -16,7 +16,7 @@ On construit en Rust un simulateur d'entraînement aux mécas basé sur [RocketS
 Le projet n'utilise et ne redistribue aucun contenu du jeu, et ne touche jamais au jeu en ligne.
 
 - **Pas de reverse engineering** du binaire Rocket League.
-- **Assets** : les maillages de collision sont dumpés localement depuis sa propre copie du jeu avec [RLArenaCollisionDumper](https://github.com/ZealanL/RLArenaCollisionDumper), un outil Windows. Ils ne sont jamais commités, ni intégrés à une image : ils sont montés depuis un dossier local ou un PVC.
+- **Assets** : les 16 maillages de collision soccar (`.cmf`) sont téléchargés par `scripts/fetch-meshes.sh` depuis le paquet PyPI public `rlgym-rocket-league` 2.0.1 (empreintes sha256 vérifiées). Ils ne sont jamais commités, ni intégrés à une image : ils vivent dans `collision_meshes/` (ignoré par le VCS) ou sur un volume monté. Leur géométrie reste la propriété de leur ayant droit : usage local et personnel uniquement.
 - **Rendu original** : des primitives simples (boîtes, sphères, lignes). Pas de modèles, textures, logos ni noms de marque du jeu.
 - **Hors ligne uniquement** : le bot ne joue dans le vrai jeu que via RLBot, en match privé ou hors ligne. Jamais en ligne ni en ranked.
 - **Pas de GPU requis** (l'iGPU du nœud est une option à mesurer en M2, voir D3) et pas de multijoueur réseau en v1.
@@ -86,7 +86,7 @@ Six jalons. Chacun se termine par une validation manuelle avant de passer au sui
 
 **Risques**
 
-- Le dumper de meshes est un outil Windows. Son fonctionnement sous Wine ou Proton n'est pas garanti.
+- Les meshes viennent d'un paquet tiers (PyPI) : si la version est retirée, repli sur [Ripple-RLBot](https://github.com/Rolv-Arild/Ripple-RLBot) (`src/collision_meshes/soccar/`). Statut de licence de ces fichiers non garanti.
 - `rlgym_sim_rs` est en alpha : à évaluer, sans en dépendre.
 - RocketSim dérive du vrai jeu au-delà d'environ une seconde, ce qui pèse sur les mécas longues.
 - Le débit peut être trop faible sur 2 vCPU pour des milliards de steps.
