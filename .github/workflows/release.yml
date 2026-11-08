@@ -1,0 +1,84 @@
+name: Release
+# Binaire Linux x86_64 prêt à lancer, publié sur un tag v*. Sans meshes (téléchargés au premier lancement).
+# Sur une PR qui touche ce fichier : construit et teste le paquet sans rien publier.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths: [".github/workflows/release.yml"]
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  # -march générique : le binaire doit tourner sur n'importe quel x86_64 récent (SIGILL sinon).
+  CFLAGS: -march=x86-64-v2
+  CXXFLAGS: -march=x86-64-v2
+  RUSTFLAGS: -C target-cpu=x86-64-v2
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Debian 12 : glibc/libstdc++ anciennes, le binaire tourne aussi sur LMDE 6 et plus récent.
+    container: debian:12
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Dépendances
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git build-essential \
+            clang-16 libudev-dev pkg-config xz-utils
+          echo "CC=clang-16" >> "$GITHUB_ENV"
+          echo "CXX=clang++-16" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: |
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-v2
+      # Tests avec les vrais meshes (jamais inclus dans le paquet).
+      - run: scripts/fetch-meshes.sh
+      - run: cargo test --release -p game -p sim-core
+        env:
+          ROCKETSIM_MESHES_DIR: ${{ github.workspace }}/collision_meshes
+      - run: cargo build --release -p game
+      - name: Paquet
+        run: |
+          name="rocketsim-trainer-${GITHUB_REF_NAME//\//-}-linux-x86_64"
+          mkdir "$name"
+          cp target/release/game "$name/rocketsim-trainer"
+          cp README.md LICENSE "$name/"
+          strip "$name/rocketsim-trainer"
+          tar -czf "$name.tar.gz" "$name"
+          # Binaire nu aussi : télécharger, chmod +x, lancer.
+          cp target/release/game rocketsim-trainer-linux-x86_64
+          strip rocketsim-trainer-linux-x86_64
+          ls -l rocketsim-trainer-linux-x86_64 "$name.tar.gz"
+          echo "ARCHIVE=$name.tar.gz" >> "$GITHUB_ENV"
+      - name: Dépendances dynamiques (contrôle)
+        run: ldd rocketsim-trainer-linux-x86_64; objdump -T rocketsim-trainer-linux-x86_64 | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: |
+            rocketsim-trainer-linux-x86_64
+            ${{ env.ARCHIVE }}
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-x86_64
+      - name: Publier
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes \
+            --title "$GITHUB_REF_NAME" rocketsim-trainer-linux-x86_64 ./*.tar.gz
