@@ -17,17 +17,22 @@ et la [spécification](docs/specs/rocketsim-trainer.md). Décisions : [`docs/dec
 `sim-core` (simulation) · `scenarios` (drills) · `game` (client jouable) · `rl-env` (env RL) · `learner` (PPO)
 · `policy-runtime` (inférence légère).
 
-## Meshes de collision (à fournir vous-même)
+## Meshes de collision
 
-RocketSim a besoin des maillages de collision de l'arène, **qui ne sont pas fournis** ici. Ils s'extraient de votre
-propre copie du jeu avec [RLArenaCollisionDumper](https://github.com/ZealanL/RLArenaCollisionDumper) (outil Windows ;
-vérifiez ses conditions d'usage et celles du jeu). Ne les commitez jamais : `collision_meshes/` est ignoré par git.
-
-Attendu : `<dossier>/soccar/*.cco`. Indiquez le dossier par variable d'environnement :
+RocketSim a besoin des 16 maillages de collision soccar (`mesh_0.cmf` … `mesh_15.cmf`). Ils **ne sont pas dans ce
+dépôt** et ne doivent jamais y être commités (`collision_meshes/` est ignoré). Un script les télécharge depuis
+le sdist PyPI public `rlgym-rocket-league` 2.0.1, n'en extrait que ces 16 fichiers et vérifie les sha256 (archive,
+puis chaque fichier, empreintes dans `scripts/meshes.sha256`) ; il est idempotent et échoue si une empreinte diffère :
 
 ```sh
-export ROCKETSIM_MESHES_DIR=/chemin/vers/collision_meshes
+scripts/fetch-meshes.sh                             # -> ./collision_meshes/soccar/mesh_*.cmf
+export ROCKETSIM_MESHES_DIR=$PWD/collision_meshes   # défaut si absent : ./collision_meshes
 ```
+
+**Réserve de licence** : la géométrie des meshes provient du jeu (Psyonix / Epic) ; ce dépôt ne la redistribue pas
+et le script ne fait que la récupérer sur un paquet tiers public, dont le statut de licence n'est pas garanti.
+Usage local et personnel uniquement ; vérifiez les conditions du jeu. Repli si PyPI change :
+[Ripple-RLBot](https://github.com/Rolv-Arild/Ripple-RLBot) (`src/collision_meshes/soccar/`).
 
 ## Compiler
 

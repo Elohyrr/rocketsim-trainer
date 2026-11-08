@@ -1,8 +1,9 @@
 //! Wrapper autour de `rocketsim_rs` : chargement des meshes, création d'arène,
 //! simulation et état sérialisable.
 //!
-//! Les meshes de collision ne sont jamais fournis par ce dépôt : ils sont lus depuis
-//! le dossier désigné par la variable d'environnement [`MESHES_ENV`].
+//! Les meshes de collision ne sont jamais fournis par ce dépôt : `scripts/fetch-meshes.sh` les
+//! télécharge, et ils sont lus depuis le dossier désigné par [`MESHES_ENV`]
+//! (défaut : [`DEFAULT_MESHES_DIR`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -12,48 +13,51 @@ use serde::{Deserialize, Serialize};
 
 pub use rocketsim_rs::sim::CarControls as Controls;
 
-/// Variable d'environnement donnant le dossier des meshes (contenant `soccar/*.cco`).
+/// Variable d'environnement donnant le dossier des meshes (contenant `soccar/mesh_0..15.cmf`).
 pub const MESHES_ENV: &str = "ROCKETSIM_MESHES_DIR";
+/// Dossier utilisé si [`MESHES_ENV`] est absente (relatif au dossier courant).
+pub const DEFAULT_MESHES_DIR: &str = "collision_meshes";
+/// Nombre de meshes soccar attendus (`mesh_0.cmf` … `mesh_15.cmf`).
+pub const SOCCAR_MESH_COUNT: usize = 16;
 /// Fréquence de simulation de référence (Hz).
 pub const TICK_RATE: u8 = 120;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SimError {
-    #[error("variable d'environnement {MESHES_ENV} absente")]
-    MeshesEnvMissing,
-    #[error("dossier de meshes introuvable : {0}")]
+    #[error(
+        "dossier de meshes introuvable : {0}\nLancer : scripts/fetch-meshes.sh (puis définir {MESHES_ENV})"
+    )]
     MeshesDirMissing(PathBuf),
-    #[error("aucun fichier .cco dans {0} (attendu : <dossier>/soccar/*.cco)")]
-    NoMeshFiles(PathBuf),
+    #[error("mesh manquant : {0}\nLancer : scripts/fetch-meshes.sh (puis définir {MESHES_ENV})")]
+    MeshFileMissing(PathBuf),
+    #[error("RocketSim non initialisé : appeler init_meshes d'abord")]
+    NotInitialized,
     #[error("voiture inconnue : {0}")]
     UnknownCar(u32),
 }
 
-/// Dossier de meshes configuré, s'il existe et contient des `.cco`. `None` sinon (tests sautés).
+/// Dossier de meshes configuré : `$ROCKETSIM_MESHES_DIR`, sinon `./collision_meshes`. Vérifié.
 pub fn meshes_dir_from_env() -> Result<PathBuf, SimError> {
-    let dir = std::env::var_os(MESHES_ENV).ok_or(SimError::MeshesEnvMissing)?;
-    check_meshes_dir(Path::new(&dir))?;
-    Ok(PathBuf::from(dir))
+    let dir = std::env::var_os(MESHES_ENV)
+        .map_or_else(|| PathBuf::from(DEFAULT_MESHES_DIR), PathBuf::from);
+    check_meshes_dir(&dir)?;
+    Ok(dir)
 }
 
-/// Vérifie la présence des meshes. Indispensable avant `init` : RocketSim lève une
-/// exception C++ (abort côté Rust) si l'initialisation échoue.
+/// Vérifie la présence des 16 meshes. Indispensable avant `init` : RocketSim plante (abort C++)
+/// si un fichier est illisible, et se contente d'ignorer les fichiers absents.
 pub fn check_meshes_dir(dir: &Path) -> Result<(), SimError> {
     let soccar = dir.join("soccar");
     if !soccar.is_dir() {
         return Err(SimError::MeshesDirMissing(soccar));
     }
-    let has_cco = std::fs::read_dir(&soccar)
-        .map(|it| {
-            it.flatten()
-                .any(|e| e.path().extension().is_some_and(|x| x == "cco"))
-        })
-        .unwrap_or(false);
-    if has_cco {
-        Ok(())
-    } else {
-        Err(SimError::NoMeshFiles(soccar))
+    for i in 0..SOCCAR_MESH_COUNT {
+        let f = soccar.join(format!("mesh_{i}.cmf"));
+        if !f.is_file() {
+            return Err(SimError::MeshFileMissing(f));
+        }
     }
+    Ok(())
 }
 
 static INIT: OnceLock<PathBuf> = OnceLock::new();
@@ -115,7 +119,7 @@ impl Sim {
     /// Crée une arène soccar. `init_meshes` doit avoir réussi avant.
     pub fn new_soccar() -> Result<Self, SimError> {
         if INIT.get().is_none() {
-            return Err(SimError::MeshesEnvMissing);
+            return Err(SimError::NotInitialized);
         }
         Ok(Self {
             arena: Arena::default_standard(),
@@ -132,6 +136,14 @@ impl Sim {
             .pin_mut()
             .set_car_controls(car, c)
             .map_err(|_| SimError::UnknownCar(car))
+    }
+
+    /// Place la balle (position et vitesse, unités RocketSim) en gardant le reste de son état.
+    pub fn set_ball(&mut self, pos: V3, vel: V3) {
+        let mut b = self.arena.pin_mut().get_ball();
+        b.pos = rocketsim_rs::math::Vec3::new(pos[0], pos[1], pos[2]);
+        b.vel = rocketsim_rs::math::Vec3::new(vel[0], vel[1], vel[2]);
+        self.arena.pin_mut().set_ball(b);
     }
 
     pub fn step(&mut self, ticks: u32) {
@@ -186,12 +198,13 @@ mod tests {
     }
 
     #[test]
-    fn empty_soccar_dir_has_no_meshes() {
+    fn incomplete_soccar_dir_names_missing_mesh() {
         let d = std::env::temp_dir().join(format!("sim-core-empty-{}", std::process::id()));
         std::fs::create_dir_all(d.join("soccar")).unwrap();
         let err = check_meshes_dir(&d).unwrap_err();
         std::fs::remove_dir_all(&d).ok();
-        assert!(matches!(err, SimError::NoMeshFiles(_)));
+        assert!(matches!(err, SimError::MeshFileMissing(_)));
+        assert!(err.to_string().contains("scripts/fetch-meshes.sh"));
     }
 
     #[test]
@@ -216,11 +229,10 @@ mod tests {
         assert_eq!(serde_json::from_str::<Snapshot>(&j).unwrap(), s);
     }
 
-    /// Exige les meshes : `ROCKETSIM_MESHES_DIR=… cargo test -p sim-core -- --ignored`.
+    /// Exige les vrais meshes : `scripts/fetch-meshes.sh` puis `cargo test` (CI : toujours exécuté).
     #[test]
-    #[ignore = "nécessite les meshes (ROCKETSIM_MESHES_DIR)"]
     fn simulates_1800_ticks_with_meshes() {
-        let dir = meshes_dir_from_env().expect("meshes requis pour ce test");
+        let dir = meshes_dir_from_env().unwrap_or_else(|e| panic!("{e}"));
         init_meshes(&dir).unwrap();
         let mut sim = Sim::new_soccar().unwrap();
         let car = sim.add_car(true);
@@ -240,5 +252,26 @@ mod tests {
         assert_ne!(before.cars[0].pos, after.cars[0].pos);
         let j = serde_json::to_string(&after).unwrap();
         assert_eq!(serde_json::from_str::<Snapshot>(&j).unwrap(), after);
+    }
+
+    /// La balle lancée vers le mur latéral (x = 4096) doit rebondir : prouve que la géométrie est chargée.
+    #[test]
+    fn ball_bounces_off_side_wall() {
+        let dir = meshes_dir_from_env().unwrap_or_else(|e| panic!("{e}"));
+        init_meshes(&dir).unwrap();
+        let mut sim = Sim::new_soccar().unwrap();
+        sim.set_ball([3500., 0., 500.], [2000., 0., 0.]);
+        sim.step(120);
+        let b = sim.snapshot().ball;
+        assert!(
+            b.vel[0] < 0.,
+            "la balle aurait dû repartir vers le centre : {:?}",
+            b.vel
+        );
+        assert!(
+            b.pos[0] < 4096.,
+            "la balle ne doit pas traverser le mur : {:?}",
+            b.pos
+        );
     }
 }
