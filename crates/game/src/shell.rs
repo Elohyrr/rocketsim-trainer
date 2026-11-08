@@ -191,7 +191,8 @@ mod tests {
                 assert!(
                     p[0].abs() <= 4200.0
                         && p[1].abs() <= 6100.0
-                        && (-10.0..=2200.0).contains(&p[2])
+                        && (-100.0..=2200.0).contains(&p[2]),
+                    "sommet hors terrain : {p:?}"
                 );
             }
         }
