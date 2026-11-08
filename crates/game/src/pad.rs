@@ -275,8 +275,8 @@ mod tests {
         assert!(!r(&[Button::East]).boost);
         let l1 = r(&[Button::LeftTrigger]);
         assert!(l1.powerslide && l1.air_roll);
-        assert_eq!(r(&[Button::West]).roll, -1.0);
-        assert_eq!(r(&[Button::LeftThumb]).roll, 1.0);
+        assert_eq!(r(&[Button::West]).roll, 1.0);
+        assert_eq!(r(&[Button::LeftThumb]).roll, -1.0);
         assert_eq!(r(&[Button::West, Button::LeftThumb]).roll, 0.0);
         assert_eq!(p.reset, vec![Button::Select]);
         assert_eq!(p.toggle_cam, vec![Button::North]);
@@ -299,8 +299,9 @@ mod tests {
     #[test]
     fn roll_buttons_give_left_and_right_in_controls() {
         let p = pad(&Gamepad::default());
-        let left = p.raw_input(held(&[Button::West]), [0.0, 0.0]).to_controls();
-        let right = p
+        // Carré = tonneau droit, L3 = tonneau gauche
+        let right = p.raw_input(held(&[Button::West]), [0.0, 0.0]).to_controls();
+        let left = p
             .raw_input(held(&[Button::LeftThumb]), [0.0, 0.0])
             .to_controls();
         assert_eq!((left.roll, right.roll), (-1.0, 1.0));

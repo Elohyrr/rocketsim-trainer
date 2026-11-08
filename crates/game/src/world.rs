@@ -13,6 +13,21 @@ pub const GOAL_PAUSE: f32 = 2.5;
 /// Durée maximale d'un essai de drill (s).
 pub const DRILL_TIME: f32 = 10.0;
 /// Rapports de ralenti proposés (0,25× à 1×).
+/// Vitesse (uu/s) à partir de laquelle la voiture devient supersonique, et sous laquelle elle ne l'est plus.
+pub const SUPERSONIC_ON: f32 = 2200.0;
+pub const SUPERSONIC_OFF: f32 = 2100.0;
+/// Nombre maximal de points de la traînée supersonique.
+pub const TRAIL_MAX: usize = 28;
+
+/// Règle RL : supersonique dès 2200 uu/s, puis jusqu'à ce que la vitesse retombe sous 2100 uu/s.
+pub fn next_supersonic(was: bool, speed: f32) -> bool {
+    if was {
+        speed >= SUPERSONIC_OFF
+    } else {
+        speed >= SUPERSONIC_ON
+    }
+}
+
 pub const TIME_SCALES: [f32; 4] = [0.25, 0.5, 0.75, 1.0];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +72,10 @@ pub struct World {
     pub goal_timer: Option<f32>,
     /// Vrai si le boost est actif au dernier tick (touche tenue et réservoir non vide).
     pub boosting: bool,
+    /// Voiture supersonique (avec hystérésis, voir [`next_supersonic`]).
+    pub supersonic: bool,
+    /// Positions récentes de la voiture (traînée supersonique), de la plus ancienne à la plus récente.
+    pub trail: Vec<[f32; 3]>,
     acc: f32,
     jump_latch: bool,
     seed: u32,
@@ -84,6 +103,8 @@ impl World {
             ball_rot: Quat::IDENTITY,
             goal_timer: None,
             boosting: false,
+            supersonic: false,
+            trail: Vec::new(),
             acc: 0.0,
             jump_latch: false,
             seed: 1,
@@ -131,6 +152,8 @@ impl World {
             }
         }
         self.goal_timer = None;
+        self.supersonic = false;
+        self.trail.clear();
         self.refresh();
         self.prev = self.cur.clone();
     }
@@ -209,6 +232,22 @@ impl World {
         self.sim.step(1);
         self.boosting = input.boost && self.cur.cars[0].boost > 0.0;
         self.prev = std::mem::replace(&mut self.cur, self.sim.snapshot());
+        let car = &self.cur.cars[0];
+        let v = car.vel;
+        self.supersonic = next_supersonic(
+            self.supersonic,
+            (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(),
+        );
+        if self.cur.tick % 2 == 0 {
+            if self.supersonic {
+                self.trail.push(car.pos);
+                if self.trail.len() > TRAIL_MAX {
+                    self.trail.remove(0);
+                }
+            } else if !self.trail.is_empty() {
+                self.trail.remove(0); // la traînée s'efface
+            }
+        }
         if self.cur.tick % 4 == 0 {
             self.pads = self.sim.pads();
         }
@@ -250,6 +289,14 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn supersonic_has_hysteresis() {
+        assert!(!next_supersonic(false, 2150.0));
+        assert!(next_supersonic(false, 2200.0));
+        assert!(next_supersonic(true, 2150.0));
+        assert!(!next_supersonic(true, 2099.0));
+    }
 
     fn world() -> World {
         let dir = sim_core::meshes_dir_from_env().unwrap_or_else(|e| panic!("{e}"));
