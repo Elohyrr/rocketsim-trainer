@@ -30,4 +30,6 @@ Total estimé : ≈ 50 séries. Catalogue `mechanic` (heuristiques, voir `docs/d
 
 Pas de Prometheus local : un agent (Alloy / k8s-monitoring) scrape `/metrics` et envoie à Grafana Cloud. Pour rester
 dans le quota de séries gratuites, l'agent doit filtrer avec une allowlist (`includeMetrics`) limitée aux préfixes
-`trainer_` et `process_`. À configurer dans le dépôt GitOps de l'infrastructure (PR séparée, hors de ce dépôt).
+`trainer_` et `process_`. Configuré dans le dépôt GitOps de l'infrastructure : PodMonitor `rocketsim` (`metricRelabelings` `keep` sur `trainer_.*`,
+histogramme réduit à `_sum`/`_count`). `process_*` n'est pas exposé : seul `process_uptime_seconds` l'est (CPU/RAM du pod :
+cAdvisor).

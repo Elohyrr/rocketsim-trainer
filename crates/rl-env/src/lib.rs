@@ -174,8 +174,8 @@ impl EnvConfig {
         let base = Self::default();
         match stage {
             0 => Self {
-                approach_weight: 1.0,
-                touch_reward: 0.2,
+                approach_weight: 0.3,
+                touch_reward: 3.0,
                 ..base
             },
             1 => base,
