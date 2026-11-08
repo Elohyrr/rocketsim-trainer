@@ -45,7 +45,7 @@ ou à la **manette** (branchée avant ou pendant la partie).
 
 ### Manette PlayStation (DualShock 4 / DualSense, USB ou Bluetooth)
 
-Aucune configuration : les défauts sont le layout de Leo. Le stick gauche dirige (sol) et pilote tangage et
+Aucune configuration : les défauts sont le layout d’Elohyrr. Le stick gauche dirige (sol) et pilote tangage et
 lacet (air). Le nom de la manette détectée s'affiche en haut à gauche du HUD (« aucune manette » sinon).
 
 | Action | Bouton | Nom gilrs |

@@ -101,7 +101,7 @@ pub struct Gamepad {
     pub toggle_ball_cam: Names,
 }
 
-/// Défauts manette = layout de Leo (DualShock 4 / DualSense) : R2 accélère, L2 freine/recule,
+/// Défauts manette = layout d’Elohyrr (DualShock 4 / DualSense) : R2 accélère, L2 freine/recule,
 /// Cross saute, R1 boost, L1 powerslide et roulis libre (même bouton), Square roulis gauche,
 /// L3 (clic du stick gauche) roulis droit, Triangle caméra balle, Share remet en jeu.
 impl Default for Gamepad {
