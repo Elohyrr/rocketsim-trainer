@@ -8,6 +8,12 @@ PPO Rocket League complet sur burn existe (`rlgymppo_rs`, GPL-2.0 : on s'en insp
 rlgym-ppo (Python) lance un process par worker, coûteux en RAM sur 2 Gi. Repli vers Python si, à la fin du spike M2 :
 CartPole non résolu en ~2 jours, ou pas de progression sur « toucher la balle » après ~50 M pas, ou débit inférieur.
 
+**D1 — verdict du spike M2 (2026-11-08) : on reste en Rust.** PPO burn 0.22 `flex` (CPU) : « toucher la balle » passe de
+0 % à ~94 % en ~2 M pas / 5 min sur 2 cœurs (~7 000 pas/s, env 43–51 k pas/s seul) ; export safetensors relu par
+`policy-runtime` (équivalence testée). Critère « pas de progression après ~50 M pas » : largement évité sur cette tâche
+simple. **Non vérifié** : CartPole (pas implémenté), burn-wgpu (D3 non mesuré), tâches difficiles (aérien, etc.) et RAM
+sous 2 Gi. Repli Python non déclenché ; à réévaluer au premier palier de curriculum qui stagne (M3).
+
 **D2 — 2026-11-07 — Client : macroquad** (léger, GPU intégré), sauf blocage avéré en M1.
 
 **D3 — 2026-11-07 — GPU : option mesurée en M2, jamais supposée.** burn `wgpu` (Vulkan) sur l'iGPU Intel du nœud

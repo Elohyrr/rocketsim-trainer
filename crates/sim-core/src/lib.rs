@@ -153,6 +153,50 @@ impl Sim {
         self.arena.pin_mut().set_ball(b);
     }
 
+    /// Remet une voiture dans un état « au sol » : position, cap (yaw, radians), vitesse, boost (0–100).
+    pub fn reset_car(
+        &mut self,
+        car: u32,
+        pos: V3,
+        yaw: f32,
+        vel: V3,
+        boost: f32,
+    ) -> Result<(), SimError> {
+        let mut st = rocketsim_rs::sim::CarState::default();
+        let (s, c) = yaw.sin_cos();
+        st.pos = rocketsim_rs::math::Vec3::new(pos[0], pos[1], pos[2]);
+        st.vel = rocketsim_rs::math::Vec3::new(vel[0], vel[1], vel[2]);
+        st.rot_mat.forward = rocketsim_rs::math::Vec3::new(c, s, 0.0);
+        st.rot_mat.right = rocketsim_rs::math::Vec3::new(-s, c, 0.0);
+        st.rot_mat.up = rocketsim_rs::math::Vec3::new(0.0, 0.0, 1.0);
+        st.boost = boost;
+        self.arena
+            .pin_mut()
+            .set_car(car, st)
+            .map_err(|_| SimError::UnknownCar(car))
+    }
+
+    /// Tick du dernier toucher de la balle par cette voiture, s'il y en a eu un depuis le dernier reset.
+    pub fn last_ball_touch_tick(&mut self, car: u32) -> Option<u64> {
+        let h = self.arena.pin_mut().get_car(car).ball_hit_info;
+        h.is_valid.then_some(h.tick_count_when_hit)
+    }
+
+    /// La balle est-elle dans un but ?
+    pub fn is_ball_scored(&self) -> bool {
+        self.arena.is_ball_scored()
+    }
+
+    /// Remet la balle au repos, vitesse angulaire nulle.
+    pub fn reset_ball(&mut self, pos: V3, vel: V3) {
+        let b = rocketsim_rs::sim::BallState {
+            pos: rocketsim_rs::math::Vec3::new(pos[0], pos[1], pos[2]),
+            vel: rocketsim_rs::math::Vec3::new(vel[0], vel[1], vel[2]),
+            ..Default::default()
+        };
+        self.arena.pin_mut().set_ball(b);
+    }
+
     /// Remet voitures et balle en position de coup d'envoi (position tirée de `seed`), boost à 33.
     pub fn reset_kickoff(&mut self, seed: i32) {
         self.arena

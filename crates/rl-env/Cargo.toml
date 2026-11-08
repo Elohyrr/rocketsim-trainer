@@ -5,3 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish = false
+
+[dependencies]
+sim-core = { path = "../sim-core" }
+
+[[example]]
+name = "bench"
+path = "examples/bench.rs"
