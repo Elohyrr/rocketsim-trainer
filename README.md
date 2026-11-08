@@ -45,7 +45,7 @@ ou à la **manette** (branchée avant ou pendant la partie).
 
 ### Manette PlayStation (DualShock 4 / DualSense, USB ou Bluetooth)
 
-Aucune configuration : les défauts sont le layout de Leo. Le stick gauche dirige (sol) et pilote tangage et
+Aucune configuration : les défauts sont le layout d'Elohyrr. Le stick gauche dirige (sol) et pilote tangage et
 lacet (air). Le nom de la manette détectée s'affiche en haut à gauche du HUD (« aucune manette » sinon).
 
 | Action | Bouton | Nom gilrs |
@@ -56,8 +56,8 @@ lacet (air). Le nom de la manette détectée s'affiche en haut à gauche du HUD 
 | Boost | `R1` | `RightTrigger` |
 | Drift (powerslide) | `L1` | `LeftTrigger` |
 | Roulis libre (en l'air) | `L1` + stick gauche | `LeftTrigger` |
-| Roulis gauche | `Carré` (`Square`) | `West` |
-| Roulis droit | `L3` (clic du stick gauche) | `LeftThumb` |
+| Roulis (tonneau) droit | `Carré` (`Square`) | `West` |
+| Roulis (tonneau) gauche | `L3` (clic du stick gauche) | `LeftThumb` |
 | Caméra balle / voiture | `Triangle` | `North` |
 | Remise en jeu | `Share` (DS4) / `Create` (DualSense) | `Select` |
 
@@ -65,6 +65,32 @@ lacet (air). Le nom de la manette détectée s'affiche en haut à gauche du HUD 
 Pour changer une touche, éditer la section `[gamepad]` du fichier de config avec les noms PlayStation
 (`Cross`, `Circle`, `Square`, `Triangle`, `L1`, `R1`, `L2`, `R2`, `L3`, `R3`, `Share`/`Create`, `Options`, `PS`)
 ou les noms gilrs. Exemple : `jump = ["Circle"]`.
+
+#### Caméra
+
+Comme dans Rocket League : au sol la caméra suit la voiture presque instantanément (elle s'incline le long
+d'un mur, plus lentement) ; en l'air elle est « tenue en laisse » derrière la voiture : elle suit la trajectoire
+et ignore tangage, roulis, flips et tonneaux (jamais de roulis caméra, horizon fixe), ce qui permet de viser
+une aérienne. Les transitions sol ↔ air sont fondues ; la caméra reste toujours à l'intérieur de l'arène
+(murs, sol, plafond, coins, cages). En caméra balle, elle reste derrière la voiture et regarde vers la balle.
+Supersonique (≥ 2200 uu/s, jusqu'à retomber sous 2100) : traînée derrière la voiture, lignes de vitesse,
+FOV élargi et indicateur « SUPERSONIQUE » dans le HUD. Les réglages sont dans la section `[camera]` du
+fichier de config (défauts « pro » typiques ; `swivel_speed` règle la vitesse de rotation en l'air et en
+caméra balle) :
+
+| Clé | Défaut | Rôle |
+| --- | --- | --- |
+| `fov` | 110 | champ de vision (degrés) |
+| `distance` | 270 | distance derrière la voiture (uu) |
+| `height` | 100 | hauteur de la caméra (uu) |
+| `angle` | -4 | inclinaison (degrés, négatif = vers le bas) |
+| `stiffness` | 0.45 | raideur (0 = traîne, 1 = rigide) |
+| `swivel_speed` | 5 | vitesse de rotation en lacet |
+| `transition_speed` | 1.2 | vitesse de transition sol / air / mur |
+
+Un `config.toml` plus ancien (`config_version` < 3) est mis à niveau au lancement (copie `config.toml.bak`) :
+la section `[gamepad]` non modifiée reçoit les nouveaux défauts, une section personnalisée est gardée
+(avec un avertissement) et la section `[camera]` est ajoutée.
 
 #### Dépannage manette (Linux)
 

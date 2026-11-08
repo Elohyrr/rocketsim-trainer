@@ -101,9 +101,9 @@ pub struct Gamepad {
     pub toggle_ball_cam: Names,
 }
 
-/// Défauts manette = layout de Leo (DualShock 4 / DualSense) : R2 accélère, L2 freine/recule,
-/// Cross saute, R1 boost, L1 powerslide et roulis libre (même bouton), Square roulis gauche,
-/// L3 (clic du stick gauche) roulis droit, Triangle caméra balle, Share remet en jeu.
+/// Défauts manette = layout d'Elohyrr (DualShock 4 / DualSense) : R2 accélère, L2 freine/recule,
+/// Cross saute, R1 boost, L1 powerslide et roulis libre (même bouton), Square roulis droit,
+/// L3 (clic du stick gauche) roulis gauche, Triangle caméra balle, Share remet en jeu.
 impl Default for Gamepad {
     fn default() -> Self {
         Self {
@@ -114,8 +114,8 @@ impl Default for Gamepad {
             boost: n(&["R1"]),
             powerslide: n(&["L1"]),
             air_roll: n(&["L1"]),
-            air_roll_left: n(&["Square"]),
-            air_roll_right: n(&["L3"]),
+            air_roll_left: n(&["L3"]),
+            air_roll_right: n(&["Square"]),
             reset: n(&["Share"]),
             toggle_ball_cam: n(&["Triangle"]),
         }
@@ -124,7 +124,7 @@ impl Default for Gamepad {
 
 /// Version du format et des défauts. Un fichier sans `config_version` (ou plus ancien) a été écrit
 /// avec les défauts d'avant : voir [`migrate`].
-pub const CONFIG_VERSION: u32 = 2;
+pub const CONFIG_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -132,6 +132,41 @@ pub struct Config {
     pub config_version: u32,
     pub keyboard: Keyboard,
     pub gamepad: Gamepad,
+    pub camera: CameraCfg,
+}
+
+/// Réglages caméra à la Rocket League (défauts « pro » typiques). Distances en uu, angles en degrés.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CameraCfg {
+    /// Champ de vision vertical.
+    pub fov: f32,
+    /// Distance derrière la voiture.
+    pub distance: f32,
+    /// Hauteur de la caméra au-dessus de la voiture.
+    pub height: f32,
+    /// Inclinaison de la caméra (négatif = vers le bas).
+    pub angle: f32,
+    /// Raideur : à 0 la caméra traîne beaucoup derrière la voiture, à 1 elle la suit rigidement.
+    pub stiffness: f32,
+    /// Vitesse de rotation de la caméra en lacet (ball cam et caméra voiture).
+    pub swivel_speed: f32,
+    /// Vitesse de transition sol ↔ air ↔ mur (orientation « haut » de la caméra).
+    pub transition_speed: f32,
+}
+
+impl Default for CameraCfg {
+    fn default() -> Self {
+        Self {
+            fov: 110.0,
+            distance: 270.0,
+            height: 100.0,
+            angle: -4.0,
+            stiffness: 0.45,
+            swivel_speed: 5.0,
+            transition_speed: 1.2,
+        }
+    }
 }
 
 impl Default for Config {
@@ -140,6 +175,7 @@ impl Default for Config {
             config_version: CONFIG_VERSION,
             keyboard: Keyboard::default(),
             gamepad: Gamepad::default(),
+            camera: CameraCfg::default(),
         }
     }
 }
@@ -156,6 +192,16 @@ fn gamepad_v1() -> Gamepad {
         reset: n(&["Select"]),
         toggle_ball_cam: n(&["North"]),
         // absents du fichier v1 : ils prennent leur défaut à la lecture
+        ..Gamepad::default()
+    }
+}
+
+/// Section manette telle que la v2 l'écrivait au premier lancement (roulis gauche/droite inversés
+/// depuis la v3).
+fn gamepad_v2() -> Gamepad {
+    Gamepad {
+        air_roll_left: n(&["Square"]),
+        air_roll_right: n(&["L3"]),
         ..Gamepad::default()
     }
 }
@@ -179,7 +225,7 @@ pub fn migrate(mut c: Config, file_version: u32) -> (Config, Migration) {
         return (c, Migration::None);
     }
     c.config_version = CONFIG_VERSION;
-    if c.gamepad == gamepad_v1() {
+    if c.gamepad == gamepad_v1() || c.gamepad == gamepad_v2() {
         c.gamepad = Gamepad::default();
         (c, Migration::Updated)
     } else {
@@ -368,10 +414,15 @@ pub fn load_or_create(path: &Path) -> (Config, Option<String>) {
             );
             None
         }
-        Migration::KeptCustom => Some(format!(
-            "{} est ancien et la manette y est personnalisée : réglages gardés, nouveaux défauts manette (R2, L2, Cross, R1, L1…) non appliqués ; supprimez la section [gamepad] pour les obtenir",
-            path.display()
-        )),
+        Migration::KeptCustom => {
+            // Sauvegarde puis réécriture : ajoute la section [camera] sans toucher aux réglages.
+            let _ = std::fs::copy(path, path.with_extension("toml.bak"));
+            write_config(path, &c);
+            Some(format!(
+                "{} est ancien et la manette y est personnalisée : réglages gardés (copie : config.toml.bak), nouveaux défauts manette (roulis, etc.) non appliqués ; supprimez la section [gamepad] pour les obtenir",
+                path.display()
+            ))
+        }
     };
     (c, note)
 }
@@ -440,8 +491,8 @@ mod tests {
         assert_eq!(g.boost, one("R1"));
         assert_eq!(g.powerslide, one("L1"));
         assert_eq!(g.air_roll, one("L1"));
-        assert_eq!(g.air_roll_left, one("Square"));
-        assert_eq!(g.air_roll_right, one("L3"));
+        assert_eq!(g.air_roll_left, one("L3"));
+        assert_eq!(g.air_roll_right, one("Square"));
         assert_eq!(g.toggle_ball_cam, one("Triangle"));
         assert_eq!(g.reset, one("Share"));
     }
@@ -483,6 +534,36 @@ mod tests {
         };
         let (k, m) = migrate(c.clone(), CONFIG_VERSION);
         assert_eq!((k, m), (c, Migration::None));
+    }
+
+    #[test]
+    fn unmodified_v2_gamepad_is_upgraded_and_custom_one_kept() {
+        let text = toml::to_string_pretty(&Config {
+            config_version: 2,
+            gamepad: gamepad_v2(),
+            ..Config::default()
+        })
+        .unwrap();
+        // fichier v2 sans section [camera]
+        let text = text.split("[camera]").next().unwrap().to_string();
+        let parsed: Config = toml::from_str(&text).unwrap();
+        assert_eq!(parsed.camera, CameraCfg::default());
+        let (c, m) = migrate(parsed.clone(), 2);
+        assert_eq!(m, Migration::Updated);
+        assert_eq!(c.gamepad.air_roll_right, n(&["Square"]));
+        assert_eq!(c.config_version, 3);
+        let mut custom = parsed;
+        custom.gamepad.jump = n(&["Circle"]);
+        let (k, m) = migrate(custom, 2);
+        assert_eq!(m, Migration::KeptCustom);
+        assert_eq!(k.gamepad.air_roll_left, n(&["Square"]));
+    }
+
+    #[test]
+    fn camera_section_is_optional_and_partial() {
+        let c: Config = toml::from_str("[camera]\nfov = 90.0\n").unwrap();
+        assert_eq!(c.camera.fov, 90.0);
+        assert_eq!(c.camera.distance, 270.0);
     }
 
     const V1_GAMEPAD: &str = "[gamepad]\ndeadzone = 0.15\naccelerate = [\"RightTrigger2\"]\nbrake = [\"LeftTrigger2\"]\njump = [\"South\"]\nboost = [\"East\"]\npowerslide = [\"West\"]\nair_roll = [\"LeftTrigger\"]\nreset = [\"Select\"]\ntoggle_ball_cam = [\"North\"]\n";

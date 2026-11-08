@@ -290,5 +290,48 @@ pub fn draw_world(w: &World, arena: &ArenaRender) {
         );
     }
 
+    if !w.trail.is_empty() {
+        draw_trail(w, pos, r, u);
+    }
+
     arena.draw_ceiling();
+}
+
+/// Traînée supersonique : deux rubans croisés (horizontal et vertical) qui s'élargissent et
+/// s'éclaircissent vers la voiture, plus un liseré blanc le long de l'axe.
+fn draw_trail(w: &World, car_pos: [f32; 3], right: Vec3, up: Vec3) {
+    let mut pts: Vec<Vec3> = w.trail.iter().map(|p| v3(*p) + up * 20.0).collect();
+    pts.push(v3(car_pos) + up * 20.0);
+    let n = pts.len();
+    if n < 2 {
+        return;
+    }
+    for axis in [right, up] {
+        let mut verts = Vec::with_capacity(n * 2);
+        for (i, p) in pts.iter().enumerate() {
+            let t = i as f32 / (n - 1) as f32;
+            let half = axis * (6.0 + 30.0 * t);
+            let c = Color::new(0.45 + 0.4 * t, 0.8, 1.0, 0.55 * t);
+            verts.push(Vertex::new2(gv(*p - half), Vec2::ZERO, c));
+            verts.push(Vertex::new2(gv(*p + half), Vec2::ZERO, c));
+        }
+        let mut idx = Vec::new();
+        for i in 0..(n as u16 - 1) {
+            let b = i * 2;
+            idx.extend_from_slice(&[b, b + 1, b + 2, b + 1, b + 3, b + 2]);
+        }
+        draw_mesh(&Mesh {
+            vertices: verts,
+            indices: idx,
+            texture: None,
+        });
+    }
+    for i in 0..n - 1 {
+        let t = i as f32 / (n - 1) as f32;
+        draw_line_3d(
+            gv(pts[i]),
+            gv(pts[i + 1]),
+            Color::new(1.0, 1.0, 1.0, 0.8 * t),
+        );
+    }
 }
