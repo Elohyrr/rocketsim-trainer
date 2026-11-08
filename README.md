@@ -30,18 +30,55 @@ Au premier lancement, le jeu télécharge et vérifie lui-même les meshes de co
 Prérequis : un GPU/driver OpenGL 3.3 (iGPU suffisant) et X11 ou XWayland. Le jeu est jouable au **clavier + souris**
 ou à la **manette** (branchée avant ou pendant la partie).
 
-| Action | Clavier / souris | Manette |
+| Action | Clavier / souris |
+| --- | --- |
+| Accélérer / freiner | `W` `S` (ou flèches) |
+| Direction (sol), lacet (air) | `A` `D` |
+| Saut, double saut / flip | `Espace` (2e appui + direction) |
+| Boost | clic gauche, `Ctrl` |
+| Drift (powerslide) | `Maj`, clic droit |
+| Roulis aérien | `Maj`/clic droit + `A` `D`, ou `Q` `E` |
+| Remise en jeu instantanée | `R` |
+| Caméra balle / voiture | `C` ou `Tab` |
+| Ralenti 0,25× – 1× | `[` `]` |
+| Drill « tir au but » (on/off) | `F2` |
+
+### Manette PlayStation (DualShock 4 / DualSense, USB ou Bluetooth)
+
+Aucune configuration : les défauts sont le layout de Leo. Le stick gauche dirige (sol) et pilote tangage et
+lacet (air). Le nom de la manette détectée s'affiche en haut à gauche du HUD (« aucune manette » sinon).
+
+| Action | Bouton | Nom gilrs |
 | --- | --- | --- |
-| Accélérer / freiner | `W` `S` (ou flèches) | `RT` / `LT` |
-| Direction (sol), lacet (air) | `A` `D` | stick gauche |
-| Saut, double saut / flip | `Espace` (2e appui + direction) | `A` |
-| Boost | clic gauche, `Ctrl` | `B` |
-| Drift (powerslide) | `Maj`, clic droit | `X` |
-| Roulis aérien | `Maj`/clic droit + `A` `D`, ou `Q` `E` | `LB` + stick |
-| Remise en jeu instantanée | `R` | `Select` |
-| Caméra balle / voiture | `C` ou `Tab` | `Y` |
-| Ralenti 0,25× – 1× | `[` `]` | |
-| Drill « tir au but » (on/off) | `F2` | |
+| Accélérer | `R2` | `RightTrigger2` |
+| Freiner / reculer | `L2` | `LeftTrigger2` |
+| Saut, double saut / flip | `Croix` (`Cross`) | `South` |
+| Boost | `R1` | `RightTrigger` |
+| Drift (powerslide) | `L1` | `LeftTrigger` |
+| Roulis libre (en l'air) | `L1` + stick gauche | `LeftTrigger` |
+| Roulis gauche | `Carré` (`Square`) | `West` |
+| Roulis droit | `L3` (clic du stick gauche) | `LeftThumb` |
+| Caméra balle / voiture | `Triangle` | `North` |
+| Remise en jeu | `Share` (DS4) / `Create` (DualSense) | `Select` |
+
+`L1` sert à la fois au drift et au roulis libre : un même bouton peut être donné à plusieurs actions.
+Pour changer une touche, éditer la section `[gamepad]` du fichier de config avec les noms PlayStation
+(`Cross`, `Circle`, `Square`, `Triangle`, `L1`, `R1`, `L2`, `R2`, `L3`, `R3`, `Share`/`Create`, `Options`, `PS`)
+ou les noms gilrs. Exemple : `jump = ["Circle"]`.
+
+#### Dépannage manette (Linux)
+
+- DualShock 4 et DualSense filaires sont reconnus par gilrs (mappings SDL intégrés) grâce aux pilotes noyau
+  `hid-sony` / `hid-playstation`, sans rien installer. Le pavé tactile et les capteurs de mouvement, que le noyau
+  expose comme périphériques séparés, sont ignorés.
+- Manette non détectée : brancher avec un **câble de données** (certains câbles ne font que charger), puis
+  appuyer sur la touche **PS** : la manette qui envoie un bouton devient la manette active.
+- Vérifier que le noyau la voit : `ls -l /dev/input/event*`. Ces fichiers doivent être lisibles par l'utilisateur :
+  sous LMDE/Debian ils sont du groupe `input` (et l'accès de la session locale est normalement donné par udev).
+  Sinon : `sudo usermod -aG input $USER`, puis se déconnecter/reconnecter.
+- Mise à jour des défauts : un `config.toml` généré automatiquement et jamais modifié côté manette est régénéré
+  tout seul (ancienne copie dans `config.toml.bak`) ; une manette personnalisée est conservée et le terminal
+  affiche un avertissement : supprimer la section `[gamepad]` pour obtenir les nouveaux défauts.
 
 Un but fait gagner un point et remet en jeu après 2,5 s. Les touches sont dans
 `~/.config/rocketsim-trainer/config.toml` (créé au premier lancement, noms de touches documentés dedans et dans
