@@ -31,6 +31,8 @@ pub struct Metrics {
     pub checkpoints_ok: u64,
     pub checkpoints_error: u64,
     pub paused: bool,
+    /// La pause en cours vient d'une lecture vidéo Jellyfin (D6) ; sinon elle est « manual ».
+    pub pause_jellyfin: bool,
     pub curriculum_stage: u32,
     pub unrecognized_sequences_total: u64,
     pub touch_total: u64,
@@ -99,8 +101,11 @@ impl Metrics {
         );
         let _ = writeln!(s, "# TYPE trainer_pause_reason gauge");
         for r in ["none", "jellyfin", "manual"] {
-            // Le learner autonome ne connaît que none/manual ; jellyfin viendra avec la pause D6 (M3).
-            let on = (r == "none" && !self.paused) || (r == "manual" && self.paused);
+            let on = match r {
+                "none" => !self.paused,
+                "jellyfin" => self.paused && self.pause_jellyfin,
+                _ => self.paused && !self.pause_jellyfin,
+            };
             let _ = writeln!(s, "trainer_pause_reason{{reason=\"{r}\"}} {}", u8::from(on));
         }
         let _ = writeln!(s, "# TYPE trainer_mechanic_total counter");

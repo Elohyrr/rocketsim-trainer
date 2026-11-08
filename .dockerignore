@@ -1,0 +1,6 @@
+target
+.git
+collision_meshes
+runs
+docs
+*.md

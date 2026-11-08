@@ -298,6 +298,11 @@ impl Trainer {
     }
 
     /// Logits de la politique pour une observation (backend burn), pour les tests d'équivalence.
+    /// Change la config de l'env (palier de curriculum), effective au prochain épisode de chaque env.
+    pub fn set_env_config(&mut self, cfg: &EnvConfig) {
+        self.env.set_config(cfg);
+    }
+
     pub fn policy_logits(&self, obs: &[f32]) -> Vec<f32> {
         let x = tensor2(obs.to_vec(), 1, self.obs_dim, &self.plain);
         to_vec(self.model.valid().policy.forward(x))
