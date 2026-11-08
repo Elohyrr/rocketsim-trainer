@@ -20,6 +20,9 @@ jobs:
     runs-on: ubuntu-latest
     # Debian 12 : glibc/libstdc++ anciennes, le binaire tourne aussi sur LMDE 6 et plus récent.
     container: debian:12
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Dépendances
         run: |

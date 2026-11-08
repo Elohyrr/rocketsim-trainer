@@ -237,7 +237,7 @@ fn hud(w: &World, pad_connected: bool, binds_warn: &[String], show_help: bool) {
     draw_text(format!("{speed:.0} km/h"), bx, by + 56.0, 34.0, WHITE);
     // Etat
     let info = format!(
-        "{} FPS | camera {} | vitesse {:.2}x | {}",
+        "{} FPS | cam {} | x{:.2} | {}",
         get_fps(),
         if w.ball_cam { "balle" } else { "voiture" },
         w.time_scale,

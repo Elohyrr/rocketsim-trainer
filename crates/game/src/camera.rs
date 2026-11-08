@@ -54,7 +54,7 @@ impl Cam {
         let ang = a0 + da * k;
         self.dir = vec2(ang.cos(), ang.sin());
 
-        let (dist, height) = (300.0, 130.0);
+        let (dist, height) = (380.0, 150.0);
         let mut pos = [
             cp[0] - self.dir.x * dist,
             cp[1] - self.dir.y * dist,
@@ -68,7 +68,7 @@ impl Cam {
             [
                 cp[0] + (ball[0] - cp[0]) * 0.8,
                 cp[1] + (ball[1] - cp[1]) * 0.8,
-                (cp[2] + (ball[2] - cp[2]) * 0.8).max(60.0),
+                (cp[2] + (ball[2] - cp[2]) * 0.8).max(90.0),
             ]
         } else {
             [
