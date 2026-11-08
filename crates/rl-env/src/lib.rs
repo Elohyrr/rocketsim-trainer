@@ -157,7 +157,7 @@ impl Default for EnvConfig {
             max_steps: 150,
             end_on_touch: true,
             touch_reward: 1.0,
-            approach_weight: 0.01,
+            approach_weight: 0.1,
             min_spawn_dist: 1000.0,
             start_boost: 33.0,
         }
@@ -646,7 +646,7 @@ mod tests {
                 let r = e.step(a);
                 if r.touched {
                     hits += 1;
-                    assert!(r.reward >= cfg.touch_reward - 0.02);
+                    assert!(r.reward >= cfg.touch_reward - cfg.approach_weight - 0.01);
                     break;
                 }
                 if r.truncated {
