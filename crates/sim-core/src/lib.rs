@@ -182,9 +182,11 @@ impl Sim {
 
     /// Remet la balle au repos, vitesse angulaire nulle.
     pub fn reset_ball(&mut self, pos: V3, vel: V3) {
-        let mut b = rocketsim_rs::sim::BallState::default();
-        b.pos = rocketsim_rs::math::Vec3::new(pos[0], pos[1], pos[2]);
-        b.vel = rocketsim_rs::math::Vec3::new(vel[0], vel[1], vel[2]);
+        let b = rocketsim_rs::sim::BallState {
+            pos: rocketsim_rs::math::Vec3::new(pos[0], pos[1], pos[2]),
+            vel: rocketsim_rs::math::Vec3::new(vel[0], vel[1], vel[2]),
+            ..Default::default()
+        };
         self.arena.pin_mut().set_ball(b);
     }
 
