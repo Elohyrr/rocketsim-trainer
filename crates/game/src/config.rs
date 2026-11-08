@@ -327,6 +327,13 @@ fn write_config(path: &Path, c: &Config) {
     }
 }
 
+/// Remet les valeurs par défaut ; l'ancien fichier est copié en `config.toml.bak`. Retourne la copie.
+pub fn reset(path: &Path) -> std::io::Result<Option<PathBuf>> {
+    let bak = rst_core::commands::backup(path)?;
+    write_config(path, &Config::default());
+    Ok(bak)
+}
+
 /// Charge la config ; la crée avec les valeurs par défaut si absente. Un fichier d'une version
 /// plus ancienne est mis à niveau (sauvegarde en `config.toml.bak`) si la manette n'a jamais été
 /// personnalisée ; sinon il est gardé et un avertissement est retourné. En cas d'erreur de lecture,

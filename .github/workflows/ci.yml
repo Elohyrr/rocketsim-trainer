@@ -32,6 +32,7 @@ jobs:
           path: collision_meshes
           key: meshes-${{ hashFiles('scripts/fetch-meshes.sh', 'scripts/meshes.sha256') }}
       - run: scripts/fetch-meshes.sh
+      - run: shellcheck scripts/install.sh
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
