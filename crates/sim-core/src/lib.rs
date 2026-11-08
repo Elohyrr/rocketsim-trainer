@@ -98,6 +98,13 @@ pub struct CarSnapshot {
     pub has_flip_or_jump: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PadSnapshot {
+    pub pos: V3,
+    pub big: bool,
+    pub active: bool,
+}
+
 /// État complet observable de la simulation (JSON/bincode-friendly).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -144,6 +151,51 @@ impl Sim {
         b.pos = rocketsim_rs::math::Vec3::new(pos[0], pos[1], pos[2]);
         b.vel = rocketsim_rs::math::Vec3::new(vel[0], vel[1], vel[2]);
         self.arena.pin_mut().set_ball(b);
+    }
+
+    /// Remet voitures et balle en position de coup d'envoi (position tirée de `seed`), boost à 33.
+    pub fn reset_kickoff(&mut self, seed: i32) {
+        self.arena
+            .pin_mut()
+            .reset_to_random_kickoff(Some(seed as u32));
+    }
+
+    /// Vrai quand la balle a franchi une ligne de but (y = ±5120 en unreal units).
+    pub fn ball_scored(&self) -> bool {
+        self.arena.is_ball_scored()
+    }
+
+    /// Place voiture (position, lacet en radians, vitesse nulle) et boost. Pour les drills.
+    pub fn place_car(&mut self, car: u32, pos: V3, yaw: f32, boost: f32) -> Result<(), SimError> {
+        let mut c = self.arena.pin_mut().get_car(car);
+        c.pos = rocketsim_rs::math::Vec3::new(pos[0], pos[1], pos[2]);
+        c.rot_mat = rocketsim_rs::math::Angle {
+            yaw,
+            pitch: 0.,
+            roll: 0.,
+        }
+        .to_rotmat();
+        c.vel = rocketsim_rs::math::Vec3::new(0., 0., 0.);
+        c.ang_vel = rocketsim_rs::math::Vec3::new(0., 0., 0.);
+        c.boost = boost;
+        self.arena
+            .pin_mut()
+            .set_car(car, c)
+            .map_err(|_| SimError::UnknownCar(car))
+    }
+
+    /// Boosts au sol : position, grosse (100) ou petite (12), et disponibilité.
+    pub fn pads(&self) -> Vec<PadSnapshot> {
+        (0..self.arena.num_pads())
+            .map(|i| {
+                let c = self.arena.get_pad_config(i);
+                PadSnapshot {
+                    pos: v(c.position),
+                    big: c.is_big,
+                    active: self.arena.get_pad_state(i).is_active,
+                }
+            })
+            .collect()
     }
 
     pub fn step(&mut self, ticks: u32) {
