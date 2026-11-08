@@ -41,7 +41,7 @@ jobs:
           key: release-v2
       # Tests avec les vrais meshes (jamais inclus dans le paquet).
       - run: scripts/fetch-meshes.sh
-      - run: cargo test --release -p game -p sim-core
+      - run: cargo test --release -p game -p sim-core -p rst-core
         env:
           ROCKETSIM_MESHES_DIR: ${{ github.workspace }}/collision_meshes
       - run: cargo build --release -p game
@@ -49,22 +49,33 @@ jobs:
         run: |
           name="rocketsim-trainer-${GITHUB_REF_NAME//\//-}-linux-x86_64"
           mkdir "$name"
-          cp target/release/game "$name/rocketsim-trainer"
+          cp target/release/game "$name/rst"
           cp README.md LICENSE "$name/"
-          strip "$name/rocketsim-trainer"
+          strip "$name/rst"
           tar -czf "$name.tar.gz" "$name"
-          # Binaire nu aussi : télécharger, chmod +x, lancer.
-          cp target/release/game rocketsim-trainer-linux-x86_64
-          strip rocketsim-trainer-linux-x86_64
-          ls -l rocketsim-trainer-linux-x86_64 "$name.tar.gz"
+          # Binaire nu : `rst` (nom court, utilisé par `rst update`) et l'ancien nom (liens existants).
+          cp target/release/game rst-linux-x86_64
+          strip rst-linux-x86_64
+          cp rst-linux-x86_64 rocketsim-trainer-linux-x86_64
+          # Empreintes lues par `rst update` et scripts/install.sh.
+          sha256sum rst-linux-x86_64 rocketsim-trainer-linux-x86_64 "$name.tar.gz" > SHA256SUMS
+          cat SHA256SUMS
+          ls -l rst-linux-x86_64 rocketsim-trainer-linux-x86_64 "$name.tar.gz"
           echo "ARCHIVE=$name.tar.gz" >> "$GITHUB_ENV"
+      - name: Test de fumée
+        run: |
+          ./rst-linux-x86_64 version
+          ./rst-linux-x86_64 --help
+          ./rst-linux-x86_64 update --help
       - name: Dépendances dynamiques (contrôle)
-        run: ldd rocketsim-trainer-linux-x86_64; objdump -T rocketsim-trainer-linux-x86_64 | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+        run: ldd rst-linux-x86_64; objdump -T rst-linux-x86_64 | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
       - uses: actions/upload-artifact@v4
         with:
           name: linux-x86_64
           path: |
+            rst-linux-x86_64
             rocketsim-trainer-linux-x86_64
+            SHA256SUMS
             ${{ env.ARCHIVE }}
   publish:
     needs: build
@@ -81,4 +92,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes \
-            --title "$GITHUB_REF_NAME" rocketsim-trainer-linux-x86_64 ./*.tar.gz
+            --title "$GITHUB_REF_NAME" rst-linux-x86_64 rocketsim-trainer-linux-x86_64 SHA256SUMS ./*.tar.gz

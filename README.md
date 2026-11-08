@@ -7,6 +7,18 @@ apprentissage par renforcement, en Rust, basés sur [RocketSim](https://github.c
 > texture, logo ou nom de marque du jeu. Le rendu n'emploie que des primitives (boîtes, sphères, lignes).
 > Utilisation **hors ligne uniquement** ; le bot ne joue jamais en ligne ni en classé.
 
+## Installation rapide (Linux x86_64)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Elohyrr/rocketsim-trainer/main/scripts/install.sh | sh
+rst            # jouer
+rst update     # mises à jour (SHA256 vérifié)
+```
+
+Le script installe `~/.local/bin/rst` (vérification SHA256, aucun droit root). Commandes : `rst play [--drill]`,
+`rst update [--check]`, `rst install` / `rst uninstall [--purge]`, `rst version`, `rst doctor` (diagnostic),
+`rst config [path|show|edit|reset]`, `rst meshes [--force]`, `rst --help`. Sans argument, `rst` lance le jeu.
+
 ## État
 
 Jalon **M1** (jouable) : client `game` (macroquad), clavier/souris + manette. Avant : M0 (socle, `sim-core`). Voir [`docs/plans/`](docs/plans/)
@@ -14,15 +26,15 @@ et la [spécification](docs/specs/rocketsim-trainer.md). Décisions : [`docs/dec
 
 ## Crates
 
-`sim-core` (simulation) · `scenarios` (drills) · `game` (client jouable) · `rl-env` (env RL) · `learner` (PPO)
+`sim-core` (simulation) · `scenarios` (drills) · `game` (client jouable, outil `rst`) · `rst-core` (mise à jour, installation, CLI) · `rl-env` (env RL) · `learner` (PPO)
 · `policy-runtime` (inférence légère).
 
 ## Jouer (Linux x86_64)
 
 ```sh
-curl -LO https://github.com/Elohyrr/rocketsim-trainer/releases/latest/download/rocketsim-trainer-linux-x86_64
-chmod +x rocketsim-trainer-linux-x86_64
-./rocketsim-trainer-linux-x86_64
+curl -LO https://github.com/Elohyrr/rocketsim-trainer/releases/latest/download/rst-linux-x86_64
+chmod +x rst-linux-x86_64
+./rst-linux-x86_64          # l'ancien nom rocketsim-trainer-linux-x86_64 reste publié
 ```
 
 Au premier lancement, le jeu télécharge et vérifie lui-même les meshes de collision (voir plus bas) dans

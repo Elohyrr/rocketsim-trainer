@@ -1,6 +1,7 @@
 //! Client jouable : fenêtre macroquad, saisie clavier/souris/manette, boucle à pas fixe via `game::world`.
 
 mod camera;
+mod cmd;
 mod render;
 
 use std::sync::mpsc;
@@ -12,6 +13,7 @@ use game::pad::Pad;
 use game::world::{Event, Mode, World};
 use macroquad::miniquad::conf::{LinuxBackend, Platform};
 use macroquad::prelude::*;
+use rst_core::cli::{Cmd, PlayArgs};
 
 fn window_conf() -> macroquad::conf::Conf {
     macroquad::conf::Conf {
@@ -319,25 +321,23 @@ fn speed_lines(t: f32) {
     }
 }
 
-#[macroquad::main(window_conf)]
-async fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let arg = |name: &str| {
-        args.iter()
-            .position(|a| a == name)
-            .and_then(|i| args.get(i + 1))
-            .cloned()
-    };
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!(
-            "rocketsim-trainer : client jouable\n  --screenshot <fichier.png> [--frames N] [--demo]   capture puis quitte\nConfig : {}",
-            config::config_path().display()
-        );
-        return;
+fn main() {
+    let cli = rst_core::cli::parse();
+    match cli.cmd {
+        None => play(cli.play),
+        Some(Cmd::Play(a)) => play(a),
+        Some(other) => std::process::exit(cmd::run(other)),
     }
-    let screenshot = arg("--screenshot");
-    let demo = args.iter().any(|a| a == "--demo");
-    let frames: u32 = arg("--frames").and_then(|s| s.parse().ok()).unwrap_or(240);
+}
+
+fn play(args: PlayArgs) {
+    macroquad::Window::from_config(window_conf(), run(args));
+}
+
+async fn run(args: PlayArgs) {
+    let screenshot = args.screenshot;
+    let demo = args.demo;
+    let frames = args.frames;
 
     let dir = match ensure_meshes().await {
         Ok(d) => d,
@@ -354,6 +354,9 @@ async fn main() {
         return;
     }
     let mut world = World::new().expect("arène");
+    if args.drill {
+        world.toggle_drill();
+    }
     let (cfg, cfg_err) = config::load_or_create(&config::config_path());
     let mut warnings: Vec<String> = cfg_err.into_iter().collect();
     let binds = Binds::new(&cfg, &mut warnings);
