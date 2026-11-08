@@ -148,6 +148,8 @@ pub struct EnvConfig {
     pub min_spawn_dist: f32,
     /// Boost initial (0–100).
     pub start_boost: f32,
+    /// Récompense d'un but marqué dans le but adverse (la balle franchit le fond du terrain côté +Y).
+    pub goal_reward: f32,
 }
 
 impl Default for EnvConfig {
@@ -160,6 +162,31 @@ impl Default for EnvConfig {
             approach_weight: 0.1,
             min_spawn_dist: 1000.0,
             start_boost: 33.0,
+            goal_reward: 0.0,
+        }
+    }
+}
+
+impl EnvConfig {
+    /// Config d'un palier de curriculum (voir `docs/curriculum.md`) :
+    /// 0 = aller vers la balle, 1 = toucher la balle, 2 = marquer. Au-delà : palier 2.
+    pub fn for_stage(stage: u32) -> Self {
+        let base = Self::default();
+        match stage {
+            0 => Self {
+                approach_weight: 0.3,
+                touch_reward: 3.0,
+                ..base
+            },
+            1 => base,
+            _ => Self {
+                end_on_touch: false,
+                max_steps: 300,
+                touch_reward: 0.1,
+                approach_weight: 0.05,
+                goal_reward: 10.0,
+                ..base
+            },
         }
     }
 }
@@ -208,6 +235,11 @@ impl Env {
 
     pub fn action_count(&self) -> usize {
         self.actions.len()
+    }
+
+    /// Change la configuration (palier de curriculum) ; effective à partir du prochain épisode.
+    pub fn set_config(&mut self, cfg: EnvConfig) {
+        self.cfg = cfg;
     }
 
     /// Reset aléatoire : voiture et balle tirées dans le terrain, distance minimale entre elles.
@@ -272,6 +304,11 @@ impl Env {
             reward += self.cfg.touch_reward;
         }
         let scored = self.sim.is_ball_scored();
+        // But pour nous : la balle est au fond du terrain côté +Y (but orange).
+        let our_goal = scored && snap.ball.pos[1] > 0.0;
+        if our_goal {
+            reward += self.cfg.goal_reward;
+        }
         StepInfo {
             reward,
             terminated: scored || (touched && self.cfg.end_on_touch),
@@ -365,6 +402,7 @@ struct Reply {
 enum Cmd {
     Step(Vec<usize>),
     Reset,
+    Config(EnvConfig),
     Stop,
 }
 
@@ -457,6 +495,17 @@ impl VecEnv {
         self.gather().obs
     }
 
+    /// Applique une nouvelle configuration à tous les envs (effective au prochain épisode de chacun).
+    pub fn set_config(&mut self, cfg: &EnvConfig) {
+        for w in &self.workers {
+            w.tx.send(Cmd::Config(cfg.clone())).expect("worker");
+        }
+        // Chaque worker répond à toute commande : on vide les réponses pour rester synchrone.
+        for _ in &self.workers {
+            self.rx.recv().expect("worker");
+        }
+    }
+
     /// Une décision par env (`actions.len() == n_envs`).
     pub fn step(&mut self, actions: &[usize]) -> VecStep {
         assert_eq!(actions.len(), self.n_envs, "une action par env");
@@ -524,6 +573,11 @@ fn worker_loop(
         };
         match cmd {
             Cmd::Stop => return,
+            Cmd::Config(c) => {
+                for e in &mut envs {
+                    e.set_config(c.clone());
+                }
+            }
             Cmd::Reset => {
                 for (i, e) in envs.iter_mut().enumerate() {
                     reply.obs.extend_from_slice(&e.reset());
