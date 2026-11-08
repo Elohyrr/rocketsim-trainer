@@ -183,7 +183,7 @@ async fn ensure_meshes() -> Result<std::path::PathBuf, String> {
     }
 }
 
-fn hud(w: &World, pad_connected: bool, binds_warn: &[String], show_help: bool) {
+fn hud(w: &World, pad_name: Option<&str>, binds_warn: &[String], show_help: bool) {
     let (sw, sh) = (screen_width(), screen_height());
     // Score
     let score = format!("BLEU {}  -  {} ORANGE", w.score[0], w.score[1]);
@@ -241,10 +241,9 @@ fn hud(w: &World, pad_connected: bool, binds_warn: &[String], show_help: bool) {
         get_fps(),
         if w.ball_cam { "balle" } else { "voiture" },
         w.time_scale,
-        if pad_connected {
-            "manette"
-        } else {
-            "clavier/souris"
+        match pad_name {
+            Some(n) => format!("manette : {n}"),
+            None => "aucune manette (appuyer sur PS)".to_string(),
         }
     );
     draw_text(
@@ -385,7 +384,7 @@ async fn main() {
                 Color::new(1.0, 0.9, 0.4, goal_flash * 0.25),
             );
         }
-        hud(&world, pad.connected(), &warnings, help_t > 0.0);
+        hud(&world, pad.name().as_deref(), &warnings, help_t > 0.0);
 
         frame += 1;
         if let Some(path) = &screenshot {

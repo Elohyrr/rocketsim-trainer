@@ -79,9 +79,11 @@ impl Default for Keyboard {
     }
 }
 
-/// Manette (noms gilrs) : `South` (A), `East` (B), `West` (X), `North` (Y), `LeftTrigger` (LB),
-/// `RightTrigger` (RB), `LeftTrigger2` (LT), `RightTrigger2` (RT), `Select`, `Start`, `LeftThumb`,
-/// `RightThumb`, `DPadUp`…
+/// Manette. Noms PlayStation : `Cross`, `Circle`, `Square`, `Triangle`, `L1`, `R1`, `L2`, `R2`, `L3`,
+/// `R3`, `Share` (ou `Create`), `Options`, `PS`. Les noms gilrs restent acceptés : `South` (Cross),
+/// `East` (Circle), `West` (Square), `North` (Triangle), `LeftTrigger` (L1), `RightTrigger` (R1),
+/// `LeftTrigger2` (L2), `RightTrigger2` (R2), `LeftThumb` (L3), `RightThumb` (R3), `Select` (Share),
+/// `Start` (Options), `Mode` (PS), `DPadUp`… Un même bouton peut servir à plusieurs actions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Gamepad {
@@ -91,32 +93,98 @@ pub struct Gamepad {
     pub jump: Names,
     pub boost: Names,
     pub powerslide: Names,
+    /// Maintenu : le stick gauche devient un roulis libre en l'air.
     pub air_roll: Names,
+    pub air_roll_left: Names,
+    pub air_roll_right: Names,
     pub reset: Names,
     pub toggle_ball_cam: Names,
 }
 
+/// Défauts manette = layout de Leo (DualShock 4 / DualSense) : R2 accélère, L2 freine/recule,
+/// Cross saute, R1 boost, L1 powerslide et roulis libre (même bouton), Square roulis gauche,
+/// L3 (clic du stick gauche) roulis droit, Triangle caméra balle, Share remet en jeu.
 impl Default for Gamepad {
     fn default() -> Self {
         Self {
             deadzone: 0.15,
-            accelerate: n(&["RightTrigger2"]),
-            brake: n(&["LeftTrigger2"]),
-            jump: n(&["South"]),
-            boost: n(&["East"]),
-            powerslide: n(&["West"]),
-            air_roll: n(&["LeftTrigger"]),
-            reset: n(&["Select"]),
-            toggle_ball_cam: n(&["North"]),
+            accelerate: n(&["R2"]),
+            brake: n(&["L2"]),
+            jump: n(&["Cross"]),
+            boost: n(&["R1"]),
+            powerslide: n(&["L1"]),
+            air_roll: n(&["L1"]),
+            air_roll_left: n(&["Square"]),
+            air_roll_right: n(&["L3"]),
+            reset: n(&["Share"]),
+            toggle_ball_cam: n(&["Triangle"]),
         }
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// Version du format et des défauts. Un fichier sans `config_version` (ou plus ancien) a été écrit
+/// avec les défauts d'avant : voir [`migrate`].
+pub const CONFIG_VERSION: u32 = 2;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub config_version: u32,
     pub keyboard: Keyboard,
     pub gamepad: Gamepad,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            config_version: CONFIG_VERSION,
+            keyboard: Keyboard::default(),
+            gamepad: Gamepad::default(),
+        }
+    }
+}
+
+/// Section manette telle que les versions < 2 l'écrivaient au premier lancement.
+fn gamepad_v1() -> Gamepad {
+    Gamepad {
+        accelerate: n(&["RightTrigger2"]),
+        brake: n(&["LeftTrigger2"]),
+        jump: n(&["South"]),
+        boost: n(&["East"]),
+        powerslide: n(&["West"]),
+        air_roll: n(&["LeftTrigger"]),
+        reset: n(&["Select"]),
+        toggle_ball_cam: n(&["North"]),
+        // absents du fichier v1 : ils prennent leur défaut à la lecture
+        ..Gamepad::default()
+    }
+}
+
+/// Issue de [`migrate`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Migration {
+    /// Fichier à jour.
+    None,
+    /// Section manette jamais modifiée : remplacée par les nouveaux défauts (à réécrire).
+    Updated,
+    /// Section manette personnalisée sur un fichier ancien : conservée telle quelle.
+    KeptCustom,
+}
+
+/// Met à niveau une config lue depuis un fichier de version `file_version` (0 = absente).
+/// Un fichier généré automatiquement et non modifié reçoit les nouveaux défauts ; sinon les
+/// réglages de l'utilisateur sont gardés.
+pub fn migrate(mut c: Config, file_version: u32) -> (Config, Migration) {
+    if file_version >= CONFIG_VERSION {
+        return (c, Migration::None);
+    }
+    c.config_version = CONFIG_VERSION;
+    if c.gamepad == gamepad_v1() {
+        c.gamepad = Gamepad::default();
+        (c, Migration::Updated)
+    } else {
+        (c, Migration::KeptCustom)
+    }
 }
 
 /// Une touche ou un bouton de souris.
@@ -250,31 +318,62 @@ pub fn config_path() -> PathBuf {
 const HEADER: &str = "# rocketsim-trainer : touches et manette. Supprimer ce fichier pour revenir aux valeurs par défaut.\n\
 # Chaque action prend un nom ou une liste de noms (voir docs dans le README).\n\n";
 
-/// Charge la config ; la crée avec les valeurs par défaut si absente. En cas d'erreur de lecture,
+fn write_config(path: &Path, c: &Config) {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(body) = toml::to_string_pretty(c) {
+        let _ = std::fs::write(path, format!("{HEADER}{body}"));
+    }
+}
+
+/// Charge la config ; la crée avec les valeurs par défaut si absente. Un fichier d'une version
+/// plus ancienne est mis à niveau (sauvegarde en `config.toml.bak`) si la manette n'a jamais été
+/// personnalisée ; sinon il est gardé et un avertissement est retourné. En cas d'erreur de lecture,
 /// retourne les valeurs par défaut et un message.
 pub fn load_or_create(path: &Path) -> (Config, Option<String>) {
-    match std::fs::read_to_string(path) {
-        Ok(s) => match toml::from_str::<Config>(&s) {
-            Ok(c) => (c, None),
-            Err(e) => (
+    let Ok(s) = std::fs::read_to_string(path) else {
+        let c = Config::default();
+        write_config(path, &c);
+        return (c, None);
+    };
+    let parsed = toml::from_str::<Config>(&s).and_then(|c| {
+        let v = toml::from_str::<toml::Table>(&s)?
+            .get("config_version")
+            .and_then(toml::Value::as_integer)
+            .map_or(0, |v| u32::try_from(v).unwrap_or(0));
+        Ok((c, v))
+    });
+    let (c, version) = match parsed {
+        Ok(x) => x,
+        Err(e) => {
+            return (
                 Config::default(),
                 Some(format!(
                     "{} illisible, valeurs par défaut : {e}",
                     path.display()
                 )),
-            ),
-        },
-        Err(_) => {
-            let c = Config::default();
-            if let Some(dir) = path.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            if let Ok(body) = toml::to_string_pretty(&c) {
-                let _ = std::fs::write(path, format!("{HEADER}{body}"));
-            }
-            (c, None)
+            );
         }
-    }
+    };
+    let (c, outcome) = migrate(c, version);
+    let note = match outcome {
+        Migration::None => None,
+        Migration::Updated => {
+            let _ = std::fs::copy(path, path.with_extension("toml.bak"));
+            write_config(path, &c);
+            eprintln!(
+                "config : {} mis à jour avec les nouveaux défauts manette (ancienne copie : config.toml.bak)",
+                path.display()
+            );
+            None
+        }
+        Migration::KeptCustom => Some(format!(
+            "{} est ancien et la manette y est personnalisée : réglages gardés, nouveaux défauts manette (R2, L2, Cross, R1, L1…) non appliqués ; supprimez la section [gamepad] pour les obtenir",
+            path.display()
+        )),
+    };
+    (c, note)
 }
 
 #[cfg(test)]
@@ -329,5 +428,84 @@ mod tests {
     fn digits_and_lowercase_letters_parse() {
         assert_eq!(parse_bind("w"), Some(Bind::Key(KeyCode::W)));
         assert_eq!(parse_bind("1"), Some(Bind::Key(KeyCode::Key1)));
+    }
+
+    #[test]
+    fn leo_gamepad_defaults() {
+        let g = Gamepad::default();
+        let one = |s: &str| n(&[s]);
+        assert_eq!(g.accelerate, one("R2"));
+        assert_eq!(g.brake, one("L2"));
+        assert_eq!(g.jump, one("Cross"));
+        assert_eq!(g.boost, one("R1"));
+        assert_eq!(g.powerslide, one("L1"));
+        assert_eq!(g.air_roll, one("L1"));
+        assert_eq!(g.air_roll_left, one("Square"));
+        assert_eq!(g.air_roll_right, one("L3"));
+        assert_eq!(g.toggle_ball_cam, one("Triangle"));
+        assert_eq!(g.reset, one("Share"));
+    }
+
+    #[test]
+    fn unmodified_v1_file_is_upgraded() {
+        // Section manette telle que l'ancienne version l'écrivait (sans les champs de roulis).
+        let text = V1_GAMEPAD;
+        let parsed: Config = toml::from_str(text).unwrap();
+        assert_eq!(parsed.gamepad, gamepad_v1());
+        let (c, m) = migrate(parsed, 0);
+        assert_eq!(m, Migration::Updated);
+        assert_eq!(c, Config::default());
+    }
+
+    #[test]
+    fn customized_v1_gamepad_is_kept() {
+        let c = Config {
+            gamepad: Gamepad {
+                jump: n(&["East"]),
+                ..gamepad_v1()
+            },
+            ..Config::default()
+        };
+        let (k, m) = migrate(c, 1);
+        assert_eq!(m, Migration::KeptCustom);
+        assert_eq!(k.gamepad.jump, n(&["East"]));
+        assert_eq!(k.config_version, CONFIG_VERSION);
+    }
+
+    #[test]
+    fn current_version_is_untouched() {
+        let c = Config {
+            gamepad: Gamepad {
+                jump: n(&["Circle"]),
+                ..Gamepad::default()
+            },
+            ..Config::default()
+        };
+        let (k, m) = migrate(c.clone(), CONFIG_VERSION);
+        assert_eq!((k, m), (c, Migration::None));
+    }
+
+    const V1_GAMEPAD: &str = "[gamepad]\ndeadzone = 0.15\naccelerate = [\"RightTrigger2\"]\nbrake = [\"LeftTrigger2\"]\njump = [\"South\"]\nboost = [\"East\"]\npowerslide = [\"West\"]\nair_roll = [\"LeftTrigger\"]\nreset = [\"Select\"]\ntoggle_ball_cam = [\"North\"]\n";
+
+    #[test]
+    fn file_upgrade_writes_backup_then_is_stable() {
+        let dir = std::env::temp_dir().join(format!("rst-cfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, V1_GAMEPAD).unwrap();
+        let (c, warn) = load_or_create(&path);
+        assert!(warn.is_none());
+        assert_eq!(c, Config::default());
+        assert!(dir.join("config.toml.bak").exists());
+        let (c2, warn2) = load_or_create(&path);
+        assert!(warn2.is_none());
+        assert_eq!(c2, Config::default());
+        // fichier ancien personnalisé : gardé, avec avertissement
+        std::fs::write(&path, V1_GAMEPAD.replace("South", "East")).unwrap();
+        let (c3, warn3) = load_or_create(&path);
+        assert!(warn3.is_some());
+        assert_eq!(c3.gamepad.jump, Names::Many(vec!["East".into()]));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
