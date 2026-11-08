@@ -235,6 +235,17 @@ fn hud(w: &World, pad_name: Option<&str>, binds_warn: &[String], show_help: bool
     let v = car.vel;
     let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt() * 0.036;
     draw_text(format!("{speed:.0} km/h"), bx, by + 56.0, 34.0, WHITE);
+    if w.supersonic {
+        let t = "SUPERSONIQUE";
+        let d = measure_text(t, None, 30, 1.0);
+        draw_text(
+            t,
+            bx + bw - d.width,
+            by + 56.0 + 0.0,
+            30.0,
+            Color::from_rgba(120, 220, 255, 255),
+        );
+    }
     // Etat
     let info = format!(
         "{} FPS | cam {} | x{:.2} | {}",
@@ -285,6 +296,29 @@ fn hud(w: &World, pad_name: Option<&str>, binds_warn: &[String], show_help: bool
     }
 }
 
+/// Lignes de vitesse sur les bords de l'écran en supersonique : traits qui filent du centre vers
+/// l'extérieur, position et longueur dérivées du temps (pas d'aléatoire, pas de ressource externe).
+fn speed_lines(t: f32) {
+    let (sw, sh) = (screen_width(), screen_height());
+    let (cx, cy) = (sw / 2.0, sh / 2.0);
+    let reach = (cx * cx + cy * cy).sqrt();
+    for i in 0..28 {
+        let phase = (t * 2.2 + i as f32 * 0.6180339).fract();
+        let ang = (i as f32 * 2.3999631 + (t * 0.3).floor()) % std::f32::consts::TAU;
+        let (dx, dy) = (ang.cos(), ang.sin());
+        let (r0, r1) = (reach * (0.55 + 0.4 * phase), reach * (0.62 + 0.55 * phase));
+        let a = (1.0 - phase) * 0.35;
+        draw_line(
+            cx + dx * r0,
+            cy + dy * r0,
+            cx + dx * r1,
+            cy + dy * r1,
+            2.0,
+            Color::new(0.8, 0.95, 1.0, a),
+        );
+    }
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -327,8 +361,15 @@ async fn main() {
     for w in &warnings {
         eprintln!("config : {w}");
     }
-    let arena = render::ArenaRender::new(&game::arena_geo::build());
-    let mut cam = camera::Cam::new();
+    // Coque exacte tirée des meshes de collision ; primitives seules si elle est illisible.
+    let arena = match game::shell::load(&dir) {
+        Ok(shell) => render::ArenaRender::new(&game::arena_geo::build_filler(), Some(&shell)),
+        Err(e) => {
+            eprintln!("terrain : {e} (primitives de secours)");
+            render::ArenaRender::new(&game::arena_geo::build(), None)
+        }
+    };
+    let mut cam = camera::Cam::new(cfg.camera.clone());
     if binds.mouse_air {
         set_cursor_grab(true);
         show_mouse(false);
@@ -375,6 +416,9 @@ async fn main() {
         set_camera(&cam.update(&world, dt));
         render::draw_world(&world, &arena);
         set_default_camera();
+        if world.supersonic {
+            speed_lines(get_time() as f32);
+        }
         if goal_flash > 0.0 {
             draw_rectangle(
                 0.0,

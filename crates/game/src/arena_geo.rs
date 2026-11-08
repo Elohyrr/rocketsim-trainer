@@ -155,6 +155,68 @@ pub fn inside_footprint(x: f32, y: f32, inset: f32) -> bool {
         && ax + ay <= HALF_X + HALF_Y - CHAMFER - inset * std::f32::consts::SQRT_2
 }
 
+/// Décalage (uu) des surfaces de remplissage derrière la coque réelle, pour éviter le z-fighting.
+const BEHIND: f32 = 3.0;
+
+/// Surfaces de remplissage à dessiner **derrière** la coque tirée des meshes de collision
+/// ([`crate::shell`]) : sol, parois droites et fond de cage, décalés de [`BEHIND`] vers l'extérieur.
+/// Les rampes, coins et parois courbes viennent des meshes ; les marquages et le quadrillage du sol
+/// restent ceux de [`build`]. Les arêtes viennent des plis de la coque (pas de profil approximatif).
+pub fn build_filler() -> ArenaGeo {
+    let mut g = build();
+    g.tris.clear();
+    g.lines.retain(|l| {
+        !matches!(l.kind, LineKind::Edge) && !(l.a[2] > 10.0 && matches!(l.kind, LineKind::Grid))
+    });
+    let fp = footprint();
+    let n = fp.len();
+    for i in 0..n {
+        let (a, b) = (fp[i], fp[(i + 1) % n]);
+        let gap = in_goal_gap(a) && in_goal_gap(b);
+        let z0 = if gap { GOAL_H } else { 0.0 };
+        g.quad(
+            at(a, -BEHIND, z0),
+            at(b, -BEHIND, z0),
+            at(b, -BEHIND, HEIGHT),
+            at(a, -BEHIND, HEIGHT),
+            Surf::Wall,
+        );
+        for (z, surf) in [(-BEHIND, Surf::Floor), (HEIGHT + BEHIND, Surf::Ceiling)] {
+            g.tris.push(Tri {
+                v: [[0.0, 0.0, z], at(a, 0.0, z), at(b, 0.0, z)],
+                surf,
+            });
+        }
+    }
+    for s in [-1.0_f32, 1.0] {
+        let surf = if s < 0.0 {
+            Surf::GoalBlue
+        } else {
+            Surf::GoalOrange
+        };
+        let (y_in, yb) = (s * HALF_Y, s * (HALF_Y + GOAL_DEPTH + BEHIND));
+        let (w, h) = (GOAL_HALF_W + BEHIND, GOAL_H + BEHIND);
+        g.quad(
+            [-w, y_in, -BEHIND],
+            [w, y_in, -BEHIND],
+            [w, yb, -BEHIND],
+            [-w, yb, -BEHIND],
+            Surf::Floor,
+        );
+        g.quad([-w, yb, 0.0], [w, yb, 0.0], [w, yb, h], [-w, yb, h], surf);
+        g.quad(
+            [-w, y_in, 0.0],
+            [-w, yb, 0.0],
+            [-w, yb, h],
+            [-w, y_in, h],
+            surf,
+        );
+        g.quad([w, y_in, 0.0], [w, yb, 0.0], [w, yb, h], [w, y_in, h], surf);
+        g.quad([-w, y_in, h], [w, y_in, h], [w, yb, h], [-w, yb, h], surf);
+    }
+    g
+}
+
 pub fn build() -> ArenaGeo {
     let mut g = ArenaGeo::default();
     let fp = footprint();
