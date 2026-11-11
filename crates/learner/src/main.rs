@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use learner::curriculum::Curriculum;
+use learner::curriculum::{Curriculum, IterResult, Move};
 use learner::jellyfin::Jellyfin;
 use learner::metrics::{Metrics, serve};
 use learner::pause::PauseGate;
@@ -170,10 +170,11 @@ fn main() {
     let t0 = Instant::now();
     let limit = (minutes > 0.0).then(|| Duration::from_secs_f64(minutes * 60.0));
     let (mut steps, mut eps, mut touches) = (0u64, 0u64, 0u64);
+    let (mut goals, mut own_goals) = (0u64, 0u64);
     let mut it = 0;
     let mut saver_last = Instant::now();
     println!(
-        "iter stage steps_total steps/s ep_reward ep_len touch_rate entropy kl collect_s train_s"
+        "iter stage steps_total steps/s ep_reward ep_len touch_rate goal_rate goals own_goals entropy kl collect_s train_s"
     );
     while !stop.load(Ordering::Relaxed) && limit.is_none_or(|l| t0.elapsed() < l) {
         // D6 : lecture vidéo en cours → checkpoint puis pause (CPU ≈ 0) jusqu'à N min après la fin.
@@ -215,26 +216,38 @@ fn main() {
         steps += s.steps;
         eps += s.episodes;
         touches += s.touches;
+        goals += s.goals;
+        own_goals += s.own_goals;
         let dt = ti.elapsed().as_secs_f64();
-        let (cur_stage, promoted) = {
+        let (cur_stage, promoted, goal_rate) = {
             let mut c = curriculum.lock().expect("curriculum");
             let p = if pinned.is_none() {
-                c.observe(s.touch_rate)
+                c.observe(IterResult {
+                    touch_rate: s.touch_rate,
+                    goals: s.goals,
+                    episodes: s.episodes,
+                })
             } else {
                 None
             };
-            (c.stage(), p)
+            (c.stage(), p, c.goal_rate())
         };
-        if let Some(new) = promoted {
-            eprintln!("promotion : palier {new}");
-            tr.set_env_config(&EnvConfig::for_stage(new));
+        if let Some(mv) = promoted {
+            match mv {
+                Move::Up(n) => eprintln!("promotion : palier {n}"),
+                Move::Down(n) => eprintln!("régression : palier {n} (taux de but effondré)"),
+            }
+            tr.set_env_config(&EnvConfig::for_stage(mv.stage()));
         }
         println!(
-            "{it} {cur_stage} {steps} {:.0} {:.3} {:.1} {:.2} {:.3} {:.4} {:.2} {:.2}",
+            "{it} {cur_stage} {steps} {:.0} {:.3} {:.1} {:.2} {:.2} {} {} {:.3} {:.4} {:.2} {:.2}",
             s.steps as f64 / dt,
             s.reward_mean,
             s.length_mean,
             s.touch_rate,
+            s.goal_rate,
+            s.goals,
+            s.own_goals,
             s.entropy,
             s.kl,
             s.collect_seconds,
@@ -251,6 +264,9 @@ fn main() {
             m.entropy = s.entropy;
             m.kl = s.kl;
             m.touch_total = touches;
+            m.goals_scored_total = goals;
+            m.goals_conceded_total = own_goals;
+            m.goal_rate = goal_rate;
             m.curriculum_stage = cur_stage;
             m.observe_iteration(dt);
             m.checkpoint_age_seconds = saver_last.elapsed().as_secs_f64();

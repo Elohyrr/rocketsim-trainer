@@ -986,4 +986,102 @@ mod tests {
         }
         assert!(finished >= 10, "{finished}");
     }
+
+    #[test]
+    fn stages_are_progressively_harder() {
+        let c = |n| EnvConfig::for_stage(n);
+        assert_eq!(c(2).ball_speed_max, 0.0);
+        assert!(c(3).ball_speed_max > 0.0);
+        assert_eq!(c(4).spawn, SpawnMode::Hard);
+        assert_eq!(c(5).opponent, Opponent::Static);
+        assert_eq!(c(6).opponent, Opponent::SelfPlay);
+        assert_eq!(c(99).opponent, Opponent::SelfPlay);
+        assert!((2..=6).all(|n| c(n).own_goal_penalty > 0.0 && c(n).goal_reward > 0.0));
+    }
+
+    #[test]
+    fn moving_ball_hard_spawns_and_opponent_stay_finite() {
+        assert!(setup());
+        for stage in 3..=6 {
+            let mut e = Env::new(EnvConfig::for_stage(stage), u64::from(stage)).unwrap();
+            for _ in 0..5 {
+                let o = e.reset();
+                assert!(o.iter().all(|x| x.is_finite()), "palier {stage}");
+            }
+            let o = e.observe();
+            let present = o[OBS_DIM - 1];
+            assert_eq!(present, f32::from(u8::from(stage >= 5)), "palier {stage}");
+            for _ in 0..40 {
+                let r = e.step_vs(40, Some(40));
+                assert!(r.reward.is_finite());
+            }
+            assert_eq!(e.has_opponent(), stage >= 5);
+        }
+    }
+
+    #[test]
+    fn opponent_block_is_zero_without_opponent_and_view_is_mirrored() {
+        assert!(setup());
+        let mut e = Env::new(EnvConfig::for_stage(2), 4).unwrap();
+        assert!(e.observe()[OBS_DIM_V1..].iter().all(|x| *x == 0.0));
+        e.set_config(EnvConfig::for_stage(6));
+        e.reset();
+        let (a, b) = (e.observe(), e.observe_opponent());
+        // Position de la voiture de l'un = position adverse (inversée en x, y) vue par l'autre.
+        assert!((a[0] + b[OBS_DIM_V1]).abs() < 1e-5 && (a[1] + b[OBS_DIM_V1 + 1]).abs() < 1e-5);
+        assert!((a[18] + b[18]).abs() < 1e-5, "la balle est retournée");
+    }
+
+    #[test]
+    fn own_goal_is_penalized_and_reported() {
+        assert!(setup());
+        let cfg = EnvConfig::for_stage(2);
+        let mut e = Env::new(cfg.clone(), 5).unwrap();
+        // Balle lancée vers le fond côté -Y : but contre son camp.
+        e.sim.reset_ball([0.0, -4000.0, 93.0], [0.0, -4000.0, 0.0]);
+        let mut last = StepInfo::default();
+        for _ in 0..120 {
+            last = e.step(0);
+            if last.terminated {
+                break;
+            }
+        }
+        assert!(last.terminated, "la balle devrait entrer dans le but");
+        assert_eq!(last.outcome, Outcome::OwnGoal);
+        assert!(
+            last.reward <= -cfg.own_goal_penalty + 0.5,
+            "{}",
+            last.reward
+        );
+    }
+
+    #[test]
+    fn scoring_in_the_opposite_goal_is_a_goal() {
+        assert!(setup());
+        let mut e = Env::new(EnvConfig::for_stage(2), 6).unwrap();
+        e.sim.reset_ball([0.0, 4000.0, 93.0], [0.0, 4000.0, 0.0]);
+        let mut last = StepInfo::default();
+        for _ in 0..120 {
+            last = e.step(0);
+            if last.terminated {
+                break;
+            }
+        }
+        assert_eq!(last.outcome, Outcome::Goal);
+    }
+
+    #[test]
+    fn vec_env_reports_outcomes_and_config_switch_resets() {
+        assert!(setup());
+        let mut v = VecEnv::new(4, 2, EnvConfig::for_stage(2), 9).unwrap();
+        v.reset();
+        let obs = v.set_config(&EnvConfig::for_stage(6));
+        assert_eq!(obs.len(), 4 * OBS_DIM);
+        assert_eq!(v.opp_obs().len(), 4 * OBS_DIM);
+        let s = v.step_vs(&[0; 4], Some(&[0; 4]));
+        assert_eq!(s.opp_obs.len(), 4 * OBS_DIM);
+        let obs = v.set_config(&EnvConfig::for_stage(2));
+        assert_eq!(obs.len(), 4 * OBS_DIM);
+        assert!(v.opp_obs().is_empty());
+    }
 }

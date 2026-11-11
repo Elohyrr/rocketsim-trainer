@@ -36,6 +36,10 @@ pub struct Metrics {
     pub curriculum_stage: u32,
     pub unrecognized_sequences_total: u64,
     pub touch_total: u64,
+    pub goals_scored_total: u64,
+    pub goals_conceded_total: u64,
+    /// Fraction d'épisodes finis par un but marqué (fenêtre glissante du curriculum).
+    pub goal_rate: f64,
 }
 
 impl Metrics {
@@ -88,6 +92,7 @@ impl Metrics {
             "counter",
             self.unrecognized_sequences_total as f64,
         );
+        g("trainer_goal_rate", "gauge", self.goal_rate);
         let _ = writeln!(s, "# TYPE trainer_checkpoints_total counter");
         let _ = writeln!(
             s,
@@ -113,6 +118,17 @@ impl Metrics {
             s,
             "trainer_mechanic_total{{mechanic=\"touch\"}} {}",
             self.touch_total
+        );
+        let _ = writeln!(s, "# TYPE trainer_goals_total counter");
+        let _ = writeln!(
+            s,
+            "trainer_goals_total{{side=\"scored\"}} {}",
+            self.goals_scored_total
+        );
+        let _ = writeln!(
+            s,
+            "trainer_goals_total{{side=\"conceded\"}} {}",
+            self.goals_conceded_total
         );
         let _ = writeln!(s, "# TYPE trainer_iteration_seconds histogram");
         for (b, c) in BUCKETS.iter().zip(&self.iter_bucket_counts) {
@@ -192,6 +208,8 @@ mod tests {
                 "reason=\"jellyfin\"",
                 "reason=\"manual\"",
                 "mechanic=\"touch\"",
+                "side=\"scored\"",
+                "side=\"conceded\"",
                 "le=\"",
             ];
             assert!(ok.iter().any(|k| l.contains(k)), "{l}");

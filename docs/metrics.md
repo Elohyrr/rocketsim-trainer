@@ -18,11 +18,13 @@ Règles : labels à valeurs bornées (énumérations fixes), jamais d'identifian
 | `trainer_paused` | gauge (0/1) | — | 1 |
 | `trainer_pause_reason` | gauge | `reason` = none\|jellyfin\|manual | 3 |
 | `trainer_curriculum_stage` | gauge | — | 1 |
+| `trainer_goals_total` | counter | `side` = scored\|conceded (conceded = contre son camp / encaissé) | 2 |
+| `trainer_goal_rate` | gauge (0–1, fenêtre glissante du curriculum) | — | 1 |
 | `trainer_mechanic_total` | counter | `mechanic` ∈ catalogue fermé (≈ 12) | ≈ 12 |
 | `trainer_unrecognized_sequences_total` | counter | — | 1 |
 | `process_*` (RSS, CPU) | gauge/counter | — | ≈ 6 |
 
-Total estimé : ≈ 50 séries. Catalogue `mechanic` (heuristiques, voir `docs/decisions.md` D9) : `touch`, `aerial`,
+Total estimé : ≈ 53 séries. Catalogue `mechanic` (heuristiques, voir `docs/decisions.md` D9) : `touch`, `aerial`,
 `air_dribble`, `flip_reset`, `ceiling_shot`, `wall_shot`, `double_touch`, `flick`, `bump`, `demo`, `half_flip`,
 `other`.
 
