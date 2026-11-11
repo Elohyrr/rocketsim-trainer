@@ -13,8 +13,14 @@ use sim_core::{Controls, Sim, init_meshes, meshes_dir_from_env};
 
 pub use sim_core::SimError;
 
-/// Dimension du vecteur d'observation.
-pub const OBS_DIM: usize = 33;
+/// Dimension de l'observation d'avant l'adversaire (checkpoints historiques, voir `docs/curriculum.md`).
+pub const OBS_DIM_V1: usize = 33;
+/// Dimension du vecteur d'observation : [`OBS_DIM_V1`] + bloc adversaire (position, vitesse, cap, présence).
+/// Le bloc adversaire est nul sans adversaire : un réseau dont les poids d'entrée de ce bloc sont nuls
+/// se comporte exactement comme avant.
+pub const OBS_DIM: usize = OBS_DIM_V1 + 10;
+/// Fréquence de simulation (ticks par seconde).
+pub const TICKS_PER_SECOND: f32 = 120.0;
 
 const POS_SCALE: [f32; 3] = [4096.0, 5120.0, 2048.0];
 const REL_POS_SCALE: [f32; 3] = [8192.0, 10240.0, 2048.0];
@@ -150,6 +156,36 @@ pub struct EnvConfig {
     pub start_boost: f32,
     /// Récompense d'un but marqué dans le but adverse (la balle franchit le fond du terrain côté +Y).
     pub goal_reward: f32,
+    /// Pénalité (valeur positive, soustraite) quand la balle entre dans le but de la voiture (+Y est le but visé).
+    pub own_goal_penalty: f32,
+    /// Vitesse horizontale initiale maximale de la balle (uu/s) ; 0 = balle au repos.
+    pub ball_speed_max: f32,
+    /// Répartition des positions de départ.
+    pub spawn: SpawnMode,
+    /// Adversaire (voiture orange).
+    pub opponent: Opponent,
+}
+
+/// Tirage des positions de départ.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpawnMode {
+    /// Voiture et balle uniformes dans le terrain.
+    Random,
+    /// Positions difficiles : balle près des murs, en l'air basse, ou loin du but adverse.
+    Hard,
+    /// Une moitié `Random`, une moitié `Hard`.
+    Mixed,
+}
+
+/// Adversaire de l'agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opponent {
+    /// Pas d'adversaire (pas de seconde voiture).
+    None,
+    /// Voiture adverse immobile devant sa cage.
+    Static,
+    /// Voiture adverse pilotée de l'extérieur (copie gelée de la politique) via [`Env::step_vs`].
+    SelfPlay,
 }
 
 impl Default for EnvConfig {
@@ -163,15 +199,29 @@ impl Default for EnvConfig {
             min_spawn_dist: 1000.0,
             start_boost: 33.0,
             goal_reward: 0.0,
+            own_goal_penalty: 0.0,
+            ball_speed_max: 0.0,
+            spawn: SpawnMode::Random,
+            opponent: Opponent::None,
         }
     }
 }
 
 impl EnvConfig {
-    /// Config d'un palier de curriculum (voir `docs/curriculum.md`) :
-    /// 0 = aller vers la balle, 1 = toucher la balle, 2 = marquer. Au-delà : palier 2.
+    /// Config d'un palier de curriculum (voir `docs/curriculum.md`) : 0 = aller vers la balle, 1 = toucher,
+    /// 2 = marquer (balle au repos), 3 = balle en mouvement, 4 = positions difficiles, 5 = adversaire statique,
+    /// 6 = self-play. Au-delà : palier 6.
     pub fn for_stage(stage: u32) -> Self {
         let base = Self::default();
+        let scoring = Self {
+            end_on_touch: false,
+            max_steps: 300,
+            touch_reward: 0.1,
+            approach_weight: 0.05,
+            goal_reward: 10.0,
+            own_goal_penalty: 5.0,
+            ..base.clone()
+        };
         match stage {
             0 => Self {
                 approach_weight: 0.3,
@@ -179,19 +229,50 @@ impl EnvConfig {
                 ..base
             },
             1 => base,
+            2 => scoring,
+            3 => Self {
+                ball_speed_max: 1500.0,
+                ..scoring
+            },
+            4 => Self {
+                ball_speed_max: 1000.0,
+                spawn: SpawnMode::Hard,
+                max_steps: 400,
+                ..scoring
+            },
+            5 => Self {
+                ball_speed_max: 1000.0,
+                spawn: SpawnMode::Mixed,
+                max_steps: 400,
+                opponent: Opponent::Static,
+                ..scoring
+            },
             _ => Self {
-                end_on_touch: false,
-                max_steps: 300,
-                touch_reward: 0.1,
-                approach_weight: 0.05,
-                goal_reward: 10.0,
-                ..base
+                ball_speed_max: 1000.0,
+                spawn: SpawnMode::Mixed,
+                max_steps: 400,
+                opponent: Opponent::SelfPlay,
+                ..scoring
             },
         }
     }
 }
 
 // ---------------------------------------------------------------- Env
+
+/// Issue d'un épisode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Outcome {
+    /// But marqué dans le but adverse (+Y).
+    Goal,
+    /// Balle dans son propre but (-Y) : but contre son camp, ou but encaissé en self-play.
+    OwnGoal,
+    /// Fin par temps écoulé.
+    #[default]
+    Timeout,
+    /// Fin au premier toucher (paliers 0 et 1).
+    Touch,
+}
 
 /// Résultat d'une décision.
 #[derive(Clone, Debug, Default)]
@@ -202,12 +283,15 @@ pub struct StepInfo {
     /// Fin par temps (`max_steps`).
     pub truncated: bool,
     pub touched: bool,
+    /// Issue de l'épisode, significative quand `terminated || truncated`.
+    pub outcome: Outcome,
 }
 
-/// Un environnement : une voiture bleue, une balle, un seul agent.
+/// Un environnement : une voiture bleue, une balle, un seul agent (et un adversaire orange selon le palier).
 pub struct Env {
     sim: Sim,
     car: u32,
+    opp: Option<u32>,
     cfg: EnvConfig,
     actions: ActionTable,
     rng: Rng,
@@ -218,11 +302,11 @@ pub struct Env {
 impl Env {
     /// `init_meshes` doit avoir réussi avant (une fois par processus).
     pub fn new(cfg: EnvConfig, seed: u64) -> Result<Self, SimError> {
-        let mut sim = Sim::new_soccar()?;
-        let car = sim.add_car(true);
+        let (sim, car, opp) = Self::build_sim(&cfg)?;
         let mut e = Self {
             sim,
             car,
+            opp,
             cfg,
             actions: ActionTable::rlgym(),
             rng: Rng::new(seed),
@@ -233,49 +317,134 @@ impl Env {
         Ok(e)
     }
 
+    fn build_sim(cfg: &EnvConfig) -> Result<(Sim, u32, Option<u32>), SimError> {
+        let mut sim = Sim::new_soccar()?;
+        let car = sim.add_car(true);
+        let opp = (cfg.opponent != Opponent::None).then(|| sim.add_car(false));
+        Ok((sim, car, opp))
+    }
+
     pub fn action_count(&self) -> usize {
         self.actions.len()
     }
 
-    /// Change la configuration (palier de curriculum) ; effective à partir du prochain épisode.
+    /// Change la configuration (palier de curriculum). Si la présence d'un adversaire change, la simulation est
+    /// reconstruite ; dans tous les cas l'appelant doit faire un [`Env::reset`] ensuite.
     pub fn set_config(&mut self, cfg: EnvConfig) {
+        let had = self.opp.is_some();
+        let wants = cfg.opponent != Opponent::None;
         self.cfg = cfg;
+        if had != wants
+            && let Ok((sim, car, opp)) = Self::build_sim(&self.cfg)
+        {
+            (self.sim, self.car, self.opp) = (sim, car, opp);
+        }
+    }
+
+    /// Position (x, y) uniforme dans le terrain.
+    fn random_xy(&mut self) -> [f32; 2] {
+        [
+            self.rng.range(-FIELD_X, FIELD_X),
+            self.rng.range(-FIELD_Y, FIELD_Y),
+        ]
+    }
+
+    /// Tire la balle (position, vitesse) selon le mode de départ.
+    fn spawn_ball(&mut self) -> ([f32; 3], [f32; 3]) {
+        let hard = match self.cfg.spawn {
+            SpawnMode::Random => false,
+            SpawnMode::Hard => true,
+            SpawnMode::Mixed => self.rng.unit() < 0.5,
+        };
+        let [mut x, mut y] = self.random_xy();
+        let mut z = BALL_REST_Z;
+        if hard {
+            match (self.rng.unit() * 3.0) as u32 {
+                // Près d'un mur latéral ou d'un fond de terrain.
+                0 => {
+                    if self.rng.unit() < 0.7 {
+                        x = FIELD_X
+                            * self.rng.range(0.85, 0.97)
+                            * self.rng.range(-1.0, 1.0).signum();
+                    } else {
+                        y = (FIELD_Y - self.rng.range(150.0, 900.0))
+                            * self.rng.range(-1.0, 1.0).signum();
+                    }
+                }
+                // En l'air, basse.
+                1 => z = self.rng.range(250.0, 800.0),
+                // Loin du but adverse : dans notre moitié de terrain.
+                _ => y = self.rng.range(-FIELD_Y, -1500.0),
+            }
+        }
+        let mut vel = [0.0f32; 3];
+        let max = self.cfg.ball_speed_max;
+        if max > 0.0 {
+            let speed = self.rng.range(0.2 * max, max);
+            let ang = self.rng.range(-std::f32::consts::PI, std::f32::consts::PI);
+            vel = [speed * ang.cos(), speed * ang.sin(), 0.0];
+        }
+        ([x, y, z], vel)
     }
 
     /// Reset aléatoire : voiture et balle tirées dans le terrain, distance minimale entre elles.
     pub fn reset(&mut self) -> [f32; OBS_DIM] {
-        let (car_pos, ball_pos) = loop {
-            let c = [
-                self.rng.range(-FIELD_X, FIELD_X),
-                self.rng.range(-FIELD_Y, FIELD_Y),
-                17.0,
-            ];
-            let b = [
-                self.rng.range(-FIELD_X, FIELD_X),
-                self.rng.range(-FIELD_Y, FIELD_Y),
-                BALL_REST_Z,
-            ];
+        let (car_pos, ball_pos, ball_vel) = loop {
+            let [cx, cy] = self.random_xy();
+            let (b, v) = self.spawn_ball();
+            let c = [cx, cy, 17.0];
             let d = ((c[0] - b[0]).powi(2) + (c[1] - b[1]).powi(2)).sqrt();
             if d >= self.cfg.min_spawn_dist {
-                break (c, b);
+                break (c, b, v);
             }
         };
         let yaw = self.rng.range(-std::f32::consts::PI, std::f32::consts::PI);
         self.sim
             .reset_car(self.car, car_pos, yaw, [0.0; 3], self.cfg.start_boost)
             .expect("voiture connue");
-        self.sim.reset_ball(ball_pos, [0.0; 3]);
+        self.sim.reset_ball(ball_pos, ball_vel);
         self.sim.set_controls(self.car, Controls::default()).ok();
+        if let Some(opp) = self.opp {
+            let (pos, yaw) = match self.cfg.opponent {
+                // Devant la cage adverse (+Y), face au terrain.
+                Opponent::Static => (
+                    [self.rng.range(-700.0, 700.0), 4300.0, 17.0],
+                    -std::f32::consts::FRAC_PI_2,
+                ),
+                _ => (
+                    [
+                        self.rng.range(-FIELD_X, FIELD_X),
+                        self.rng.range(0.0, FIELD_Y),
+                        17.0,
+                    ],
+                    self.rng.range(-std::f32::consts::PI, std::f32::consts::PI),
+                ),
+            };
+            self.sim
+                .reset_car(opp, pos, yaw, [0.0; 3], self.cfg.start_boost)
+                .expect("voiture adverse connue");
+            self.sim.set_controls(opp, Controls::default()).ok();
+        }
         self.steps = 0;
         self.last_touch = self.sim.last_ball_touch_tick(self.car);
         self.observe()
     }
 
-    /// Avance d'une décision avec l'action `action` (indice de la table).
+    /// Avance d'une décision avec l'action `action` (indice de la table) ; l'adversaire, s'il existe, ne bouge pas.
     pub fn step(&mut self, action: usize) -> StepInfo {
+        self.step_vs(action, None)
+    }
+
+    /// Comme [`Env::step`], avec l'action de l'adversaire (self-play).
+    pub fn step_vs(&mut self, action: usize, opp_action: Option<usize>) -> StepInfo {
         self.sim
             .set_controls(self.car, self.actions.get(action))
             .expect("voiture connue");
+        if let (Some(opp), Some(a)) = (self.opp, opp_action) {
+            self.sim
+                .set_controls(opp, self.actions.get(a))
+                .expect("voiture adverse connue");
+        }
         self.sim.step(self.cfg.tick_skip);
         self.steps += 1;
 
@@ -304,16 +473,31 @@ impl Env {
             reward += self.cfg.touch_reward;
         }
         let scored = self.sim.is_ball_scored();
-        // But pour nous : la balle est au fond du terrain côté +Y (but orange).
+        // But pour nous : la balle est au fond du terrain côté +Y (but orange) ; côté -Y, c'est contre son camp.
         let our_goal = scored && snap.ball.pos[1] > 0.0;
+        let own_goal = scored && !our_goal;
         if our_goal {
             reward += self.cfg.goal_reward;
         }
+        if own_goal {
+            reward -= self.cfg.own_goal_penalty;
+        }
+        let touch_end = touched && self.cfg.end_on_touch;
+        let outcome = if our_goal {
+            Outcome::Goal
+        } else if own_goal {
+            Outcome::OwnGoal
+        } else if touch_end {
+            Outcome::Touch
+        } else {
+            Outcome::Timeout
+        };
         StepInfo {
             reward,
-            terminated: scored || (touched && self.cfg.end_on_touch),
+            terminated: scored || touch_end,
             truncated: self.steps >= self.cfg.max_steps,
             touched,
+            outcome,
         }
     }
 
@@ -328,45 +512,80 @@ impl Env {
             .unwrap_or(0)
     }
 
-    /// Observation normalisée (≈ [-1, 1]) de l'état courant.
+    /// Observation normalisée (≈ [-1, 1]) de l'état courant, du point de vue de la voiture bleue.
     pub fn observe(&mut self) -> [f32; OBS_DIM] {
         let s = self.sim.snapshot();
-        let c = &s.cars[0];
-        let mut o = [0.0f32; OBS_DIM];
-        let mut i = 0;
-        let mut push3 = |v: [f32; 3], sc: [f32; 3], o: &mut [f32; OBS_DIM]| {
-            for k in 0..3 {
-                o[i] = v[k] / sc[k];
-                i += 1;
-            }
-        };
-        let cs = [CAR_VEL_SCALE; 3];
-        push3(c.pos, POS_SCALE, &mut o);
-        push3(c.vel, cs, &mut o);
-        push3(c.ang_vel, [ANG_VEL_SCALE; 3], &mut o);
-        push3(c.forward, [1.0; 3], &mut o);
-        push3(c.up, [1.0; 3], &mut o);
-        push3(s.ball.pos, POS_SCALE, &mut o);
-        push3(s.ball.vel, [BALL_VEL_SCALE; 3], &mut o);
-        push3(s.ball.ang_vel, [6.0; 3], &mut o);
-        let rel_pos = [
-            s.ball.pos[0] - c.pos[0],
-            s.ball.pos[1] - c.pos[1],
-            s.ball.pos[2] - c.pos[2],
-        ];
-        let rel_vel = [
-            s.ball.vel[0] - c.vel[0],
-            s.ball.vel[1] - c.vel[1],
-            s.ball.vel[2] - c.vel[2],
-        ];
-        push3(rel_pos, REL_POS_SCALE, &mut o);
-        push3(rel_vel, [BALL_VEL_SCALE; 3], &mut o);
-        o[i] = c.boost / 100.0;
-        o[i + 1] = f32::from(u8::from(c.on_ground));
-        o[i + 2] = f32::from(u8::from(c.has_flip_or_jump));
-        debug_assert_eq!(i + 3, OBS_DIM);
-        o
+        build_obs(&s, 0, s.cars.get(1).map(|_| 1), false)
     }
+
+    /// Observation du point de vue de l'adversaire (monde retourné de 180° autour de Z : il vise aussi +Y).
+    /// Zéros s'il n'y a pas d'adversaire.
+    pub fn observe_opponent(&mut self) -> [f32; OBS_DIM] {
+        if self.opp.is_none() {
+            return [0.0; OBS_DIM];
+        }
+        let s = self.sim.snapshot();
+        build_obs(&s, 1, Some(0), true)
+    }
+
+    pub fn has_opponent(&self) -> bool {
+        self.opp.is_some()
+    }
+}
+
+fn push3(v: &mut Vec<f32>, x: [f32; 3], sc: [f32; 3]) {
+    v.extend((0..3).map(|k| x[k] / sc[k]));
+}
+
+/// Construit l'observation de la voiture `me` ; `other` = voiture adverse éventuelle ; `mirror` retourne le monde
+/// de 180° autour de Z (x → -x, y → -y).
+fn build_obs(
+    s: &sim_core::Snapshot,
+    me: usize,
+    other: Option<usize>,
+    mirror: bool,
+) -> [f32; OBS_DIM] {
+    let m = |v: [f32; 3]| {
+        if mirror { [-v[0], -v[1], v[2]] } else { v }
+    };
+    let c = &s.cars[me];
+    let mut v: Vec<f32> = Vec::with_capacity(OBS_DIM);
+    let (cpos, cvel, cang) = (m(c.pos), m(c.vel), m(c.ang_vel));
+    let (bpos, bvel, bang) = (m(s.ball.pos), m(s.ball.vel), m(s.ball.ang_vel));
+    push3(&mut v, cpos, POS_SCALE);
+    push3(&mut v, cvel, [CAR_VEL_SCALE; 3]);
+    push3(&mut v, cang, [ANG_VEL_SCALE; 3]);
+    push3(&mut v, m(c.forward), [1.0; 3]);
+    push3(&mut v, m(c.up), [1.0; 3]);
+    push3(&mut v, bpos, POS_SCALE);
+    push3(&mut v, bvel, [BALL_VEL_SCALE; 3]);
+    push3(&mut v, bang, [6.0; 3]);
+    push3(
+        &mut v,
+        [bpos[0] - cpos[0], bpos[1] - cpos[1], bpos[2] - cpos[2]],
+        REL_POS_SCALE,
+    );
+    push3(
+        &mut v,
+        [bvel[0] - cvel[0], bvel[1] - cvel[1], bvel[2] - cvel[2]],
+        [BALL_VEL_SCALE; 3],
+    );
+    v.extend([
+        c.boost / 100.0,
+        f32::from(u8::from(c.on_ground)),
+        f32::from(u8::from(c.has_flip_or_jump)),
+    ]);
+    debug_assert_eq!(v.len(), OBS_DIM_V1);
+    if let Some(j) = other {
+        let d = &s.cars[j];
+        push3(&mut v, m(d.pos), POS_SCALE);
+        push3(&mut v, m(d.vel), [CAR_VEL_SCALE; 3]);
+        push3(&mut v, m(d.forward), [1.0; 3]);
+        v.push(1.0);
+    }
+    let mut o = [0.0f32; OBS_DIM];
+    o[..v.len()].copy_from_slice(&v);
+    o
 }
 
 // ---------------------------------------------------------------- VecEnv
@@ -377,6 +596,7 @@ pub struct EpisodeStats {
     pub ret: f32,
     pub length: u32,
     pub touched: bool,
+    pub outcome: Outcome,
 }
 
 /// Résultat groupé d'une décision sur tous les envs. Les observations sont celles *après* remise à zéro
@@ -384,6 +604,8 @@ pub struct EpisodeStats {
 #[derive(Clone, Debug, Default)]
 pub struct VecStep {
     pub obs: Vec<f32>,
+    /// Observations de l'adversaire (point de vue retourné), vide sans adversaire.
+    pub opp_obs: Vec<f32>,
     pub reward: Vec<f32>,
     pub terminated: Vec<bool>,
     pub truncated: Vec<bool>,
@@ -393,6 +615,7 @@ pub struct VecStep {
 struct Reply {
     first: usize,
     obs: Vec<f32>,
+    opp_obs: Vec<f32>,
     reward: Vec<f32>,
     terminated: Vec<bool>,
     truncated: Vec<bool>,
@@ -400,7 +623,7 @@ struct Reply {
 }
 
 enum Cmd {
-    Step(Vec<usize>),
+    Step(Vec<usize>, Option<Vec<usize>>),
     Reset,
     Config(EnvConfig),
     Stop,
@@ -419,6 +642,7 @@ pub struct VecEnv {
     rx: Receiver<Reply>,
     n_envs: usize,
     action_count: usize,
+    opp_obs: Vec<f32>,
 }
 
 impl VecEnv {
@@ -458,6 +682,7 @@ impl VecEnv {
             rx,
             n_envs,
             action_count,
+            opp_obs: Vec::new(),
         })
     }
 
@@ -479,6 +704,7 @@ impl VecEnv {
         let mut out = VecStep::default();
         for r in replies {
             out.obs.extend(r.obs);
+            out.opp_obs.extend(r.opp_obs);
             out.reward.extend(r.reward);
             out.terminated.extend(r.terminated);
             out.truncated.extend(r.truncated);
@@ -492,22 +718,34 @@ impl VecEnv {
         for w in &self.workers {
             w.tx.send(Cmd::Reset).expect("worker");
         }
-        self.gather().obs
+        let g = self.gather();
+        self.opp_obs = g.opp_obs;
+        g.obs
     }
 
-    /// Applique une nouvelle configuration à tous les envs (effective au prochain épisode de chacun).
-    pub fn set_config(&mut self, cfg: &EnvConfig) {
+    /// Observations de l'adversaire après le dernier reset / pas (vide sans adversaire).
+    pub fn opp_obs(&self) -> &[f32] {
+        &self.opp_obs
+    }
+
+    /// Applique une nouvelle configuration à tous les envs et les remet à zéro (la présence d'un adversaire
+    /// peut changer) ; renvoie les nouvelles observations initiales.
+    pub fn set_config(&mut self, cfg: &EnvConfig) -> Vec<f32> {
         for w in &self.workers {
             w.tx.send(Cmd::Config(cfg.clone())).expect("worker");
         }
-        // Chaque worker répond à toute commande : on vide les réponses pour rester synchrone.
-        for _ in &self.workers {
-            self.rx.recv().expect("worker");
-        }
+        let g = self.gather();
+        self.opp_obs = g.opp_obs;
+        g.obs
     }
 
     /// Une décision par env (`actions.len() == n_envs`).
     pub fn step(&mut self, actions: &[usize]) -> VecStep {
+        self.step_vs(actions, None)
+    }
+
+    /// Comme [`VecEnv::step`], avec une action d'adversaire par env (self-play).
+    pub fn step_vs(&mut self, actions: &[usize], opp: Option<&[usize]>) -> VecStep {
         assert_eq!(actions.len(), self.n_envs, "une action par env");
         let next = self
             .workers
@@ -516,10 +754,15 @@ impl VecEnv {
             .skip(1)
             .chain([self.n_envs]);
         for (w, end) in self.workers.iter().zip(next) {
-            w.tx.send(Cmd::Step(actions[w.first..end].to_vec()))
-                .expect("worker");
+            w.tx.send(Cmd::Step(
+                actions[w.first..end].to_vec(),
+                opp.map(|o| o[w.first..end].to_vec()),
+            ))
+            .expect("worker");
         }
-        self.gather()
+        let g = self.gather();
+        self.opp_obs.clone_from(&g.opp_obs);
+        g
     }
 }
 
@@ -566,6 +809,7 @@ fn worker_loop(
         let mut reply = Reply {
             first,
             obs: Vec::with_capacity(count * OBS_DIM),
+            opp_obs: Vec::new(),
             reward: Vec::new(),
             terminated: Vec::new(),
             truncated: Vec::new(),
@@ -574,19 +818,27 @@ fn worker_loop(
         match cmd {
             Cmd::Stop => return,
             Cmd::Config(c) => {
-                for e in &mut envs {
+                for (i, e) in envs.iter_mut().enumerate() {
                     e.set_config(c.clone());
+                    reply.obs.extend_from_slice(&e.reset());
+                    if e.has_opponent() {
+                        reply.opp_obs.extend_from_slice(&e.observe_opponent());
+                    }
+                    (ret[i], len[i], touched[i]) = (0.0, 0, false);
                 }
             }
             Cmd::Reset => {
                 for (i, e) in envs.iter_mut().enumerate() {
                     reply.obs.extend_from_slice(&e.reset());
+                    if e.has_opponent() {
+                        reply.opp_obs.extend_from_slice(&e.observe_opponent());
+                    }
                     (ret[i], len[i], touched[i]) = (0.0, 0, false);
                 }
             }
-            Cmd::Step(actions) => {
+            Cmd::Step(actions, opp) => {
                 for (i, e) in envs.iter_mut().enumerate() {
-                    let r = e.step(actions[i]);
+                    let r = e.step_vs(actions[i], opp.as_ref().map(|o| o[i]));
                     ret[i] += r.reward;
                     len[i] += 1;
                     touched[i] |= r.touched;
@@ -598,11 +850,15 @@ fn worker_loop(
                             ret: ret[i],
                             length: len[i],
                             touched: touched[i],
+                            outcome: r.outcome,
                         });
                         (ret[i], len[i], touched[i]) = (0.0, 0, false);
                         reply.obs.extend_from_slice(&e.reset());
                     } else {
                         reply.obs.extend_from_slice(&e.observe());
+                    }
+                    if e.has_opponent() {
+                        reply.opp_obs.extend_from_slice(&e.observe_opponent());
                     }
                 }
             }
