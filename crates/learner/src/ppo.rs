@@ -3,13 +3,13 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use burn::module::Module;
+use burn::module::{Module, Param};
 use burn::nn::{Linear, LinearConfig};
 use burn::optim::{AdamConfig, GradientsParams, ModuleOptimizer};
 use burn::tensor::activation::log_softmax;
 use burn::tensor::{Device, Tensor, TensorData};
 use policy_runtime::{Tensor as StTensor, write_safetensors};
-use rl_env::{EnvConfig, Rng, VecEnv};
+use rl_env::{EnvConfig, OBS_DIM_V1, Opponent, Outcome, Rng, VecEnv};
 
 #[derive(Module, Debug)]
 pub struct Mlp {
@@ -26,6 +26,24 @@ impl Mlp {
             out: LinearConfig::new(hidden, n_out).init(device),
         }
     }
+    /// Agrandit la couche d'entrée à `n_in` entrées ; les poids des entrées ajoutées sont nuls.
+    pub fn widen_input(self, n_in: usize) -> Self {
+        let w = self.l0.weight.val();
+        let [rows, hidden] = w.dims();
+        if rows >= n_in {
+            return self;
+        }
+        let pad = Tensor::zeros([n_in - rows, hidden], &w.device());
+        let weight = Param::from_tensor(Tensor::cat(vec![w, pad], 0).detach());
+        Self {
+            l0: Linear {
+                weight,
+                bias: self.l0.bias,
+            },
+            ..self
+        }
+    }
+
     pub fn forward(&self, x: Tensor<2>) -> Tensor<2> {
         let x = self.l0.forward(x).tanh();
         let x = self.l1.forward(x).tanh();
@@ -82,9 +100,13 @@ pub struct IterStats {
     pub steps: u64,
     pub episodes: u64,
     pub touches: u64,
+    /// Épisodes finis par un but marqué (+Y) / un but contre son camp (-Y).
+    pub goals: u64,
+    pub own_goals: u64,
     pub reward_mean: f64,
     pub length_mean: f64,
     pub touch_rate: f64,
+    pub goal_rate: f64,
     pub policy_loss: f64,
     pub value_loss: f64,
     pub entropy: f64,
@@ -104,7 +126,14 @@ pub struct Trainer {
     rng: Rng,
     obs_dim: usize,
     n_actions: usize,
+    /// Adversaire self-play : copie gelée de la politique (mise à jour toutes les `FROZEN_EVERY` itérations).
+    frozen: Option<Mlp>,
+    frozen_age: usize,
+    selfplay: bool,
 }
+
+/// Itérations entre deux mises à jour de la copie gelée en self-play.
+pub const FROZEN_EVERY: usize = 50;
 
 fn tensor2(v: Vec<f32>, rows: usize, cols: usize, d: &Device) -> Tensor<2> {
     Tensor::from_data(TensorData::new(v, [rows, cols]), d)
@@ -120,6 +149,7 @@ fn scalar(t: Tensor<1>) -> f64 {
 
 impl Trainer {
     pub fn new(cfg: PpoConfig, env_cfg: EnvConfig) -> Result<Self, rl_env::SimError> {
+        let env_cfg_selfplay = env_cfg.opponent == Opponent::SelfPlay;
         let mut env = VecEnv::new(cfg.n_envs, cfg.threads, env_cfg, cfg.seed)?;
         let (obs_dim, n_actions) = (env.obs_dim(), env.action_count());
         let plain = Device::flex();
@@ -131,6 +161,7 @@ impl Trainer {
         };
         let opt = AdamConfig::new().with_epsilon(1e-5).init();
         let obs = env.reset();
+        let selfplay = env_cfg_selfplay;
         Ok(Self {
             rng: Rng::new(cfg.seed ^ 0xA5A5),
             cfg,
@@ -142,6 +173,9 @@ impl Trainer {
             obs,
             obs_dim,
             n_actions,
+            frozen: None,
+            frozen_age: 0,
+            selfplay,
         })
     }
 
@@ -156,6 +190,11 @@ impl Trainer {
         let t0 = std::time::Instant::now();
         let inner = self.model.valid();
         let idev = self.plain.clone();
+        if self.selfplay && (self.frozen.is_none() || self.frozen_age >= FROZEN_EVERY) {
+            self.frozen = Some(inner.policy.clone());
+            self.frozen_age = 0;
+        }
+        self.frozen_age += 1;
 
         let mut obs_buf = Vec::with_capacity(h * n * od);
         let mut act_buf = Vec::with_capacity(h * n);
@@ -189,7 +228,24 @@ impl Trainer {
             }
             obs_buf.extend_from_slice(&self.obs);
             val_buf.extend(values);
-            let step = self.env.step(&acts);
+            let opp_acts = self.frozen.as_ref().map(|f| {
+                let ox = tensor2(self.env.opp_obs().to_vec(), n, od, &idev);
+                let lp = to_vec(log_softmax(f.forward(ox), 1));
+                (0..n)
+                    .map(|e| {
+                        let row = &lp[e * na..(e + 1) * na];
+                        let u = self.rng.unit();
+                        let mut c = 0.0f32;
+                        row.iter()
+                            .position(|l| {
+                                c += l.exp();
+                                u < c
+                            })
+                            .unwrap_or(na - 1)
+                    })
+                    .collect::<Vec<usize>>()
+            });
+            let step = self.env.step_vs(&acts, opp_acts.as_deref());
             for e in 0..n {
                 rew_buf.push(step.reward[e]);
                 done_buf.push(step.terminated[e] || step.truncated[e]);
@@ -199,6 +255,8 @@ impl Trainer {
             for ep in &step.finished {
                 st.episodes += 1;
                 st.touches += u64::from(ep.touched);
+                st.goals += u64::from(ep.outcome == Outcome::Goal);
+                st.own_goals += u64::from(ep.outcome == Outcome::OwnGoal);
                 ret_sum += f64::from(ep.ret);
                 len_sum += f64::from(ep.length);
             }
@@ -293,6 +351,7 @@ impl Trainer {
             st.reward_mean = ret_sum / st.episodes as f64;
             st.length_mean = len_sum / st.episodes as f64;
             st.touch_rate = st.touches as f64 / st.episodes as f64;
+            st.goal_rate = st.goals as f64 / st.episodes as f64;
         }
         st
     }
@@ -300,7 +359,11 @@ impl Trainer {
     /// Logits de la politique pour une observation (backend burn), pour les tests d'équivalence.
     /// Change la config de l'env (palier de curriculum), effective au prochain épisode de chaque env.
     pub fn set_env_config(&mut self, cfg: &EnvConfig) {
-        self.env.set_config(cfg);
+        self.obs = self.env.set_config(cfg);
+        self.selfplay = cfg.opponent == Opponent::SelfPlay;
+        if !self.selfplay {
+            self.frozen = None;
+        }
     }
 
     pub fn policy_logits(&self, obs: &[f32]) -> Vec<f32> {
@@ -352,12 +415,33 @@ impl Trainer {
             .map_err(|e| e.to_string())
     }
 
+    /// Charge un checkpoint. Un checkpoint d'avant l'observation adversaire (entrée de `OBS_DIM_V1`) est
+    /// reconnu automatiquement : la couche d'entrée est agrandie, les poids des nouvelles entrées sont nuls
+    /// (comportement identique tant que l'adversaire est absent).
     pub fn load_checkpoint(&mut self, path: &Path) -> Result<(), String> {
-        self.model = self
-            .model
-            .clone()
+        let current = self.model.clone();
+        let loaded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            current.try_load_file(path).map_err(|e| e.to_string())
+        }));
+        if let Ok(Ok(m)) = loaded {
+            self.model = m;
+            return Ok(());
+        }
+        let legacy = ActorCritic {
+            policy: Mlp::new(OBS_DIM_V1, self.cfg.hidden, self.n_actions, &self.device),
+            value: Mlp::new(OBS_DIM_V1, self.cfg.hidden, 1, &self.device),
+        };
+        let legacy = legacy
             .try_load_file(path)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("checkpoint illisible (formats actuel et historique) : {e}"))?;
+        self.model = ActorCritic {
+            policy: legacy.policy.widen_input(self.obs_dim),
+            value: legacy.value.widen_input(self.obs_dim),
+        };
+        eprintln!(
+            "checkpoint au format historique ({OBS_DIM_V1} entrées) : couche d'entrée agrandie à {}",
+            self.obs_dim
+        );
         Ok(())
     }
 }
