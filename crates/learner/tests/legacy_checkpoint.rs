@@ -50,3 +50,36 @@ fn old_format_checkpoint_loads_with_zero_new_weights() {
     tr.iteration();
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Migration des checkpoints d'avant la correction de l'ordre des voitures : le bloc adversaire est remis à zéro,
+/// le reste du réseau est conservé.
+#[test]
+fn reset_opponent_inputs_ignores_the_opponent_block_and_keeps_the_rest() {
+    let cfg = PpoConfig {
+        n_envs: 2,
+        threads: 1,
+        horizon: 16,
+        hidden: 32,
+        minibatch: 16,
+        epochs: 1,
+        ..Default::default()
+    };
+    let mut tr = Trainer::new(cfg, EnvConfig::for_stage(5)).expect("meshes (ROCKETSIM_MESHES_DIR)");
+    let mut obs: Vec<f32> = (0..OBS_DIM).map(|i| (i as f32 * 0.37).sin()).collect();
+    for v in &mut obs[OBS_DIM_V1..] {
+        *v = 0.0;
+    }
+    let mut with_opp = obs.clone();
+    for v in &mut with_opp[OBS_DIM_V1..] {
+        *v = 0.7;
+    }
+    let before = tr.policy_logits(&obs);
+    assert_ne!(tr.policy_logits(&with_opp), before, "réseau neuf : le bloc adversaire compte");
+    tr.reset_opponent_inputs();
+    let after = tr.policy_logits(&obs);
+    for (a, b) in after.iter().zip(&before) {
+        assert!((a - b).abs() < 1e-6, "{a} vs {b}");
+    }
+    assert_eq!(tr.policy_logits(&with_opp), after);
+    tr.iteration();
+}

@@ -45,7 +45,10 @@ Le `policy.safetensors` exporté a désormais 43 entrées : un consommateur de l
 Les voitures sont identifiées par leur id (`Sim::snapshot` les trie par id) : jusqu'à la correction de novembre 2026,
 `snapshot().cars[0]` était la voiture **orange** dès qu'il y avait deux voitures (ordre d'un `unordered_set` RocketSim),
 si bien qu'aux paliers 5 et 6 l'agent observait l'adversaire immobile à la place de sa propre voiture et que la
-récompense d'approche était calculée sur l'adversaire (taux de but ≈ 0, oscillation 4 ↔ 5).
+récompense d'approche était calculée sur l'adversaire (taux de but ≈ 0, oscillation 4 ↔ 5). Les poids d'entrée du bloc
+adversaire d'un tel checkpoint ont appris à y lire la voiture de l'agent : à la reprise d'un dossier sans fichier
+`opponent-obs-v2`, `Trainer::reset_opponent_inputs` les remet à zéro (une fois ; le fichier est écrit à chaque
+checkpoint). Le reste du réseau (paliers 0 à 4) est conservé.
 
 Les moments où l'env est reconfiguré (changement de palier) remettent tous les envs à zéro.
 
