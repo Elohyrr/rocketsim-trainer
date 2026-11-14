@@ -453,7 +453,7 @@ impl Env {
         self.last_touch = touch_now;
 
         let snap = self.sim.snapshot();
-        let car = &snap.cars[0];
+        let car = &snap.cars[car_index(&snap, self.car)];
         let mut dir = [
             snap.ball.pos[0] - car.pos[0],
             snap.ball.pos[1] - car.pos[1],
@@ -515,22 +515,31 @@ impl Env {
     /// Observation normalisée (≈ [-1, 1]) de l'état courant, du point de vue de la voiture bleue.
     pub fn observe(&mut self) -> [f32; OBS_DIM] {
         let s = self.sim.snapshot();
-        build_obs(&s, 0, s.cars.get(1).map(|_| 1), false)
+        let other = self.opp.map(|o| car_index(&s, o));
+        build_obs(&s, car_index(&s, self.car), other, false)
     }
 
     /// Observation du point de vue de l'adversaire (monde retourné de 180° autour de Z : il vise aussi +Y).
     /// Zéros s'il n'y a pas d'adversaire.
     pub fn observe_opponent(&mut self) -> [f32; OBS_DIM] {
-        if self.opp.is_none() {
+        let Some(opp) = self.opp else {
             return [0.0; OBS_DIM];
-        }
+        };
         let s = self.sim.snapshot();
-        build_obs(&s, 1, Some(0), true)
+        build_obs(&s, car_index(&s, opp), Some(car_index(&s, self.car)), true)
     }
 
     pub fn has_opponent(&self) -> bool {
         self.opp.is_some()
     }
+}
+
+/// Indice de la voiture `id` dans le snapshot : ne jamais supposer un ordre (voir `Sim::snapshot`).
+fn car_index(s: &sim_core::Snapshot, id: u32) -> usize {
+    s.cars
+        .iter()
+        .position(|c| c.id == id)
+        .expect("voiture connue")
 }
 
 fn push3(v: &mut Vec<f32>, x: [f32; 3], sc: [f32; 3]) {
@@ -985,6 +994,36 @@ mod tests {
             finished += s.finished.len();
         }
         assert!(finished >= 10, "{finished}");
+    }
+
+    #[test]
+    fn observation_and_reward_follow_the_agent_car_with_an_opponent() {
+        assert!(setup());
+        for seed in 0..8 {
+            let mut e = Env::new(EnvConfig::for_stage(5), seed).unwrap();
+            let s = e.sim.snapshot();
+            let me = s.cars.iter().find(|c| c.id == e.car).unwrap();
+            let them = s.cars.iter().find(|c| Some(c.id) == e.opp).unwrap();
+            assert!(me.blue && !them.blue);
+            let o = e.observe();
+            for k in 0..3 {
+                assert!((o[k] * POS_SCALE[k] - me.pos[k]).abs() < 1.0, "moi, seed {seed}");
+                let d = o[OBS_DIM_V1 + k] * POS_SCALE[k] - them.pos[k];
+                assert!(d.abs() < 1.0, "adversaire, seed {seed}");
+            }
+            // L'adversaire statique est devant sa cage (+Y) ; vu de son côté (monde retourné), il est en -Y.
+            assert!((o[OBS_DIM_V1 + 1] * POS_SCALE[1] - 4300.0).abs() < 1.0);
+            let oo = e.observe_opponent();
+            assert!((oo[1] * POS_SCALE[1] + 4300.0).abs() < 1.0);
+            assert!((oo[OBS_DIM_V1 + 1] * POS_SCALE[1] + me.pos[1]).abs() < 1.0);
+            // La récompense d'approche se calcule sur la voiture de l'agent : l'adversaire immobile la mettrait à 0.
+            let mut moved = 0.0f32;
+            for _ in 0..20 {
+                let a = e.expert_action(1.0);
+                moved += e.step(a).reward.abs();
+            }
+            assert!(moved > 0.0, "seed {seed}");
+        }
     }
 
     #[test]
