@@ -250,8 +250,12 @@ impl Sim {
         self.arena.get_tick_count()
     }
 
+    /// État courant. Les voitures sont triées par id, donc dans l'ordre d'ajout (`add_car`) : RocketSim les
+    /// range dans un `unordered_set` dont l'ordre de parcours n'est pas garanti (la dernière ajoutée sort
+    /// souvent en premier).
     pub fn snapshot(&mut self) -> Snapshot {
-        let ids = self.arena.get_cars();
+        let mut ids = self.arena.get_cars();
+        ids.sort_unstable();
         let b = self.arena.pin_mut().get_ball();
         let mut cars = Vec::with_capacity(ids.len());
         for id in ids {
@@ -348,6 +352,22 @@ mod tests {
         assert_ne!(before.cars[0].pos, after.cars[0].pos);
         let j = serde_json::to_string(&after).unwrap();
         assert_eq!(serde_json::from_str::<Snapshot>(&j).unwrap(), after);
+    }
+
+    /// Le snapshot liste les voitures dans l'ordre d'ajout, quel que soit l'ordre interne de RocketSim.
+    #[test]
+    fn snapshot_lists_cars_in_insertion_order() {
+        let dir = meshes_dir_from_env().unwrap_or_else(|e| panic!("{e}"));
+        init_meshes(&dir).unwrap();
+        let mut sim = Sim::new_soccar().unwrap();
+        let blue = sim.add_car(true);
+        let orange = sim.add_car(false);
+        let s = sim.snapshot();
+        assert_eq!(
+            s.cars.iter().map(|c| c.id).collect::<Vec<_>>(),
+            [blue, orange]
+        );
+        assert!(s.cars[0].blue && !s.cars[1].blue);
     }
 
     /// La balle lancée vers le mur latéral (x = 4096) doit rebondir : prouve que la géométrie est chargée.

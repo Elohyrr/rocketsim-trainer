@@ -5,8 +5,9 @@
 use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Plafond dur de séries (voir `docs/metrics.md`).
 pub const MAX_SERIES: usize = 500;
@@ -154,32 +155,83 @@ pub fn count_series(text: &str) -> usize {
 
 /// Sert `/metrics` sur `addr` dans un thread d'arrière-plan. Retourne l'adresse réellement liée.
 pub fn serve(addr: &str, m: Arc<Mutex<Metrics>>) -> std::io::Result<std::net::SocketAddr> {
+    serve_with_dir(addr, m, None)
+}
+
+/// Comme [`serve`], et sert en lecture seule la dernière politique du dossier `dir` :
+/// `GET /policy.safetensors` et `GET /policy.json` (palier, taille, date ; calculé à la volée).
+pub fn serve_with_dir(
+    addr: &str,
+    m: Arc<Mutex<Metrics>>,
+    dir: Option<PathBuf>,
+) -> std::io::Result<std::net::SocketAddr> {
     let listener = TcpListener::bind(addr)?;
     let local = listener.local_addr()?;
     std::thread::Builder::new().name("metrics".into()).spawn(move || {
         let started = Instant::now();
         for conn in listener.incoming().flatten() {
             let mut conn = conn;
-            let mut buf = [0u8; 1024];
-            let n = conn.read(&mut buf).unwrap_or(0);
+            // Un client lent ne doit pas bloquer les scrapes (serveur à un seul thread).
+            let _ = conn.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = conn.set_write_timeout(Some(Duration::from_secs(10)));
+            // Lit jusqu'à la fin des en-têtes : fermer avec des octets non lus provoquerait un RST côté client.
+            let mut buf = [0u8; 2048];
+            let mut n = 0;
+            while n < buf.len() && !buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                match conn.read(&mut buf[n..]) {
+                    Ok(0) | Err(_) => break,
+                    Ok(k) => n += k,
+                }
+            }
             let req = String::from_utf8_lossy(&buf[..n]);
-            let (status, body) = if req.starts_with("GET /metrics") {
+            let (status, ctype, body): (&str, &str, Vec<u8>) = if req.starts_with("GET /metrics") {
                 let mut body = m.lock().map(|m| m.render()).unwrap_or_default();
                 let _ = writeln!(body, "# TYPE process_uptime_seconds gauge\nprocess_uptime_seconds {}", started.elapsed().as_secs_f64());
-                ("200 OK", body)
+                ("200 OK", "text/plain; version=0.0.4", body.into_bytes())
             } else if req.starts_with("GET /healthz") {
-                ("200 OK", "ok\n".to_string())
+                ("200 OK", "text/plain", b"ok\n".to_vec())
+            } else if req.starts_with("GET /policy.safetensors") {
+                match dir.as_deref().and_then(|d| std::fs::read(d.join("policy.safetensors")).ok()) {
+                    Some(b) => ("200 OK", "application/octet-stream", b),
+                    None => ("404 Not Found", "text/plain", Vec::new()),
+                }
+            } else if req.starts_with("GET /policy.json") {
+                match dir.as_deref().and_then(policy_info) {
+                    Some(j) => ("200 OK", "application/json", j.into_bytes()),
+                    None => ("404 Not Found", "text/plain", Vec::new()),
+                }
             } else {
-                ("404 Not Found", String::new())
+                ("404 Not Found", "text/plain", Vec::new())
             };
             let _ = write!(
                 conn,
-                "HTTP/1.1 {status}\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             );
+            let _ = conn.write_all(&body);
         }
     })?;
     Ok(local)
+}
+
+/// Métadonnées de la politique exportée : `{"stage":S,"bytes":N,"updated_unix":T}` (`None` sans politique).
+/// `updated_unix` sert de version (la politique est réécrite à chaque checkpoint).
+fn policy_info(dir: &Path) -> Option<String> {
+    let meta = std::fs::metadata(dir.join("policy.safetensors")).ok()?;
+    let updated = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    let stage: u32 = std::fs::read_to_string(dir.join("stage"))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    Some(format!(
+        "{{\"stage\":{stage},\"bytes\":{},\"updated_unix\":{updated}}}\n",
+        meta.len()
+    ))
 }
 
 #[cfg(test)]
@@ -230,5 +282,33 @@ mod tests {
         c.read_to_string(&mut out).unwrap();
         assert!(out.starts_with("HTTP/1.1 200"));
         assert!(out.contains("trainer_steps_total 42"));
+    }
+
+    #[test]
+    fn serves_policy_read_only() {
+        let dir = std::env::temp_dir().join(format!("lm-pol-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let get = |addr, path: &str| {
+            let mut c = std::net::TcpStream::connect(addr).unwrap();
+            write!(c, "GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+            let mut out = Vec::new();
+            c.read_to_end(&mut out).unwrap();
+            out
+        };
+        let m = Arc::new(Mutex::new(Metrics::default()));
+        let addr = serve_with_dir("127.0.0.1:0", m, Some(dir.clone())).unwrap();
+        assert!(get(addr, "/policy.safetensors").starts_with(b"HTTP/1.1 404"));
+        std::fs::write(dir.join("policy.safetensors"), b"\x01\x02\x03").unwrap();
+        std::fs::write(dir.join("stage"), "4\n").unwrap();
+        let b = get(addr, "/policy.safetensors");
+        assert!(b.starts_with(b"HTTP/1.1 200") && b.ends_with(b"\x01\x02\x03"));
+        let j = String::from_utf8(get(addr, "/policy.json")).unwrap();
+        assert!(
+            j.contains("\"stage\":4") && j.contains("\"bytes\":3"),
+            "{j}"
+        );
+        assert!(get(addr, "/etc/passwd").starts_with(b"HTTP/1.1 404"));
+        assert!(get(addr, "/metrics").starts_with(b"HTTP/1.1 200"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

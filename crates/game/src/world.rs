@@ -4,6 +4,7 @@
 use macroquad::math::{Quat, Vec3};
 use sim_core::{PadSnapshot, Sim, Snapshot};
 
+use crate::bot::{Brain, Role};
 use crate::input::{Actions, RawInput};
 
 /// Durée d'un tick de simulation (s).
@@ -27,6 +28,9 @@ pub fn next_supersonic(was: bool, speed: f32) -> bool {
         speed >= SUPERSONIC_ON
     }
 }
+
+/// Une balle quasi immobile pendant ce temps (s) en mode bot : remise en jeu (bot coincé, balle dans un coin).
+pub const STALL_RESET: f32 = 12.0;
 
 pub const TIME_SCALES: [f32; 4] = [0.25, 0.5, 0.75, 1.0];
 
@@ -57,6 +61,8 @@ pub struct DrillStats {
 pub struct World {
     sim: Sim,
     car: u32,
+    /// Id de la voiture orange (mode `VsBot`).
+    orange: Option<u32>,
     pub mode: Mode,
     /// Buts marqués : [bleu, orange].
     pub score: [u32; 2],
@@ -72,6 +78,13 @@ pub struct World {
     pub goal_timer: Option<f32>,
     /// Vrai si le boost est actif au dernier tick (touche tenue et réservoir non vide).
     pub boosting: bool,
+    /// Idem pour la voiture orange pilotée par le bot (mode `VsBot`).
+    pub bot_boosting: bool,
+    /// Pilote automatique et son rôle (`rst watch`, `rst play --vs-bot`).
+    pub bot: Option<(Brain, Role)>,
+    /// Caméra spectateur (mode `Watch`) : vue fixe d'ensemble au lieu de suivre la voiture.
+    pub spectator: bool,
+    stall: f32,
     /// Voiture supersonique (avec hystérésis, voir [`next_supersonic`]).
     pub supersonic: bool,
     /// Positions récentes de la voiture (traînée supersonique), de la plus ancienne à la plus récente.
@@ -84,14 +97,26 @@ pub struct World {
 impl World {
     /// `sim_core::init_meshes` doit avoir réussi avant.
     pub fn new() -> Result<Self, sim_core::SimError> {
+        Self::build(None)
+    }
+
+    /// Monde avec pilote automatique : `Watch` = le bot conduit la voiture bleue seul ;
+    /// `VsBot` = le joueur est bleu, le bot conduit une voiture orange.
+    pub fn with_bot(brain: Brain, role: Role) -> Result<Self, sim_core::SimError> {
+        Self::build(Some((brain, role)))
+    }
+
+    fn build(bot: Option<(Brain, Role)>) -> Result<Self, sim_core::SimError> {
         let mut sim = Sim::new_soccar()?;
         let car = sim.add_car(true);
+        let orange = matches!(bot, Some((_, Role::VsBot))).then(|| sim.add_car(false));
         sim.reset_kickoff(1);
         let cur = sim.snapshot();
         let pads = sim.pads();
         Ok(Self {
             sim,
             car,
+            orange,
             mode: Mode::Free,
             score: [0, 0],
             drill: DrillStats::default(),
@@ -103,6 +128,10 @@ impl World {
             ball_rot: Quat::IDENTITY,
             goal_timer: None,
             boosting: false,
+            bot_boosting: false,
+            bot,
+            spectator: false,
+            stall: 0.0,
             supersonic: false,
             trail: Vec::new(),
             acc: 0.0,
@@ -152,6 +181,10 @@ impl World {
             }
         }
         self.goal_timer = None;
+        self.stall = 0.0;
+        if let Some((b, _)) = &mut self.bot {
+            b.restart();
+        }
         self.supersonic = false;
         self.trail.clear();
         self.refresh();
@@ -164,6 +197,9 @@ impl World {
     }
 
     pub fn toggle_drill(&mut self) {
+        if self.bot.is_some() {
+            return; // pas de drill avec un bot
+        }
         self.mode = match self.mode {
             Mode::Free => Mode::Drill,
             Mode::Drill => Mode::Free,
@@ -189,7 +225,16 @@ impl World {
     pub fn advance(&mut self, dt: f32, input: &RawInput, actions: &Actions) -> Vec<Event> {
         let mut events = Vec::new();
         if actions.toggle_ball_cam {
-            self.ball_cam = !self.ball_cam;
+            if matches!(self.bot, Some((_, Role::Watch))) {
+                // Spectateur : caméra balle → caméra voiture → vue d'ensemble → caméra balle.
+                (self.ball_cam, self.spectator) = match (self.ball_cam, self.spectator) {
+                    (true, _) => (false, false),
+                    (false, false) => (false, true),
+                    (false, true) => (true, false),
+                };
+            } else {
+                self.ball_cam = !self.ball_cam;
+            }
         }
         if actions.slower {
             self.change_scale(false);
@@ -228,9 +273,24 @@ impl World {
     }
 
     fn tick(&mut self, input: RawInput, events: &mut Vec<Event>) {
-        let _ = self.sim.set_controls(self.car, input.to_controls());
+        let mut human = input.to_controls();
+        let mut bot_boost = false;
+        if let Some((brain, role)) = &mut self.bot {
+            match role {
+                Role::Watch => human = brain.controls(&self.cur, 0, None, false),
+                Role::VsBot => {
+                    let c = brain.controls(&self.cur, 1, Some(0), true);
+                    bot_boost = c.boost && self.cur.cars[1].boost > 0.0;
+                    if let Some(o) = self.orange {
+                        let _ = self.sim.set_controls(o, c);
+                    }
+                }
+            }
+        }
+        let _ = self.sim.set_controls(self.car, human);
         self.sim.step(1);
-        self.boosting = input.boost && self.cur.cars[0].boost > 0.0;
+        self.boosting = human.boost && self.cur.cars[0].boost > 0.0;
+        self.bot_boosting = bot_boost;
         self.prev = std::mem::replace(&mut self.cur, self.sim.snapshot());
         let car = &self.cur.cars[0];
         let v = car.vel;
@@ -262,6 +322,19 @@ impl World {
         }
         if self.mode == Mode::Drill {
             self.drill.elapsed += TICK_DT;
+        }
+        if self.bot.is_some() {
+            let v = self.cur.ball.vel;
+            if v[0] * v[0] + v[1] * v[1] + v[2] * v[2] < 50.0 * 50.0 {
+                self.stall += TICK_DT;
+            } else {
+                self.stall = 0.0;
+            }
+            if self.stall >= STALL_RESET && !self.sim.ball_scored() {
+                self.reset();
+                events.push(Event::Reset);
+                return;
+            }
         }
         if self.sim.ball_scored() {
             // La balle est au-delà de y = +5120 : but dans le camp orange, marqué par les bleus.

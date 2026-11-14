@@ -1,6 +1,7 @@
 //! Logique de l'outil `rst` sans dépendance graphique : versions, SHA256, mise à jour, installation.
 //! Isolée du client macroquad pour se tester sans GPU ni libudev.
 
+pub mod bot;
 pub mod cli;
 pub mod commands;
 pub mod hash;

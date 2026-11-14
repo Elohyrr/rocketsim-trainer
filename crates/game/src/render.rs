@@ -266,9 +266,18 @@ pub fn draw_world(w: &World, arena: &ArenaRender) {
         }
     }
 
-    // Voiture : boîte aux dimensions Octane (hitbox publique), cabine, nez, roues.
-    let c = w.car();
-    let pos = lerp3(w.prev.cars[0].pos, c.pos, a);
+    for i in 0..w.cur.cars.len() {
+        let boosting = if i == 0 { w.boosting } else { w.bot_boosting };
+        draw_car(w, i, boosting, a);
+    }
+
+    arena.draw_ceiling();
+}
+
+/// Voiture `i` : boîte aux dimensions Octane (hitbox publique), cabine, nez, roues.
+fn draw_car(w: &World, i: usize, boosting: bool, a: f32) {
+    let c = &w.cur.cars[i];
+    let pos = lerp3(w.prev.cars.get(i).map_or(c.pos, |p| p.pos), c.pos, a);
     let (f, r, u) = (v3(c.forward), v3(c.right), v3(c.up));
     let team = if c.blue {
         col(45, 120, 255, 255)
@@ -303,7 +312,7 @@ pub fn draw_world(w: &World, arena: &ArenaRender) {
         let wc = hit_center + f * fx + r * (sy * 40.0) - u * 16.0;
         draw_obb(wc, axes, [11.0, 6.0, 11.0], col(25, 25, 30, 255), None);
     }
-    if w.boosting {
+    if boosting {
         let flame = hit_center - f * 78.0;
         draw_obb(flame, axes, [22.0, 10.0, 8.0], col(255, 150, 40, 255), None);
         draw_obb(
@@ -315,11 +324,9 @@ pub fn draw_world(w: &World, arena: &ArenaRender) {
         );
     }
 
-    if !w.trail.is_empty() {
+    if i == 0 && !w.trail.is_empty() {
         draw_trail(w, pos, r, u);
     }
-
-    arena.draw_ceiling();
 }
 
 /// Traînée supersonique : deux rubans croisés (horizontal et vertical) qui s'élargissent et
