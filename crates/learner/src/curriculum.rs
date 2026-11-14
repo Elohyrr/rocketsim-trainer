@@ -119,7 +119,8 @@ impl Curriculum {
             }
             return None;
         }
-        if full && self.cooldown == 0 && self.stage < LAST_STAGE && self.goal_rate() >= PROMOTE_GOAL {
+        if full && self.cooldown == 0 && self.stage < LAST_STAGE && self.goal_rate() >= PROMOTE_GOAL
+        {
             self.switch(self.stage + 1);
             return Some(Move::Up(self.stage));
         }

@@ -548,8 +548,9 @@ fn push3(v: &mut Vec<f32>, x: [f32; 3], sc: [f32; 3]) {
 }
 
 /// Construit l'observation de la voiture `me` ; `other` = voiture adverse éventuelle ; `mirror` retourne le monde
-/// de 180° autour de Z (x → -x, y → -y).
-fn build_obs(
+/// de 180° autour de Z (x → -x, y → -y). Publique : le client de jeu l'appelle sur ses snapshots pour que le bot
+/// voie exactement les observations de l'entraînement (bleu : `mirror = false` ; orange : `mirror = true`).
+pub fn build_obs(
     s: &sim_core::Snapshot,
     me: usize,
     other: Option<usize>,
@@ -1008,7 +1009,10 @@ mod tests {
             assert!(me.blue && !them.blue);
             let o = e.observe();
             for k in 0..3 {
-                assert!((o[k] * POS_SCALE[k] - me.pos[k]).abs() < 1.0, "moi, seed {seed}");
+                assert!(
+                    (o[k] * POS_SCALE[k] - me.pos[k]).abs() < 1.0,
+                    "moi, seed {seed}"
+                );
                 let d = o[OBS_DIM_V1 + k] * POS_SCALE[k] - them.pos[k];
                 assert!(d.abs() < 1.0, "adversaire, seed {seed}");
             }

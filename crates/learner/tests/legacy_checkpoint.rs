@@ -74,7 +74,11 @@ fn reset_opponent_inputs_ignores_the_opponent_block_and_keeps_the_rest() {
         *v = 0.7;
     }
     let before = tr.policy_logits(&obs);
-    assert_ne!(tr.policy_logits(&with_opp), before, "réseau neuf : le bloc adversaire compte");
+    assert_ne!(
+        tr.policy_logits(&with_opp),
+        before,
+        "réseau neuf : le bloc adversaire compte"
+    );
     tr.reset_opponent_inputs();
     let after = tr.policy_logits(&obs);
     for (a, b) in after.iter().zip(&before) {

@@ -15,7 +15,7 @@ rst            # jouer
 rst update     # mises à jour (SHA256 vérifié)
 ```
 
-Le script installe `~/.local/bin/rst` (vérification SHA256, aucun droit root). Commandes : `rst play [--drill]`,
+Le script installe `~/.local/bin/rst` (vérification SHA256, aucun droit root). Commandes : `rst play [--drill|--vs-bot]`, `rst watch`, `rst bot pull|info`,
 `rst update [--check]`, `rst install` / `rst uninstall [--purge]`, `rst version`, `rst doctor` (diagnostic),
 `rst config [path|show|edit|reset]`, `rst meshes [--force]`, `rst --help`. Sans argument, `rst` lance le jeu.
 
@@ -28,6 +28,23 @@ et la [spécification](docs/specs/rocketsim-trainer.md). Décisions : [`docs/dec
 
 `sim-core` (simulation) · `scenarios` (drills) · `game` (client jouable, outil `rst`) · `rst-core` (mise à jour, installation, CLI) · `rl-env` (env RL) · `learner` (PPO)
 · `policy-runtime` (inférence légère).
+
+## Regarder le bot / jouer contre lui
+
+Le learner tourne H24 dans le homelab et sert sa dernière politique en lecture seule. Côté laptop :
+
+```sh
+rst bot pull              # télécharge la politique (palier et date affichés) ; à refaire pour la dernière version
+rst watch                 # le bot conduit seul ; C : caméra balle / voiture / spectateur ; [ ] ralenti
+rst play --vs-bot         # 1v1 : vous (bleu, manette ou clavier) contre le bot (orange), score, remise en jeu après but
+```
+
+- URL du serveur : `--url`, sinon `$RST_BOT_URL`, sinon `https://rocketsim.celri.dev` (Tailscale ; sur le LAN :
+  `https://rocketsim.home.celri.dev`). `rst bot pull --file policy.safetensors` installe une politique locale.
+- La politique est stockée dans `~/.local/share/rocketsim-trainer/bot/` ; `rst bot info` l'affiche, `--policy FICHIER`
+  (sur `watch` et `play --vs-bot`) en utilise une autre. Les observations sont construites par `rl-env`, comme à
+  l'entraînement ; une politique de dimensions incompatibles est refusée.
+- Côté learner : `GET /policy.safetensors` et `GET /policy.json` (palier, taille, date) sur le port des métriques.
 
 ## Jouer (Linux x86_64)
 

@@ -363,7 +363,10 @@ mod tests {
         let blue = sim.add_car(true);
         let orange = sim.add_car(false);
         let s = sim.snapshot();
-        assert_eq!(s.cars.iter().map(|c| c.id).collect::<Vec<_>>(), [blue, orange]);
+        assert_eq!(
+            s.cars.iter().map(|c| c.id).collect::<Vec<_>>(),
+            [blue, orange]
+        );
         assert!(s.cars[0].blue && !s.cars[1].blue);
     }
 

@@ -29,12 +29,53 @@ pub struct PlayArgs {
     /// Démarre directement dans le drill « tir au but »
     #[arg(long)]
     pub drill: bool,
+    /// 1v1 contre le bot (politique téléchargée avec `rst bot pull`)
+    #[arg(long)]
+    pub vs_bot: bool,
+    /// Politique à utiliser avec --vs-bot (défaut : celle de `rst bot pull`)
+    #[arg(long, value_name = "FICHIER.safetensors", requires = "vs_bot")]
+    pub policy: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Args)]
+pub struct WatchArgs {
+    /// Politique à utiliser (défaut : celle de `rst bot pull`)
+    #[arg(long, value_name = "FICHIER.safetensors")]
+    pub policy: Option<String>,
+    /// Capture l'écran dans ce fichier PNG puis quitte
+    #[arg(long, value_name = "FICHIER.png")]
+    pub screenshot: Option<String>,
+    /// Nombre d'images avant la capture
+    #[arg(long, value_name = "N", default_value_t = 240)]
+    pub frames: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum BotAction {
+    /// Télécharge la dernière politique du bot (ou en installe une locale)
+    Pull {
+        /// URL du serveur de politique (défaut : $RST_BOT_URL, sinon celle du learner)
+        #[arg(long, value_name = "URL", conflicts_with = "file")]
+        url: Option<String>,
+        /// Installe ce fichier local .safetensors au lieu de télécharger
+        #[arg(long, value_name = "FICHIER")]
+        file: Option<String>,
+    },
+    /// Affiche la politique installée (palier, date)
+    Info,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum Cmd {
     /// Lance le jeu (comportement par défaut)
     Play(PlayArgs),
+    /// Regarde le bot jouer seul (caméra balle / voiture / spectateur)
+    Watch(WatchArgs),
+    /// Gère la politique du bot (téléchargement)
+    Bot {
+        #[command(subcommand)]
+        action: BotAction,
+    },
     /// Met à jour rst depuis la dernière release GitHub (SHA256 vérifié)
     Update {
         /// Vérifie seulement s'il existe une version plus récente
@@ -178,6 +219,30 @@ mod tests {
             p(&["config", "reset"]).cmd,
             Some(Cmd::Config {
                 action: Some(ConfigAction::Reset)
+            })
+        );
+    }
+
+    #[test]
+    fn bot_and_watch_commands() {
+        assert!(matches!(p(&["watch"]).cmd, Some(Cmd::Watch(a)) if a.policy.is_none()));
+        assert!(matches!(p(&["play", "--vs-bot"]).cmd, Some(Cmd::Play(a)) if a.vs_bot));
+        assert!(p(&["--vs-bot"]).play.vs_bot);
+        assert!(try_parse_from(["rst", "play", "--policy", "x"]).is_err());
+        assert_eq!(
+            p(&["bot", "pull", "--url", "http://h:1"]).cmd,
+            Some(Cmd::Bot {
+                action: BotAction::Pull {
+                    url: Some("http://h:1".into()),
+                    file: None
+                }
+            })
+        );
+        assert!(try_parse_from(["rst", "bot", "pull", "--url", "u", "--file", "f"]).is_err());
+        assert_eq!(
+            p(&["bot", "info"]).cmd,
+            Some(Cmd::Bot {
+                action: BotAction::Info
             })
         );
     }

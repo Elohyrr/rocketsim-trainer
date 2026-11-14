@@ -22,3 +22,10 @@ Image : `ghcr.io/elohyrr/rocketsim-trainer` (workflow `.github/workflows/image.y
   taux de toucher) et le dashboard Grafana `homelab-rocketsim` (dépôt GitOps).
 - Politique exportée : `/data/run/policy.safetensors` (+ `policy.json`) à chaque checkpoint. Le PV `local-path` disparaît avec le
   PVC : la copie hors cluster (GitHub Releases, D7) reste à faire.
+
+## Servir la politique (rst bot pull)
+Le serveur `--metrics` sert aussi, en lecture seule, `GET /policy.safetensors` (dernier export, écriture atomique) et
+`GET /policy.json` (`{"stage","bytes","updated_unix"}`, calculé à la volée ; ne pas confondre avec le `policy.json`
+d'architecture écrit dans `--out`). Dans le cluster : Service + HTTPRoutes (`rocketsim.celri.dev`, Tailscale ;
+`rocketsim.home.celri.dev`, LAN) de flux-gitops `apps/rocketsim`, qui ne routent que ces deux chemins (`/metrics` reste interne).
+
