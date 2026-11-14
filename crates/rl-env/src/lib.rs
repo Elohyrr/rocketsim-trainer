@@ -1,7 +1,8 @@
 //! Environnement d'apprentissage par renforcement headless, dans le style RLGym.
 //!
 //! - [`ActionTable`] : table discrète d'actions (contrôles de voiture), comme la `LookupTableAction` de RLGym ;
-//! - [`Env`] : un épisode « toucher la balle » (1 voiture, 1 balle), action repeat configurable ;
+//! - [`Env`] : un épisode selon le palier de curriculum (voiture bleue, balle, voiture orange aux paliers 5 et 6),
+//!   action repeat configurable ;
 //! - [`VecEnv`] : N environnements répartis sur des threads, remise à zéro automatique en fin d'épisode.
 //!
 //! Les unités sont celles de RocketSim (unreal units, 120 Hz).
@@ -16,8 +17,8 @@ pub use sim_core::SimError;
 /// Dimension de l'observation d'avant l'adversaire (checkpoints historiques, voir `docs/curriculum.md`).
 pub const OBS_DIM_V1: usize = 33;
 /// Dimension du vecteur d'observation : [`OBS_DIM_V1`] + bloc adversaire (position, vitesse, cap, présence).
-/// Le bloc adversaire est nul sans adversaire : un réseau dont les poids d'entrée de ce bloc sont nuls
-/// se comporte exactement comme avant.
+/// Le bloc adversaire est nul sans adversaire : un réseau dont les poids d'entrée de ce bloc sont nuls (checkpoint
+/// historique agrandi, voir `docs/curriculum.md`) se comporte exactement comme avant.
 pub const OBS_DIM: usize = OBS_DIM_V1 + 10;
 /// Fréquence de simulation (ticks par seconde).
 pub const TICKS_PER_SECOND: f32 = 120.0;
