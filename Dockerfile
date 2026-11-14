@@ -10,9 +10,11 @@ ENV CARGO_TERM_COLOR=never \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl git build-essential clang-16 pkg-config \
  && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
 WORKDIR /src
 COPY . .
+# Le toolchain (rust-toolchain.toml) s'installe à ce premier appel de cargo, dans ce calque : un `stable` installé
+# dans un calque antérieur puis mis à jour ici échoue (« Invalid cross-device link » sur overlayfs).
 # `game` (macroquad, manette) n'est pas construit : seulement le learner et ses dépendances.
 RUN cargo build --release --locked -p learner \
  && strip target/release/learner
