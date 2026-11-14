@@ -3165,7 +3165,7 @@ dependencies = [
 
 [[package]]
 name = "game"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "gilrs",
  "macroquad",
@@ -6143,7 +6143,7 @@ dependencies = [
 
 [[package]]
 name = "rst-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "policy-runtime",
