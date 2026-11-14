@@ -5,7 +5,8 @@
 //! `--minutes 0` = sans limite (mode cluster). `--stage S` fige le palier (pas de promotion automatique).
 //! Variables : `JELLYFIN_URL`, `JELLYFIN_API_KEY` (pause D6, désactivée sans clé), `JELLYFIN_RESUME_MINUTES`
 //! (défaut 10), `JELLYFIN_POLL_SECONDS` (défaut 30). SIGTERM/SIGINT : checkpoint final puis sortie.
-//! Le dossier `--out` reçoit `checkpoint.mpk`, `policy.safetensors`, `policy.json` et `stage`.
+//! Le dossier `--out` reçoit `checkpoint.mpk`, `policy.safetensors` et `stage`. Le serveur `--metrics` sert aussi
+//! en lecture seule `GET /policy.safetensors` et `GET /policy.json` (palier, taille, date).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use learner::curriculum::{Curriculum, IterResult, Move};
 use learner::jellyfin::Jellyfin;
-use learner::metrics::{Metrics, serve};
+use learner::metrics::{Metrics, serve_with_dir};
 use learner::pause::PauseGate;
 use learner::ppo::{PpoConfig, Trainer};
 use rl_env::EnvConfig;
@@ -144,7 +145,7 @@ fn main() {
         ..Metrics::default()
     }));
     if let Some(addr) = arg("--metrics") {
-        match serve(&addr, metrics.clone()) {
+        match serve_with_dir(&addr, metrics.clone(), Some(out.clone())) {
             Ok(a) => eprintln!("metrics sur http://{a}/metrics"),
             Err(e) => eprintln!("metrics indisponibles : {e}"),
         }

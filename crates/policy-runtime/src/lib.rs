@@ -51,7 +51,10 @@ pub fn write_safetensors(
             out.extend_from_slice(&x.to_le_bytes());
         }
     }
-    std::fs::write(path, out)?;
+    // Écriture atomique : un lecteur (serveur HTTP du learner) ne voit jamais un fichier tronqué.
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, out)?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
