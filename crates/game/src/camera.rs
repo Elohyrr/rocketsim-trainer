@@ -18,6 +18,9 @@ impl Cam {
 
     /// Met à jour la caméra pour la frame (dt réel en secondes) et retourne la Camera3D.
     pub fn update(&mut self, w: &World, dt: f32) -> Camera3D {
+        if w.spectator {
+            return spectator(w);
+        }
         let car = w.car();
         let a = w.alpha();
         let p0 = w.prev.cars[0].pos;
@@ -47,5 +50,21 @@ impl Cam {
             z_far: 400.0,
             ..Default::default()
         }
+    }
+}
+
+/// Vue d'ensemble fixe, au-dessus du fond de terrain bleu, qui pivote doucement vers la balle.
+fn spectator(w: &World) -> Camera3D {
+    let b = w.cur.ball.pos;
+    let aspect = (screen_width() / screen_height().max(1.0)).max(0.1);
+    let fovy = 2.0 * ((75.0f32.to_radians() / 2.0).tan() / aspect).atan();
+    Camera3D {
+        position: g([0.0, -4900.0, 1900.0]),
+        target: g([b[0] * 0.5, b[1] * 0.6, 200.0]),
+        up: vec3(0.0, 0.0, 1.0),
+        fovy,
+        z_near: 0.2,
+        z_far: 400.0,
+        ..Default::default()
     }
 }

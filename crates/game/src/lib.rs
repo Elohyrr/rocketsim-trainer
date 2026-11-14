@@ -2,6 +2,7 @@
 //! géométrie du terrain en primitives originales (`arena_geo`). Le rendu macroquad est dans le binaire.
 
 pub mod arena_geo;
+pub mod bot;
 pub mod config;
 pub mod input;
 pub mod meshes;

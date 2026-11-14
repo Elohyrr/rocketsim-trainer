@@ -10,6 +10,7 @@ publish = false
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
+policy-runtime = { path = "../policy-runtime" }
 clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]

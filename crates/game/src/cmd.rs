@@ -4,7 +4,8 @@
 use std::process::Command;
 
 use game::{config, meshes};
-use rst_core::cli::{Cmd, ConfigAction};
+use rst_core::bot::{self, PolicyMeta};
+use rst_core::cli::{BotAction, Cmd, ConfigAction};
 use rst_core::commands;
 use rst_core::update::{self, Curl, NetError, Status};
 
@@ -14,7 +15,8 @@ const DATE: &str = env!("RST_BUILD_DATE");
 
 pub fn run(cmd: Cmd) -> i32 {
     match cmd {
-        Cmd::Play(_) => unreachable!("géré par main"),
+        Cmd::Play(_) | Cmd::Watch(_) => unreachable!("géré par main"),
+        Cmd::Bot { action } => bot_cmd(&action),
         Cmd::Version => commands::version(PKG, COMMIT, DATE),
         Cmd::Update { check } => match std::env::current_exe() {
             Ok(exe) => commands::update(PKG, check, &Curl, &exe),
@@ -40,6 +42,47 @@ pub fn run(cmd: Cmd) -> i32 {
 fn fail(msg: &str) -> i32 {
     eprintln!("{msg}");
     1
+}
+
+fn bot_cmd(action: &BotAction) -> i32 {
+    let dir = game::bot::policy_dir();
+    let (obs, acts) = (rl_env::OBS_DIM, rl_env::ActionTable::rlgym().len());
+    match action {
+        BotAction::Pull { url, file } => {
+            let r = match file {
+                Some(f) => bot::pull_file(std::path::Path::new(f), &dir, obs, acts),
+                None => {
+                    let url = bot::resolve_url(
+                        url.as_deref(),
+                        std::env::var(bot::URL_ENV).ok().as_deref(),
+                    );
+                    println!("Téléchargement de la politique depuis {url} …");
+                    bot::pull(&Curl, &url, &dir, obs, acts)
+                }
+            };
+            match r {
+                Ok(p) => {
+                    let label = p
+                        .meta
+                        .map_or_else(|| "sans métadonnées".into(), |m| m.label());
+                    println!(
+                        "Politique installée ({} Kio, {label}) : {}\nRegarder : rst watch   Jouer contre : rst play --vs-bot",
+                        p.bytes / 1024,
+                        p.dir.display()
+                    );
+                    0
+                }
+                Err(e) => fail(&format!("Échec : {e}")),
+            }
+        }
+        BotAction::Info => match game::bot::Brain::load_default(None) {
+            Ok(b) => {
+                println!("Politique installée : {} ({})", b.label(), dir.display());
+                0
+            }
+            Err(e) => fail(&e),
+        },
+    }
 }
 
 fn config_cmd(action: ConfigAction) -> i32 {
@@ -130,6 +173,17 @@ fn doctor() -> i32 {
                 meshes::data_dir().display()
             ),
         ),
+    }
+
+    match PolicyMeta::load(&game::bot::policy_dir()) {
+        Some(m) if game::bot::Brain::load_default(None).is_ok() => {
+            line(
+                true,
+                "bot",
+                format!("{} (rst watch / play --vs-bot)", m.label()),
+            );
+        }
+        _ => println!("[..] bot : pas de politique installée (rst bot pull)"),
     }
 
     let cfg_path = config::config_path();

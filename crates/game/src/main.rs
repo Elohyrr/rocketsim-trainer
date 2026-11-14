@@ -6,6 +6,7 @@ mod render;
 
 use std::sync::mpsc;
 
+use game::bot::{Brain, Role};
 use game::config::{self, Bind, Config};
 use game::input::{Actions, RawInput};
 use game::meshes;
@@ -13,7 +14,7 @@ use game::pad::Pad;
 use game::world::{Event, Mode, World};
 use macroquad::miniquad::conf::{LinuxBackend, Platform};
 use macroquad::prelude::*;
-use rst_core::cli::{Cmd, PlayArgs};
+use rst_core::cli::{Cmd, PlayArgs, WatchArgs};
 
 fn window_conf() -> macroquad::conf::Conf {
     macroquad::conf::Conf {
@@ -248,11 +249,32 @@ fn hud(w: &World, pad_name: Option<&str>, binds_warn: &[String], show_help: bool
             Color::from_rgba(120, 220, 255, 255),
         );
     }
+    // Bot
+    if let Some((brain, role)) = &w.bot {
+        let t = match role {
+            Role::Watch => format!("BOT seul | {}", brain.label()),
+            Role::VsBot => format!("Vous (bleu) contre le BOT (orange) | {}", brain.label()),
+        };
+        let d = measure_text(&t, None, 22, 1.0);
+        draw_text(
+            &t,
+            (sw - d.width) / 2.0,
+            if w.mode == Mode::Drill { 104.0 } else { 80.0 },
+            22.0,
+            Color::from_rgba(150, 200, 255, 255),
+        );
+    }
     // Etat
     let info = format!(
         "{} FPS | cam {} | x{:.2} | {}",
         get_fps(),
-        if w.ball_cam { "balle" } else { "voiture" },
+        if w.spectator {
+            "spectateur"
+        } else if w.ball_cam {
+            "balle"
+        } else {
+            "voiture"
+        },
         w.time_scale,
         match pad_name {
             Some(n) => format!("manette : {n}"),
@@ -280,7 +302,21 @@ fn hud(w: &World, pad_name: Option<&str>, binds_warn: &[String], show_help: bool
             Color::from_rgba(255, 220, 80, 255),
         );
     }
-    if show_help {
+    if show_help && matches!(w.bot, Some((_, Role::Watch))) {
+        let lines = [
+            "C camera balle / voiture / spectateur   [ ] ralenti   R remise en jeu",
+            "Le bot conduit seul ; la partie repart apres chaque but   Echap quitter",
+        ];
+        for (i, l) in lines.iter().enumerate() {
+            draw_text(
+                l,
+                14.0,
+                sh - 44.0 + i as f32 * 22.0,
+                20.0,
+                Color::from_rgba(230, 230, 240, 200),
+            );
+        }
+    } else if show_help {
         let lines = [
             "W/S gaz-frein  A/D direction  Espace saut (2e appui = flip, avec W/S/A/D)",
             "Clic gauche / Ctrl boost  Maj / clic droit drift + roulis aerien  Q/E roulis",
@@ -326,18 +362,64 @@ fn main() {
     match cli.cmd {
         None => play(cli.play),
         Some(Cmd::Play(a)) => play(a),
+        Some(Cmd::Watch(a)) => watch(a),
         Some(other) => std::process::exit(cmd::run(other)),
     }
 }
 
-fn play(args: PlayArgs) {
-    macroquad::Window::from_config(window_conf(), run(args));
+/// Paramètres d'une session de jeu (jouer, jouer contre le bot, regarder le bot).
+struct Session {
+    screenshot: Option<String>,
+    frames: u32,
+    demo: bool,
+    drill: bool,
+    bot: Option<(Brain, Role)>,
 }
 
-async fn run(args: PlayArgs) {
-    let screenshot = args.screenshot;
-    let demo = args.demo;
-    let frames = args.frames;
+fn start(s: Session) {
+    macroquad::Window::from_config(window_conf(), run(s));
+}
+
+/// Charge la politique avant d'ouvrir la fenêtre : une erreur s'affiche dans le terminal.
+fn load_brain(explicit: Option<&str>) -> Brain {
+    Brain::load_default(explicit).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1);
+    })
+}
+
+fn play(args: PlayArgs) {
+    let bot = args
+        .vs_bot
+        .then(|| (load_brain(args.policy.as_deref()), Role::VsBot));
+    start(Session {
+        screenshot: args.screenshot,
+        frames: args.frames,
+        demo: args.demo,
+        drill: args.drill,
+        bot,
+    });
+}
+
+fn watch(args: WatchArgs) {
+    let brain = load_brain(args.policy.as_deref());
+    start(Session {
+        screenshot: args.screenshot,
+        frames: args.frames,
+        demo: false,
+        drill: false,
+        bot: Some((brain, Role::Watch)),
+    });
+}
+
+async fn run(session: Session) {
+    let Session {
+        screenshot,
+        frames,
+        demo,
+        drill,
+        bot,
+    } = session;
 
     let dir = match ensure_meshes().await {
         Ok(d) => d,
@@ -353,8 +435,12 @@ async fn run(args: PlayArgs) {
         eprintln!("{e}");
         return;
     }
-    let mut world = World::new().expect("arène");
-    if args.drill {
+    let mut world = match bot {
+        Some((brain, role)) => World::with_bot(brain, role),
+        None => World::new(),
+    }
+    .expect("arène");
+    if drill {
         world.toggle_drill();
     }
     let (cfg, cfg_err) = config::load_or_create(&config::config_path());
