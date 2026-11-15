@@ -41,6 +41,14 @@ pub struct Metrics {
     pub goals_conceded_total: u64,
     /// Fraction d'épisodes finis par un but marqué (fenêtre glissante du curriculum).
     pub goal_rate: f64,
+    /// Coups d'envoi terminés (paliers 5 et 6) : gagnés / perdus / neutres.
+    pub kickoffs_won: u64,
+    pub kickoffs_lost: u64,
+    pub kickoffs_neutral: u64,
+    /// Temps moyen (s) jusqu'au premier toucher et vitesse moyenne (uu/s) au contact, dernière itération avec
+    /// au moins un kickoff touché (0 tant qu'il n'y en a pas eu).
+    pub kickoff_first_touch_seconds: f64,
+    pub kickoff_touch_speed: f64,
 }
 
 impl Metrics {
@@ -94,6 +102,16 @@ impl Metrics {
             self.unrecognized_sequences_total as f64,
         );
         g("trainer_goal_rate", "gauge", self.goal_rate);
+        g(
+            "trainer_kickoff_first_touch_seconds",
+            "gauge",
+            self.kickoff_first_touch_seconds,
+        );
+        g(
+            "trainer_kickoff_touch_speed",
+            "gauge",
+            self.kickoff_touch_speed,
+        );
         let _ = writeln!(s, "# TYPE trainer_checkpoints_total counter");
         let _ = writeln!(
             s,
@@ -131,6 +149,14 @@ impl Metrics {
             "trainer_goals_total{{side=\"conceded\"}} {}",
             self.goals_conceded_total
         );
+        let _ = writeln!(s, "# TYPE trainer_kickoffs_total counter");
+        for (r, v) in [
+            ("won", self.kickoffs_won),
+            ("lost", self.kickoffs_lost),
+            ("neutral", self.kickoffs_neutral),
+        ] {
+            let _ = writeln!(s, "trainer_kickoffs_total{{outcome=\"{r}\"}} {v}");
+        }
         let _ = writeln!(s, "# TYPE trainer_iteration_seconds histogram");
         for (b, c) in BUCKETS.iter().zip(&self.iter_bucket_counts) {
             let _ = writeln!(s, "trainer_iteration_seconds_bucket{{le=\"{b}\"}} {c}");
@@ -262,6 +288,9 @@ mod tests {
                 "mechanic=\"touch\"",
                 "side=\"scored\"",
                 "side=\"conceded\"",
+                "outcome=\"won\"",
+                "outcome=\"lost\"",
+                "outcome=\"neutral\"",
                 "le=\"",
             ];
             assert!(ok.iter().any(|k| l.contains(k)), "{l}");

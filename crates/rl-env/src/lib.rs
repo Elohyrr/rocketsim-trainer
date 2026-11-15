@@ -32,6 +32,11 @@ const BALL_REST_Z: f32 = 93.0;
 const FIELD_X: f32 = 3800.0;
 const FIELD_Y: f32 = 4800.0;
 
+/// Charge les meshes (`$ROCKETSIM_MESHES_DIR`) : à appeler une fois par processus avant [`Env::new`] hors `VecEnv`.
+pub fn init_meshes_from_env() -> Result<(), SimError> {
+    init_meshes(&meshes_dir_from_env()?)
+}
+
 // ---------------------------------------------------------------- RNG
 
 /// Générateur pseudo-aléatoire minimal (splitmix64) : reproductible, sans dépendance.
@@ -165,6 +170,10 @@ pub struct EnvConfig {
     pub spawn: SpawnMode,
     /// Adversaire (voiture orange).
     pub opponent: Opponent,
+    /// Part des épisodes qui sont des coups d'envoi (0 = aucun ; voir [`KickoffState`]). Tirée à chaque reset.
+    pub kickoff_prob: f32,
+    /// Coups d'envoi : l'adversaire reste immobile (contrôle d'évaluation) au lieu de foncer sur la balle.
+    pub kickoff_idle_opponent: bool,
 }
 
 /// Tirage des positions de départ.
@@ -204,6 +213,8 @@ impl Default for EnvConfig {
             ball_speed_max: 0.0,
             spawn: SpawnMode::Random,
             opponent: Opponent::None,
+            kickoff_prob: 0.0,
+            kickoff_idle_opponent: false,
         }
     }
 }
@@ -246,6 +257,7 @@ impl EnvConfig {
                 spawn: SpawnMode::Mixed,
                 max_steps: 400,
                 opponent: Opponent::Static,
+                kickoff_prob: KICKOFF_PROB,
                 ..scoring
             },
             _ => Self {
@@ -253,10 +265,94 @@ impl EnvConfig {
                 spawn: SpawnMode::Mixed,
                 max_steps: 400,
                 opponent: Opponent::SelfPlay,
+                kickoff_prob: KICKOFF_PROB,
                 ..scoring
             },
         }
     }
+
+    /// Config d'évaluation de coups d'envoi : uniquement des kickoffs, contre le fonceur scripté (ou immobile
+    /// si `idle`). Utilisée par `learner --eval-kickoff`.
+    pub fn kickoff_eval(idle: bool) -> Self {
+        Self {
+            kickoff_prob: 1.0,
+            kickoff_idle_opponent: idle,
+            opponent: Opponent::Static,
+            end_on_touch: false,
+            max_steps: KICKOFF_MAX_STEPS + 10,
+            touch_reward: 0.1,
+            approach_weight: 0.05,
+            goal_reward: 10.0,
+            own_goal_penalty: 5.0,
+            ..Self::default()
+        }
+    }
+}
+
+// ---------------------------------------------------------------- coups d'envoi
+
+/// Part des épisodes de coup d'envoi aux paliers 5 et 6 (un kickoff dure ~55 décisions contre ~200 pour un épisode
+/// normal : 40 % des épisodes font ~15 % des pas).
+pub const KICKOFF_PROB: f32 = 0.4;
+/// Durée maximale d'un kickoff (décisions, 6 s).
+pub const KICKOFF_MAX_STEPS: u32 = 90;
+/// Décisions jouées après le premier toucher (2 s) avant de juger le kickoff.
+const KICKOFF_AFTER_TOUCH: u32 = 30;
+/// Positions de départ officielles côté bleu (x, y, lacet) ; l'orange est le miroir (-x, -y, lacet + π).
+const KICKOFF_SPAWNS: [[f32; 3]; 5] = [
+    [-2048.0, -2560.0, std::f32::consts::FRAC_PI_4],
+    [2048.0, -2560.0, 3.0 * std::f32::consts::FRAC_PI_4],
+    [-256.0, -3840.0, std::f32::consts::FRAC_PI_2],
+    [256.0, -3840.0, std::f32::consts::FRAC_PI_2],
+    [0.0, -4608.0, std::f32::consts::FRAC_PI_2],
+];
+/// Temps de référence (s) du fonceur scripté seul, par position (mesurés : test `measure_charger_times`) :
+/// barème de la récompense de rapidité.
+const KICKOFF_T_REF: [f32; 5] = [2.15, 2.15, 2.65, 2.65, 2.65];
+/// Vitesse supersonique (uu/s).
+const SUPERSONIC: f32 = 2200.0;
+/// Une fraction des kickoffs part avec de l'élan (coup de pouce : raccourcit l'horizon de crédit du flip).
+const KICKOFF_HEADSTART_PROB: f32 = 0.1;
+
+/// Issue d'un coup d'envoi vue par l'agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KickoffResult {
+    /// But marqué, ou balle repartie dans le camp adverse (y > 300) 2 s après le premier toucher.
+    Won,
+    /// But encaissé, balle dans notre camp, ou pas de toucher en 6 s.
+    Lost,
+    Neutral,
+}
+
+/// Statistiques d'un coup d'envoi terminé.
+#[derive(Clone, Copy, Debug)]
+pub struct KickoffStats {
+    pub result: KickoffResult,
+    /// Temps (s) jusqu'au premier toucher de l'agent, s'il a touché.
+    pub first_touch_s: Option<f32>,
+    /// Vitesse (uu/s) de l'agent juste avant son premier toucher.
+    pub touch_speed: Option<f32>,
+    /// L'agent a touché en premier (l'adversaire n'avait pas touché avant lui).
+    pub first: bool,
+    pub spawn: usize,
+}
+
+/// État d'un coup d'envoi en cours.
+#[derive(Clone, Debug)]
+pub struct KickoffState {
+    spawn: usize,
+    /// Décisions pendant lesquelles le fonceur adverse attend (varie les 50/50).
+    delay: u32,
+    /// L'adversaire est le fonceur scripté (sinon il suit l'action donnée à `step_vs`).
+    charger: bool,
+    first_me: Option<u32>,
+    opp_first: bool,
+    touch_speed: Option<f32>,
+    prev_speed: f32,
+    max_speed: f32,
+    /// Décision du premier toucher (quelconque) : le kickoff se juge `KICKOFF_AFTER_TOUCH` décisions plus tard.
+    first_any: Option<u32>,
+    last_opp_touch: Option<u64>,
 }
 
 // ---------------------------------------------------------------- Env
@@ -286,6 +382,8 @@ pub struct StepInfo {
     pub touched: bool,
     /// Issue de l'épisode, significative quand `terminated || truncated`.
     pub outcome: Outcome,
+    /// Statistiques du coup d'envoi, renseignées à la fin d'un épisode de kickoff.
+    pub kickoff: Option<KickoffStats>,
 }
 
 /// Un environnement : une voiture bleue, une balle, un seul agent (et un adversaire orange selon le palier).
@@ -298,6 +396,10 @@ pub struct Env {
     rng: Rng,
     steps: u32,
     last_touch: Option<u64>,
+    kickoff: Option<KickoffState>,
+    /// Tick de départ du kickoff en cours ; temps jusqu'au premier toucher de l'agent (s) une fois touché.
+    kickoff_t0: u64,
+    kickoff_first_s: Option<f32>,
 }
 
 impl Env {
@@ -313,6 +415,9 @@ impl Env {
             rng: Rng::new(seed),
             steps: 0,
             last_touch: None,
+            kickoff: None,
+            kickoff_t0: 0,
+            kickoff_first_s: None,
         };
         e.reset();
         Ok(e)
@@ -390,6 +495,13 @@ impl Env {
 
     /// Reset aléatoire : voiture et balle tirées dans le terrain, distance minimale entre elles.
     pub fn reset(&mut self) -> [f32; OBS_DIM] {
+        self.kickoff = None;
+        if self.opp.is_some()
+            && self.cfg.kickoff_prob > 0.0
+            && self.rng.unit() < self.cfg.kickoff_prob
+        {
+            return self.reset_kickoff(None);
+        }
         let (car_pos, ball_pos, ball_vel) = loop {
             let [cx, cy] = self.random_xy();
             let (b, v) = self.spawn_ball();
@@ -431,6 +543,88 @@ impl Env {
         self.observe()
     }
 
+    /// Reset en coup d'envoi : une des 5 positions officielles (tirée si `spawn` est `None`), l'adversaire en
+    /// miroir, balle au centre, pads remis. Léger bruit de position/cap (±50 uu, ±0,05 rad) pour que les
+    /// épisodes ne soient pas identiques. Sans adversaire, seule la voiture de l'agent est placée.
+    pub fn reset_kickoff(&mut self, spawn: Option<usize>) -> [f32; OBS_DIM] {
+        let idx = spawn.unwrap_or_else(|| (self.rng.next_u64() % 5) as usize) % 5;
+        let [x, y, yaw] = KICKOFF_SPAWNS[idx];
+        let seed = (self.rng.next_u64() & 0x7FFF_FFFF) as i32;
+        // Pads, balle, invalidation des touchers ; les voitures sont replacées ensuite (par id).
+        self.sim.reset_kickoff(seed);
+        self.sim.reset_ball([0.0, 0.0, BALL_REST_Z], [0.0; 3]);
+        let jitter = |rng: &mut Rng| {
+            (
+                rng.range(-50.0, 50.0),
+                rng.range(-50.0, 50.0),
+                rng.range(-0.05, 0.05),
+            )
+        };
+        let (jx, jy, jyaw) = jitter(&mut self.rng);
+        let headstart = self.rng.unit() < KICKOFF_HEADSTART_PROB;
+        let speed = if headstart {
+            self.rng.range(1200.0, 1600.0)
+        } else {
+            0.0
+        };
+        let yaw_me = yaw + jyaw;
+        let vel = [speed * yaw_me.cos(), speed * yaw_me.sin(), 0.0];
+        self.sim
+            .reset_car(self.car, [x + jx, y + jy, 17.0], yaw_me, vel, 33.0)
+            .expect("voiture connue");
+        self.sim.set_controls(self.car, Controls::default()).ok();
+        let mut delay = 0;
+        let mut charger = false;
+        if let Some(opp) = self.opp {
+            let (jx, jy, jyaw) = jitter(&mut self.rng);
+            self.sim
+                .reset_car(
+                    opp,
+                    [-x + jx, -y + jy, 17.0],
+                    yaw + std::f32::consts::PI + jyaw,
+                    [0.0; 3],
+                    33.0,
+                )
+                .expect("voiture adverse connue");
+            self.sim.set_controls(opp, Controls::default()).ok();
+            // Le fonceur scripté tient l'orange sauf si l'évaluation le veut immobile ; au self-play, 30 % des
+            // kickoffs restent contre lui (sinon « personne ne va à la balle » devient une stratégie).
+            charger = !self.cfg.kickoff_idle_opponent
+                && (self.cfg.opponent != Opponent::SelfPlay || self.rng.unit() < 0.3);
+            delay = (self.rng.next_u64() % 5) as u32;
+        }
+        self.steps = 0;
+        self.last_touch = self.sim.last_ball_touch_tick(self.car);
+        self.kickoff_t0 = self.sim.tick_count();
+        self.kickoff_first_s = None;
+        self.kickoff = Some(KickoffState {
+            spawn: idx,
+            delay,
+            charger,
+            first_me: None,
+            opp_first: false,
+            touch_speed: None,
+            prev_speed: speed,
+            max_speed: speed,
+            first_any: None,
+            last_opp_touch: self.opp.and_then(|o| self.sim.last_ball_touch_tick(o)),
+        });
+        self.observe()
+    }
+
+    /// Action du fonceur scripté orange : cap vers la balle, gaz et boost à fond (les flips et le speed flip lui
+    /// sont inconnus : c'est le niveau à battre, pas un modèle de joueur).
+    fn charger_action(&mut self, opp: u32) -> usize {
+        let s = self.sim.snapshot();
+        let me = &s.cars[car_index(&s, opp)];
+        let (dx, dy) = (s.ball.pos[0] - me.pos[0], s.ball.pos[1] - me.pos[1]);
+        let cross = me.forward[0] * dy - me.forward[1] * dx;
+        let dot = me.forward[0] * dx + me.forward[1] * dy;
+        let ang = cross.atan2(dot);
+        let steer = if ang.abs() > 0.1 { ang.signum() } else { 0.0 };
+        self.expert_action(steer)
+    }
+
     /// Avance d'une décision avec l'action `action` (indice de la table) ; l'adversaire, s'il existe, ne bouge pas.
     pub fn step(&mut self, action: usize) -> StepInfo {
         self.step_vs(action, None)
@@ -441,10 +635,22 @@ impl Env {
         self.sim
             .set_controls(self.car, self.actions.get(action))
             .expect("voiture connue");
-        if let (Some(opp), Some(a)) = (self.opp, opp_action) {
-            self.sim
-                .set_controls(opp, self.actions.get(a))
-                .expect("voiture adverse connue");
+        if let Some(opp) = self.opp {
+            let charging = self
+                .kickoff
+                .as_ref()
+                .filter(|k| k.charger && self.steps >= k.delay)
+                .is_some();
+            let a = if charging {
+                Some(self.charger_action(opp))
+            } else {
+                opp_action
+            };
+            if let Some(a) = a {
+                self.sim
+                    .set_controls(opp, self.actions.get(a))
+                    .expect("voiture adverse connue");
+            }
         }
         self.sim.step(self.cfg.tick_skip);
         self.steps += 1;
@@ -483,7 +689,79 @@ impl Env {
         if own_goal {
             reward -= self.cfg.own_goal_penalty;
         }
-        let touch_end = touched && self.cfg.end_on_touch;
+        let touch_end = touched && self.cfg.end_on_touch && self.kickoff.is_none();
+        let mut kickoff_done = None;
+        if self.kickoff.is_some() {
+            let opp_touch = self.opp.and_then(|o| self.sim.last_ball_touch_tick(o));
+            let speed = (car.vel[0].powi(2) + car.vel[1].powi(2) + car.vel[2].powi(2)).sqrt();
+            let step_no = self.steps;
+            let skip = self.cfg.tick_skip as f32;
+            let t0 = self.kickoff_t0;
+            let ball = snap.ball;
+            let k = self.kickoff.as_mut().expect("kickoff en cours");
+            let opp_touched = opp_touch.is_some() && opp_touch != k.last_opp_touch;
+            k.last_opp_touch = opp_touch;
+            let mut first_touch_s = None;
+            if touched && k.first_me.is_none() {
+                k.first_me = Some(step_no);
+                k.touch_speed = Some(k.prev_speed);
+                // Temps exact au tick près ; repli sur la décision si l'horloge de la simulation diffère.
+                let upper = step_no as f32 * skip / TICKS_PER_SECOND;
+                let t = touch_now
+                    .and_then(|tk| tk.checked_sub(t0))
+                    .map_or(upper, |d| (d as f32 / TICKS_PER_SECOND).min(upper));
+                first_touch_s = Some(t);
+                // Récompenses seulement si l'agent gagne la course à la balle (ex æquo : personne).
+                if k.first_any.is_none() && !opp_touched {
+                    let t_ref = KICKOFF_T_REF[k.spawn];
+                    reward += (1.0 + (t_ref - t) / 0.5).clamp(0.0, 2.0);
+                    if ball.vel[1] > 0.0 {
+                        reward += 0.5 * ((k.prev_speed - 1200.0) / 1000.0).clamp(0.0, 1.0);
+                    }
+                    reward += (ball.vel[1] / 2000.0).clamp(-1.0, 1.0);
+                    if k.max_speed >= SUPERSONIC {
+                        reward += 0.5;
+                    }
+                }
+            }
+            if opp_touched && k.first_any.is_none() && !touched {
+                k.opp_first = true;
+                reward -= 1.0;
+            }
+            if (touched || opp_touched) && k.first_any.is_none() {
+                k.first_any = Some(step_no);
+            }
+            k.prev_speed = speed;
+            k.max_speed = k.max_speed.max(speed);
+            if first_touch_s.is_some() {
+                self.kickoff_first_s = first_touch_s;
+            }
+            let over = scored
+                || step_no >= KICKOFF_MAX_STEPS
+                || k.first_any
+                    .is_some_and(|f| step_no >= f + KICKOFF_AFTER_TOUCH);
+            if over {
+                let result = if our_goal || (k.first_me.is_some() && ball.pos[1] > 300.0) {
+                    KickoffResult::Won
+                } else if own_goal || ball.pos[1] < -300.0 || k.first_me.is_none() {
+                    KickoffResult::Lost
+                } else {
+                    KickoffResult::Neutral
+                };
+                reward += match result {
+                    KickoffResult::Won => 3.0,
+                    KickoffResult::Lost => -3.0,
+                    KickoffResult::Neutral => 0.0,
+                };
+                kickoff_done = Some(KickoffStats {
+                    result,
+                    first_touch_s: self.kickoff_first_s,
+                    touch_speed: k.touch_speed,
+                    first: k.first_me.is_some() && !k.opp_first && k.first_any == k.first_me,
+                    spawn: k.spawn,
+                });
+            }
+        }
         let outcome = if our_goal {
             Outcome::Goal
         } else if own_goal {
@@ -495,10 +773,11 @@ impl Env {
         };
         StepInfo {
             reward,
-            terminated: scored || touch_end,
+            terminated: scored || touch_end || kickoff_done.is_some(),
             truncated: self.steps >= self.cfg.max_steps,
             touched,
             outcome,
+            kickoff: kickoff_done,
         }
     }
 
@@ -608,6 +887,8 @@ pub struct EpisodeStats {
     pub length: u32,
     pub touched: bool,
     pub outcome: Outcome,
+    /// Renseigné si l'épisode était un coup d'envoi.
+    pub kickoff: Option<KickoffStats>,
 }
 
 /// Résultat groupé d'une décision sur tous les envs. Les observations sont celles *après* remise à zéro
@@ -862,6 +1143,7 @@ fn worker_loop(
                             length: len[i],
                             touched: touched[i],
                             outcome: r.outcome,
+                            kickoff: r.kickoff,
                         });
                         (ret[i], len[i], touched[i]) = (0.0, 0, false);
                         reply.obs.extend_from_slice(&e.reset());
@@ -1002,7 +1284,11 @@ mod tests {
     fn observation_and_reward_follow_the_agent_car_with_an_opponent() {
         assert!(setup());
         for seed in 0..8 {
-            let mut e = Env::new(EnvConfig::for_stage(5), seed).unwrap();
+            let cfg = EnvConfig {
+                kickoff_prob: 0.0,
+                ..EnvConfig::for_stage(5)
+            };
+            let mut e = Env::new(cfg, seed).unwrap();
             let s = e.sim.snapshot();
             let me = s.cars.iter().find(|c| c.id == e.car).unwrap();
             let them = s.cars.iter().find(|c| Some(c.id) == e.opp).unwrap();
@@ -1127,5 +1413,168 @@ mod tests {
         let obs = v.set_config(&EnvConfig::for_stage(2));
         assert_eq!(obs.len(), 4 * OBS_DIM);
         assert!(v.opp_obs().is_empty());
+    }
+
+    /// Joue un kickoff complet avec `policy` (observation → action) et renvoie (retour, statistiques).
+    fn play_kickoff(
+        e: &mut Env,
+        spawn: usize,
+        policy: &dyn Fn(&[f32]) -> usize,
+    ) -> (f32, KickoffStats) {
+        let mut obs = e.reset_kickoff(Some(spawn));
+        let mut ret = 0.0;
+        for _ in 0..KICKOFF_MAX_STEPS + 5 {
+            let r = e.step_vs(policy(&obs), None);
+            ret += r.reward;
+            if let Some(k) = r.kickoff {
+                return (ret, k);
+            }
+            obs = e.observe();
+        }
+        panic!("le kickoff aurait dû se terminer");
+    }
+
+    fn charge(e: &Env) -> impl Fn(&[f32]) -> usize + use<> {
+        let table = e.actions.clone();
+        move |o: &[f32]| {
+            let (rx, ry) = (o[24] * REL_POS_SCALE[0], o[25] * REL_POS_SCALE[1]);
+            let (fx, fy) = (o[9], o[10]);
+            let ang = (fx * ry - fy * rx).atan2(fx * rx + fy * ry);
+            let steer = if ang.abs() > 0.1 { ang.signum() } else { 0.0 };
+            (0..table.len())
+                .find(|&i| {
+                    let c = table.get(i);
+                    c.throttle == 1.0 && c.steer == steer && c.boost && !c.jump && c.pitch == 0.0
+                })
+                .unwrap()
+        }
+    }
+
+    #[test]
+    fn kickoff_only_from_stage_5_and_spawns_are_official_and_mirrored() {
+        assert!(setup());
+        assert!((0..5).all(|n| EnvConfig::for_stage(n).kickoff_prob == 0.0));
+        assert!((5..=6).all(|n| EnvConfig::for_stage(n).kickoff_prob > 0.0));
+        let mut e = Env::new(EnvConfig::kickoff_eval(false), 1).unwrap();
+        for spawn in 0..5 {
+            e.reset_kickoff(Some(spawn));
+            let s = e.sim.snapshot();
+            let me = &s.cars[car_index(&s, e.car)];
+            let them = &s.cars[car_index(&s, e.opp.unwrap())];
+            let [x, y, _] = KICKOFF_SPAWNS[spawn];
+            assert!((me.pos[0] - x).abs() <= 51.0 && (me.pos[1] - y).abs() <= 51.0);
+            assert!((them.pos[0] + x).abs() <= 101.0 && (them.pos[1] + y).abs() <= 101.0);
+            assert!(me.blue && !them.blue);
+            assert_eq!(s.ball.pos, [0.0, 0.0, BALL_REST_Z]);
+            assert!((me.boost - 33.0).abs() < 1.0);
+        }
+    }
+
+    #[test]
+    fn kickoff_episodes_are_mixed_by_probability() {
+        assert!(setup());
+        let cfg = EnvConfig {
+            kickoff_prob: 0.5,
+            ..EnvConfig::for_stage(5)
+        };
+        let mut e = Env::new(cfg, 3).unwrap();
+        let n = (0..200)
+            .filter(|_| {
+                e.reset();
+                e.kickoff.is_some()
+            })
+            .count();
+        assert!((60..140).contains(&n), "{n} kickoffs sur 200");
+    }
+
+    #[test]
+    fn charging_agent_touches_and_idle_agent_loses_without_free_reward() {
+        assert!(setup());
+        let mut e = Env::new(EnvConfig::kickoff_eval(false), 7).unwrap();
+        let go = charge(&e);
+        let (mut best, mut idle_worst) = (f32::MIN, f32::MIN);
+        let mut touched = 0;
+        for spawn in 0..5 {
+            let (ret, k) = play_kickoff(&mut e, spawn, &go);
+            assert!(
+                k.first_touch_s.is_none_or(|t| (0.5..6.0).contains(&t)),
+                "{k:?}"
+            );
+            touched += u32::from(k.first_touch_s.is_some());
+            best = best.max(ret);
+            // Immobile (gaz nul, sans boost) : jamais de toucher, kickoff perdu, retour négatif.
+            let (r, k) = play_kickoff(&mut e, spawn, &|_| 4);
+            assert_eq!(k.first_touch_s, None, "action 4 = gaz nul, sans boost");
+            assert_eq!(k.result, KickoffResult::Lost);
+            idle_worst = idle_worst.max(r);
+        }
+        assert!(touched >= 4, "le fonceur doit toucher : {touched}/5");
+        assert!(
+            idle_worst < 0.0,
+            "ne rien faire ne doit rien rapporter : {idle_worst}"
+        );
+        assert!(best > 0.0, "{best}");
+    }
+
+    #[test]
+    fn kickoff_reward_is_bounded_below_a_goal() {
+        assert!(setup());
+        let mut e = Env::new(EnvConfig::kickoff_eval(true), 8).unwrap();
+        let go = charge(&e);
+        for spawn in 0..5 {
+            let (ret, k) = play_kickoff(&mut e, spawn, &go);
+            // Hors but (10 + 3), les récompenses de kickoff restent sous la valeur d'un but.
+            let shaped = if k.result == KickoffResult::Won && ret > 10.0 {
+                ret - 10.0
+            } else {
+                ret
+            };
+            assert!(
+                shaped < 10.0,
+                "un kickoff ne vaut jamais un but : {ret} ({k:?})"
+            );
+            assert!(k.first, "adversaire immobile : l'agent touche en premier");
+        }
+    }
+
+    #[test]
+    fn kickoff_step_with_selfplay_opponent_actions_stays_finite() {
+        assert!(setup());
+        let mut e = Env::new(
+            EnvConfig {
+                kickoff_prob: 1.0,
+                ..EnvConfig::for_stage(6)
+            },
+            9,
+        )
+        .unwrap();
+        for _ in 0..4 {
+            e.reset();
+            for _ in 0..100 {
+                let r = e.step_vs(30, Some(25));
+                assert!(r.reward.is_finite());
+                if r.terminated {
+                    assert!(r.kickoff.is_some());
+                    break;
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "mesure : cargo test -p rl-env measure_charger -- --ignored --nocapture"]
+    fn measure_charger_times() {
+        assert!(setup());
+        let mut e = Env::new(EnvConfig::kickoff_eval(true), 11).unwrap();
+        let go = charge(&e);
+        for spawn in 0..5 {
+            let ts: Vec<String> = (0..8)
+                .map(|_| {
+                    let (_, k) = play_kickoff(&mut e, spawn, &go);
+                    format!("{:.2}", k.first_touch_s.unwrap_or(-1.0))
+                })
+                .collect();
+            println!("spawn {spawn}: {}", ts.join(" "));
+        }
     }
 }
