@@ -685,14 +685,17 @@ impl Env {
         }
         let touch_end = touched && self.cfg.end_on_touch && self.kickoff.is_none();
         let mut kickoff_done = None;
-        if self.kickoff.is_some() {
-            let opp_touch = self.opp.and_then(|o| self.sim.last_ball_touch_tick(o));
+        let opp_touch = if self.kickoff.is_some() {
+            self.opp.and_then(|o| self.sim.last_ball_touch_tick(o))
+        } else {
+            None
+        };
+        if let Some(k) = self.kickoff.as_mut() {
             let speed = (car.vel[0].powi(2) + car.vel[1].powi(2) + car.vel[2].powi(2)).sqrt();
             let step_no = self.steps;
             let skip = self.cfg.tick_skip as f32;
             let t0 = self.kickoff_t0;
             let ball = snap.ball;
-            let k = self.kickoff.as_mut().expect("kickoff en cours");
             let opp_touched = opp_touch.is_some() && opp_touch != k.last_opp_touch;
             k.last_opp_touch = opp_touch;
             let mut first_touch_s = None;
@@ -1472,12 +1475,11 @@ mod tests {
         assert!((0..5).all(|n| EnvConfig::for_stage(n).kickoff_prob == 0.0));
         assert!((5..=6).all(|n| EnvConfig::for_stage(n).kickoff_prob > 0.0));
         let mut e = Env::new(EnvConfig::kickoff_eval(false), 1).unwrap();
-        for spawn in 0..5 {
+        for (spawn, &[x, y, _]) in KICKOFF_SPAWNS.iter().enumerate() {
             e.reset_kickoff(Some(spawn));
             let s = e.sim.snapshot();
             let me = &s.cars[car_index(&s, e.car)];
             let them = &s.cars[car_index(&s, e.opp.unwrap())];
-            let [x, y, _] = KICKOFF_SPAWNS[spawn];
             assert!((me.pos[0] - x).abs() <= 51.0 && (me.pos[1] - y).abs() <= 51.0);
             assert!((them.pos[0] + x).abs() <= 101.0 && (them.pos[1] + y).abs() <= 101.0);
             assert!(me.blue && !them.blue);

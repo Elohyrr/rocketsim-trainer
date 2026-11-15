@@ -40,6 +40,12 @@ Total maximal ≈ 7 hors but, sous les +10 d'un but. Pas de récompense dense de
 kickoffs par position, mêmes graines ; `--idle` = adversaire immobile). `--kickoff-prob P` surcharge la part de kickoffs
 à l'entraînement (0 = témoin).
 
+Mesures locales (copie du checkpoint de prod, `--stage 5`, 2 threads, 10 min ≈ 2,2 M pas, `--eval-kickoff 40`, adversaire
+fonceur) : avant 34 % de kickoffs gagnés / 44,5 % de premiers touchers / 2,58 s / 1278 uu/s au contact. Après 10 min avec
+kickoffs : 45 % / 57,5 % / 2,53 s / 1687 uu/s ; témoin 10 min sans kickoff (`--kickoff-prob 0`) : 41,5 % / 52,5 % / 2,56 s
+/ 1536 uu/s. L'écart avec le témoin (+3,5 points) est dans le bruit (±7 points) : 10 minutes ne prouvent rien, l'effet se
+juge sur plusieurs heures en prod (`trainer_kickoffs_total`). Contre un adversaire immobile : 100 % dans tous les cas.
+
 ### Réalisme : flip avant et speed flip
 
 La table de 78 actions contient déjà les flips (diagonale pitch −1 + roll ±1 + saut : indices 20/21 et 28/29 ; flip avant
