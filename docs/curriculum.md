@@ -16,6 +16,43 @@ courant est la métrique `trainer_curriculum_stage` et le fichier `<out>/stage` 
 Récompenses dès le palier 2 : +10 pour un but marqué (+Y), **−5 pour un but contre son camp** (balle dans le but −Y,
 y compris un but encaissé en self-play), 0,1 par toucher, 0,05 × vitesse vers la balle.
 
+## Coups d'envoi (paliers 5 et 6)
+
+Un épisode sur 40 % (`KICKOFF_PROB`, tirée à chaque reset) est un **coup d'envoi** : une des 5 positions officielles
+tirée au hasard (±50 uu, ±0,05 rad), l'adversaire en miroir, balle au centre, 33 de boost. L'adversaire est le
+**fonceur scripté** (cap vers la balle, gaz et boost, départ retardé de 0 à 4 décisions) au palier 5 ; au palier 6 il
+est la copie gelée de la politique, sauf 30 % des kickoffs contre le fonceur (sinon « personne ne va à la balle »
+devient une stratégie). 10 % des kickoffs partent avec de l'élan (1200–1600 uu/s) : coup de pouce pour découvrir le flip
+avant l'impact. Fin : 2 s (30 décisions) après le premier toucher de l'une des voitures, 6 s (90 décisions) au plus, ou
+but. Ces épisodes sont **exclus** de `episodes`, `touches`, `goals`, `own_goals` : ils ne pèsent pas sur la promotion.
+
+Récompenses (en plus de 0,05 × approche et 0,1 par toucher), versées **une seule fois** et seulement si l'agent
+touche le premier (égalité au tick : personne) :
+- rapidité `clamp(1 + (t_ref − t) / 0,5 s, 0, 2)`, `t_ref` = temps du fonceur seul (2,15 s diagonales, 2,65 s ailleurs,
+  mesuré par `measure_charger_times`) ;
+- vitesse au contact `0,5 × clamp((v − 1200) / 1000, 0, 1)` (vitesse à la décision d'avant, balle partie vers +Y) ;
+- direction `clamp(vy_balle / 2000, −1, 1)` ; supersonique (≥ 2200 uu/s) avant le toucher : +0,5 ;
+- issue : +3 gagné (but, ou balle à y > 300 après un toucher de l'agent), −3 perdu (but encaissé, y < −300, ou pas
+  de toucher en 6 s), 0 sinon ; −1 si l'adversaire touche le premier.
+Total maximal ≈ 7 hors but, sous les +10 d'un but. Pas de récompense dense de vitesse (tourner en rond ne paie pas).
+
+Évaluation reproductible : `learner --eval-kickoff 40 --policy policy.safetensors [--idle]` (politique gloutonne, 40
+kickoffs par position, mêmes graines ; `--idle` = adversaire immobile). `--kickoff-prob P` surcharge la part de kickoffs
+à l'entraînement (0 = témoin).
+
+### Réalisme : flip avant et speed flip
+
+La table de 78 actions contient déjà les flips (diagonale pitch −1 + roll ±1 + saut : indices 20/21 et 28/29 ; flip avant
+24/25 ; saut seul 44/45 ; annulation 60/61, 68/69). Un flip avant = 3 décisions de suite (saut, relâcher, flip) : à la
+portée du PPO. Un **speed flip** exige ≈ 5 décisions précises (saut, relâcher, diagonale, annulation vers 67 ms, roll
+pour retomber) à 15 Hz : en PPO pur sans démonstration, c'est très improbable en dix minutes et peu probable même en
+plusieurs jours. Ce qui est réaliste : un flip avant ou diagonal pour finir l'approche (les bonus de rapidité, de vitesse
+au contact et de supersonique le récompensent directement, avec 33 de boost le flip est le moyen évident de dépasser
+2200 uu/s). Coups de pouce déjà en place : élan initial sur 10 % des kickoffs, bonus supersonique. Piste suivante, non
+faite : clonage de comportement sur un speed flip scripté, puis PPO (ne change pas le format du checkpoint). Essayé et
+écarté : un coût du temps de 0,02 par décision avant le premier toucher (taux de kickoffs gagnés plus bas que sans, sur
+un seul essai de 10 min : bruit probable, mais aucun gain mesuré).
+
 ## Promotion et régression
 
 - Paliers 0 et 1 : taux de toucher moyen ≥ 90 % sur les 10 dernières itérations.

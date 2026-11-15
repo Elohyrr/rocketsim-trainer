@@ -276,6 +276,21 @@ mod tests {
     }
 
     #[test]
+    fn kickoff_series_are_exposed() {
+        let m = Metrics {
+            kickoffs_won: 3,
+            kickoffs_lost: 2,
+            kickoff_first_touch_seconds: 2.5,
+            ..Default::default()
+        };
+        let t = m.render();
+        assert!(t.contains("trainer_kickoffs_total{outcome=\"won\"} 3"));
+        assert!(t.contains("trainer_kickoffs_total{outcome=\"lost\"} 2"));
+        assert!(t.contains("trainer_kickoff_first_touch_seconds 2.5"));
+        assert!(t.contains("trainer_kickoff_touch_speed 0"));
+    }
+
+    #[test]
     fn labels_are_from_closed_enums() {
         let t = Metrics::default().render();
         for l in t.lines().filter(|l| l.contains('{')) {

@@ -146,3 +146,32 @@ fn vs_bot_goal_scores_for_blue_and_restarts_with_both_cars() {
     assert_eq!(w.cur.cars.len(), 2);
     assert!(w.ticks() >= 700);
 }
+
+#[test]
+fn watch_kickoff_loop_adds_a_charging_opponent_and_restarts_kickoffs() {
+    init();
+    let tmp = tempfile::tempdir().unwrap();
+    let brain = Brain::load(&write_policy(tmp.path(), OBS_DIM)).unwrap();
+    let mut w = World::with_bot(brain, Role::Watch).unwrap();
+    w.set_kickoff_loop();
+    assert_eq!(
+        w.cur.cars.len(),
+        2,
+        "le bot (bleu) et l'adversaire scripté (orange)"
+    );
+    assert!(w.cur.cars[0].blue && !w.cur.cars[1].blue);
+    let orange_start = w.cur.cars[1].pos;
+    // 8 s de jeu : l'orange fonce sur la balle, et la boucle remet au moins un coup d'envoi en place (6 s au plus).
+    let mut resets = 0;
+    let mut moved = 0.0f32;
+    for _ in 0..(8 * 60) {
+        let ev = w.advance(1.0 / 60.0, &RawInput::default(), &Actions::default());
+        resets += ev.iter().filter(|e| matches!(e, Event::Reset)).count();
+        moved = moved.max(dist(orange_start, w.cur.cars[1].pos));
+    }
+    assert!(moved > 500.0, "l'orange doit foncer : {moved}");
+    assert!(
+        resets >= 1,
+        "la boucle doit enchaîner les kickoffs : {resets}"
+    );
+}

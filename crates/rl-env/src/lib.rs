@@ -616,13 +616,7 @@ impl Env {
     /// sont inconnus : c'est le niveau à battre, pas un modèle de joueur).
     fn charger_action(&mut self, opp: u32) -> usize {
         let s = self.sim.snapshot();
-        let me = &s.cars[car_index(&s, opp)];
-        let (dx, dy) = (s.ball.pos[0] - me.pos[0], s.ball.pos[1] - me.pos[1]);
-        let cross = me.forward[0] * dy - me.forward[1] * dx;
-        let dot = me.forward[0] * dx + me.forward[1] * dy;
-        let ang = cross.atan2(dot);
-        let steer = if ang.abs() > 0.1 { ang.signum() } else { 0.0 };
-        self.expert_action(steer)
+        self.expert_action(charger_steer(&s, opp))
     }
 
     /// Avance d'une décision avec l'action `action` (indice de la table) ; l'adversaire, s'il existe, ne bouge pas.
@@ -811,6 +805,28 @@ impl Env {
 
     pub fn has_opponent(&self) -> bool {
         self.opp.is_some()
+    }
+}
+
+/// Direction (-1, 0 ou 1) du fonceur scripté de la voiture `id` : cap vers la balle, zone morte de 0,1 rad.
+pub fn charger_steer(s: &sim_core::Snapshot, id: u32) -> f32 {
+    let me = &s.cars[car_index(s, id)];
+    let (dx, dy) = (s.ball.pos[0] - me.pos[0], s.ball.pos[1] - me.pos[1]);
+    let cross = me.forward[0] * dy - me.forward[1] * dx;
+    let dot = me.forward[0] * dx + me.forward[1] * dy;
+    let ang = cross.atan2(dot);
+    if ang.abs() > 0.1 { ang.signum() } else { 0.0 }
+}
+
+/// Contrôles du fonceur scripté (gaz et boost à fond, cap vers la balle) : identique à l'action experte de la table.
+pub fn charger_controls(s: &sim_core::Snapshot, id: u32) -> Controls {
+    let steer = charger_steer(s, id);
+    Controls {
+        throttle: 1.0,
+        steer,
+        yaw: steer,
+        boost: true,
+        ..Default::default()
     }
 }
 

@@ -108,3 +108,21 @@ pub fn run(path: &Path, n: u32, idle: bool) -> Result<(), String> {
     println!("{}", line("TOTAL", &total));
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eval_is_reproducible_and_a_passive_policy_loses_every_kickoff() {
+        // Action 4 : gaz nul, sans boost (table `ActionTable::rlgym`).
+        let idle = |_: &[f32]| 4usize;
+        let (a, per) = eval_kickoffs(&idle, 2, false).expect("meshes (ROCKETSIM_MESHES_DIR)");
+        let (b, _) = eval_kickoffs(&idle, 2, false).expect("meshes");
+        assert_eq!(a.total(), 10);
+        assert_eq!(per.iter().map(KickoffEval::total).sum::<u32>(), 10);
+        assert_eq!((a.won, a.lost, a.neutral), (b.won, b.lost, b.neutral));
+        assert_eq!(a.won, 0, "ne rien faire ne gagne jamais un kickoff");
+        assert_eq!(a.touched, 0);
+    }
+}

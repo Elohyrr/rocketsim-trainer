@@ -373,6 +373,7 @@ struct Session {
     frames: u32,
     demo: bool,
     drill: bool,
+    kickoff: bool,
     bot: Option<(Brain, Role)>,
 }
 
@@ -397,6 +398,7 @@ fn play(args: PlayArgs) {
         frames: args.frames,
         demo: args.demo,
         drill: args.drill,
+        kickoff: false,
         bot,
     });
 }
@@ -408,6 +410,7 @@ fn watch(args: WatchArgs) {
         frames: args.frames,
         demo: false,
         drill: false,
+        kickoff: args.kickoff,
         bot: Some((brain, Role::Watch)),
     });
 }
@@ -418,6 +421,7 @@ async fn run(session: Session) {
         frames,
         demo,
         drill,
+        kickoff,
         bot,
     } = session;
 
@@ -442,6 +446,9 @@ async fn run(session: Session) {
     .expect("arène");
     if drill {
         world.toggle_drill();
+    }
+    if kickoff {
+        world.set_kickoff_loop();
     }
     let (cfg, cfg_err) = config::load_or_create(&config::config_path());
     let mut warnings: Vec<String> = cfg_err.into_iter().collect();

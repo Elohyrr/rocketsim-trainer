@@ -15,7 +15,7 @@ rst            # jouer
 rst update     # mises à jour (SHA256 vérifié)
 ```
 
-Le script installe `~/.local/bin/rst` (vérification SHA256, aucun droit root). Commandes : `rst play [--drill|--vs-bot]`, `rst watch`, `rst bot pull|info`,
+Le script installe `~/.local/bin/rst` (vérification SHA256, aucun droit root). Commandes : `rst play [--drill|--vs-bot]`, `rst watch [--kickoff]`, `rst bot pull|info`,
 `rst update [--check]`, `rst install` / `rst uninstall [--purge]`, `rst version`, `rst doctor` (diagnostic),
 `rst config [path|show|edit|reset]`, `rst meshes [--force]`, `rst --help`. Sans argument, `rst` lance le jeu.
 
@@ -36,6 +36,7 @@ Le learner tourne H24 dans le homelab et sert sa dernière politique en lecture 
 ```sh
 rst bot pull              # télécharge la politique (palier et date affichés) ; à refaire pour la dernière version
 rst watch                 # le bot conduit seul ; C : caméra balle / voiture / spectateur ; [ ] ralenti
+rst watch --kickoff       # enchaîne des coups d'envoi contre un adversaire scripté qui fonce (R : suivant)
 rst play --vs-bot         # 1v1 : vous (bleu, manette ou clavier) contre le bot (orange), score, remise en jeu après but
 ```
 
