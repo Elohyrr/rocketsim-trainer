@@ -9,7 +9,7 @@ use burn::optim::{AdamConfig, GradientsParams, ModuleOptimizer};
 use burn::tensor::activation::log_softmax;
 use burn::tensor::{Device, Tensor, TensorData};
 use policy_runtime::{Tensor as StTensor, write_safetensors};
-use rl_env::{EnvConfig, OBS_DIM_V1, Opponent, Outcome, Rng, VecEnv};
+use rl_env::{EnvConfig, KickoffResult, OBS_DIM_V1, Opponent, Outcome, Rng, VecEnv};
 
 #[derive(Module, Debug)]
 pub struct Mlp {
@@ -122,6 +122,16 @@ pub struct IterStats {
     /// Épisodes finis par un but marqué (+Y) / un but contre son camp (-Y).
     pub goals: u64,
     pub own_goals: u64,
+    /// Coups d'envoi terminés (exclus de `episodes`, `touches`, `goals` et `own_goals` : ils ne doivent pas
+    /// peser sur la promotion du curriculum) : gagnés / perdus / neutres.
+    pub kick_won: u64,
+    pub kick_lost: u64,
+    pub kick_neutral: u64,
+    /// Somme des temps (s) jusqu'au premier toucher de l'agent et nombre de kickoffs touchés.
+    pub kick_touch_s_sum: f64,
+    pub kick_touched: u64,
+    /// Somme des vitesses (uu/s) au contact.
+    pub kick_speed_sum: f64,
     pub reward_mean: f64,
     pub length_mean: f64,
     pub touch_rate: f64,
@@ -272,6 +282,19 @@ impl Trainer {
             // Troncature (timeout) : on traite comme une fin d'épisode (valeur future nulle) — approximation
             // acceptable pour des épisodes courts ; voir docs/bench.md.
             for ep in &step.finished {
+                if let Some(k) = &ep.kickoff {
+                    match k.result {
+                        KickoffResult::Won => st.kick_won += 1,
+                        KickoffResult::Lost => st.kick_lost += 1,
+                        KickoffResult::Neutral => st.kick_neutral += 1,
+                    }
+                    if let (Some(t), Some(v)) = (k.first_touch_s, k.touch_speed) {
+                        st.kick_touched += 1;
+                        st.kick_touch_s_sum += f64::from(t);
+                        st.kick_speed_sum += f64::from(v);
+                    }
+                    continue;
+                }
                 st.episodes += 1;
                 st.touches += u64::from(ep.touched);
                 st.goals += u64::from(ep.outcome == Outcome::Goal);

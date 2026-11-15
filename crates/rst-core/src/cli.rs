@@ -48,6 +48,10 @@ pub struct WatchArgs {
     /// Nombre d'images avant la capture
     #[arg(long, value_name = "N", default_value_t = 240)]
     pub frames: u32,
+    /// Enchaîne des coups d'envoi : le bot (bleu) contre un adversaire scripté qui fonce sur la balle ;
+    /// remise en jeu 2 s après le premier toucher (R pour passer au suivant)
+    #[arg(long)]
+    pub kickoff: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

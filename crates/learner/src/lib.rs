@@ -2,6 +2,7 @@
 //! actions discrètes, GAE, objectif clippé. Spike M2 : voir `docs/decisions.md` (D1) et `docs/bench.md`.
 
 pub mod curriculum;
+pub mod eval;
 pub mod jellyfin;
 pub mod metrics;
 pub mod pause;

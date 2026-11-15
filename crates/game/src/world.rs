@@ -32,6 +32,10 @@ pub fn next_supersonic(was: bool, speed: f32) -> bool {
 /// Une balle quasi immobile pendant ce temps (s) en mode bot : remise en jeu (bot coincé, balle dans un coin).
 pub const STALL_RESET: f32 = 12.0;
 
+/// Boucle de coups d'envoi (`rst watch --kickoff`) : remise en jeu 2 s après le premier toucher, 6 s au plus.
+const KICKOFF_AFTER_TOUCH: f32 = 2.0;
+const KICKOFF_MAX: f32 = 6.0;
+
 pub const TIME_SCALES: [f32; 4] = [0.25, 0.5, 0.75, 1.0];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +89,8 @@ pub struct World {
     /// Caméra spectateur (mode `Watch`) : vue fixe d'ensemble au lieu de suivre la voiture.
     pub spectator: bool,
     stall: f32,
+    /// Boucle de coups d'envoi : (temps écoulé, temps du premier toucher), actif si `Some`.
+    kick: Option<(f32, Option<f32>)>,
     /// Voiture supersonique (avec hystérésis, voir [`next_supersonic`]).
     pub supersonic: bool,
     /// Positions récentes de la voiture (traînée supersonique), de la plus ancienne à la plus récente.
@@ -132,12 +138,23 @@ impl World {
             bot,
             spectator: false,
             stall: 0.0,
+            kick: None,
             supersonic: false,
             trail: Vec::new(),
             acc: 0.0,
             jump_latch: false,
             seed: 1,
         })
+    }
+
+    /// `rst watch --kickoff` : ajoute une voiture orange scriptée (elle fonce sur la balle) et enchaîne les
+    /// coups d'envoi ; le bot reçoit le bloc adversaire dans son observation, comme à l'entraînement.
+    pub fn set_kickoff_loop(&mut self) {
+        if self.orange.is_none() {
+            self.orange = Some(self.sim.add_car(false));
+        }
+        self.kick = Some((0.0, None));
+        self.reset();
     }
 
     pub fn car(&self) -> &sim_core::CarSnapshot {
@@ -182,6 +199,9 @@ impl World {
         }
         self.goal_timer = None;
         self.stall = 0.0;
+        if let Some(k) = &mut self.kick {
+            *k = (0.0, None);
+        }
         if let Some((b, _)) = &mut self.bot {
             b.restart();
         }
@@ -277,7 +297,16 @@ impl World {
         let mut bot_boost = false;
         if let Some((brain, role)) = &mut self.bot {
             match role {
-                Role::Watch => human = brain.controls(&self.cur, 0, None, false),
+                Role::Watch => {
+                    if let (Some(o), true) = (self.orange, self.kick.is_some()) {
+                        let c = rl_env::charger_controls(&self.cur, o);
+                        bot_boost = c.boost && self.cur.cars[1].boost > 0.0;
+                        let _ = self.sim.set_controls(o, c);
+                        human = brain.controls(&self.cur, 0, Some(1), false);
+                    } else {
+                        human = brain.controls(&self.cur, 0, None, false);
+                    }
+                }
                 Role::VsBot => {
                     let c = brain.controls(&self.cur, 1, Some(0), true);
                     bot_boost = c.boost && self.cur.cars[1].boost > 0.0;
@@ -322,6 +351,20 @@ impl World {
         }
         if self.mode == Mode::Drill {
             self.drill.elapsed += TICK_DT;
+        }
+        if let Some((t, first)) = self.kick {
+            let t = t + TICK_DT;
+            let touched = self.sim.last_ball_touch_tick(self.car).is_some()
+                || self
+                    .orange
+                    .is_some_and(|o| self.sim.last_ball_touch_tick(o).is_some());
+            let first = first.or(touched.then_some(t));
+            self.kick = Some((t, first));
+            if t >= KICKOFF_MAX || first.is_some_and(|f| t >= f + KICKOFF_AFTER_TOUCH) {
+                self.reset();
+                events.push(Event::Reset);
+                return;
+            }
         }
         if self.bot.is_some() {
             let v = self.cur.ball.vel;

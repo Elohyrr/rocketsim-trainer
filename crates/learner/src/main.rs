@@ -1,5 +1,6 @@
 //! Entraînement PPO H24 : curriculum, checkpoints périodiques, reprise, `/metrics`, pause Jellyfin.
 //!
+//! learner --eval-kickoff N --policy policy.safetensors [--idle] : évalue les coups d'envoi (voir `eval.rs`).
 //! learner [--minutes M] [--envs N] [--threads T] [--out DIR] [--metrics ADDR] [--resume]
 //!         [--checkpoint-minutes N] [--stage S]
 //! `--minutes 0` = sans limite (mode cluster). `--stage S` fige le palier (pas de promotion automatique).
@@ -117,6 +118,15 @@ impl Saver<'_> {
 }
 
 fn main() {
+    if let Some(n) = arg("--eval-kickoff") {
+        let policy = arg("--policy").unwrap_or_else(|| "runs/latest/policy.safetensors".into());
+        let idle = std::env::args().any(|a| a == "--idle");
+        if let Err(e) = learner::eval::run(Path::new(&policy), n.parse().unwrap_or(40), idle) {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+        return;
+    }
     let minutes: f64 = arg("--minutes").and_then(|s| s.parse().ok()).unwrap_or(5.0);
     let ckpt_every = Duration::from_secs_f64(
         arg("--checkpoint-minutes")
@@ -161,7 +171,20 @@ fn main() {
         env_num("JELLYFIN_RESUME_MINUTES", 10) * 60,
     ));
 
-    let mut tr = Trainer::new(cfg, EnvConfig::for_stage(stage)).unwrap_or_else(|e| {
+    // `--kickoff-prob P` : surcharge la part de coups d'envoi aux paliers 5/6 (0 = témoin sans kickoff).
+    let kp: Option<f32> = arg("--kickoff-prob").and_then(|s| s.parse().ok());
+    let env_cfg = move |st: u32| {
+        let c = EnvConfig::for_stage(st);
+        EnvConfig {
+            kickoff_prob: if c.kickoff_prob > 0.0 {
+                kp.unwrap_or(c.kickoff_prob)
+            } else {
+                0.0
+            },
+            ..c
+        }
+    };
+    let mut tr = Trainer::new(cfg, env_cfg(stage)).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(2);
     });
@@ -186,10 +209,11 @@ fn main() {
     let limit = (minutes > 0.0).then(|| Duration::from_secs_f64(minutes * 60.0));
     let (mut steps, mut eps, mut touches) = (0u64, 0u64, 0u64);
     let (mut goals, mut own_goals) = (0u64, 0u64);
+    let (mut kick_won, mut kick_lost, mut kick_neutral) = (0u64, 0u64, 0u64);
     let mut it = 0;
     let mut saver_last = Instant::now();
     println!(
-        "iter stage steps_total steps/s ep_reward ep_len touch_rate goal_rate goals own_goals entropy kl collect_s train_s"
+        "iter stage steps_total steps/s ep_reward ep_len touch_rate goal_rate goals own_goals entropy kl collect_s train_s kick_won kick_lost kick_neutral kick_t_s kick_speed"
     );
     while !stop.load(Ordering::Relaxed) && limit.is_none_or(|l| t0.elapsed() < l) {
         // D6 : lecture vidéo en cours → checkpoint puis pause (CPU ≈ 0) jusqu'à N min après la fin.
@@ -233,6 +257,9 @@ fn main() {
         touches += s.touches;
         goals += s.goals;
         own_goals += s.own_goals;
+        kick_won += s.kick_won;
+        kick_lost += s.kick_lost;
+        kick_neutral += s.kick_neutral;
         let dt = ti.elapsed().as_secs_f64();
         let (cur_stage, promoted, goal_rate) = {
             let mut c = curriculum.lock().expect("curriculum");
@@ -252,10 +279,10 @@ fn main() {
                 Move::Up(n) => eprintln!("promotion : palier {n}"),
                 Move::Down(n) => eprintln!("régression : palier {n} (taux de but effondré)"),
             }
-            tr.set_env_config(&EnvConfig::for_stage(mv.stage()));
+            tr.set_env_config(&env_cfg(mv.stage()));
         }
         println!(
-            "{it} {cur_stage} {steps} {:.0} {:.3} {:.1} {:.2} {:.2} {} {} {:.3} {:.4} {:.2} {:.2}",
+            "{it} {cur_stage} {steps} {:.0} {:.3} {:.1} {:.2} {:.2} {} {} {:.3} {:.4} {:.2} {:.2} {} {} {} {:.2} {:.0}",
             s.steps as f64 / dt,
             s.reward_mean,
             s.length_mean,
@@ -266,7 +293,12 @@ fn main() {
             s.entropy,
             s.kl,
             s.collect_seconds,
-            s.train_seconds
+            s.train_seconds,
+            s.kick_won,
+            s.kick_lost,
+            s.kick_neutral,
+            s.kick_touch_s_sum / s.kick_touched.max(1) as f64,
+            s.kick_speed_sum / s.kick_touched.max(1) as f64
         );
         if let Ok(mut m) = metrics.lock() {
             m.steps_total = steps;
@@ -282,6 +314,13 @@ fn main() {
             m.goals_scored_total = goals;
             m.goals_conceded_total = own_goals;
             m.goal_rate = goal_rate;
+            m.kickoffs_won = kick_won;
+            m.kickoffs_lost = kick_lost;
+            m.kickoffs_neutral = kick_neutral;
+            if s.kick_touched > 0 {
+                m.kickoff_first_touch_seconds = s.kick_touch_s_sum / s.kick_touched as f64;
+                m.kickoff_touch_speed = s.kick_speed_sum / s.kick_touched as f64;
+            }
             m.curriculum_stage = cur_stage;
             m.observe_iteration(dt);
             m.checkpoint_age_seconds = saver_last.elapsed().as_secs_f64();
