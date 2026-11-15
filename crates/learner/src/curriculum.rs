@@ -3,7 +3,8 @@
 //!
 //! Paliers 0 et 1 : promotion sur le taux de toucher (≥ 90 %). Paliers 2 à 5 : promotion sur le taux de but
 //! (≥ 80 %) sur les `WINDOW` dernières itérations ; régression d'un palier si le taux de but s'effondre
-//! (< 10 %) après `GRACE` itérations passées au palier. Le palier est persisté dans `<out>/stage`.
+//! (< 10 %) après une période de grâce passée au palier (`grace`, plus longue avec adversaire) ; après une
+//! régression, pas de promotion avant `COOLDOWN` itérations. Le palier est persisté dans `<out>/stage`.
 
 use std::collections::VecDeque;
 use std::path::Path;
@@ -13,8 +14,16 @@ const WINDOW: usize = 10;
 const PROMOTE_TOUCH: f64 = 0.9;
 const PROMOTE_GOAL: f64 = 0.8;
 const REGRESS_GOAL: f64 = 0.1;
-/// Itérations minimales passées à un palier avant d'envisager une régression.
+/// Itérations minimales passées à un palier avant d'envisager une régression (paliers sans adversaire).
 const GRACE: usize = 30;
+/// Grâce aux paliers avec adversaire (5 et 6) : une itération fait 2048 pas, soit ~5 épisodes de 400 pas ;
+/// 30 itérations (~10 s en prod) ne suffisent pas à apprendre à contourner une voiture.
+const GRACE_OPPONENT: usize = 300;
+/// Premier palier avec adversaire.
+const FIRST_OPPONENT_STAGE: u32 = 5;
+/// Itérations sans promotion après une régression : le palier inférieur est réentraîné avant de retenter
+/// (sinon promu en 10 itérations puis rétrogradé, en boucle).
+const COOLDOWN: usize = 200;
 /// Premier palier jugé sur le taux de but.
 const FIRST_GOAL_STAGE: u32 = 2;
 /// Premier palier où une régression est possible (on ne redescend jamais sous le palier 2).
@@ -48,6 +57,17 @@ pub struct Curriculum {
     stage: u32,
     recent: VecDeque<IterResult>,
     iters_at_stage: usize,
+    /// Itérations restantes sans promotion possible (après une régression).
+    cooldown: usize,
+}
+
+/// Période de grâce avant régression au palier `stage`.
+fn grace(stage: u32) -> usize {
+    if stage >= FIRST_OPPONENT_STAGE {
+        GRACE_OPPONENT
+    } else {
+        GRACE
+    }
 }
 
 impl Curriculum {
@@ -56,6 +76,7 @@ impl Curriculum {
             stage: stage.min(LAST_STAGE),
             recent: VecDeque::new(),
             iters_at_stage: 0,
+            cooldown: 0,
         }
     }
 
@@ -89,6 +110,7 @@ impl Curriculum {
             self.recent.pop_front();
         }
         self.iters_at_stage += 1;
+        self.cooldown = self.cooldown.saturating_sub(1);
         let full = self.recent.len() == WINDOW;
         if self.stage < FIRST_GOAL_STAGE {
             if full && self.touch_rate() >= PROMOTE_TOUCH {
@@ -97,16 +119,18 @@ impl Curriculum {
             }
             return None;
         }
-        if full && self.stage < LAST_STAGE && self.goal_rate() >= PROMOTE_GOAL {
+        if full && self.cooldown == 0 && self.stage < LAST_STAGE && self.goal_rate() >= PROMOTE_GOAL
+        {
             self.switch(self.stage + 1);
             return Some(Move::Up(self.stage));
         }
         if full
             && self.stage >= FIRST_REGRESS_STAGE
-            && self.iters_at_stage >= GRACE
+            && self.iters_at_stage >= grace(self.stage)
             && self.goal_rate() < REGRESS_GOAL
         {
             self.switch(self.stage - 1);
+            self.cooldown = COOLDOWN;
             return Some(Move::Down(self.stage));
         }
         None
@@ -185,6 +209,30 @@ mod tests {
             assert_eq!(low.observe(goals(0)), None);
         }
         assert_eq!(low.stage(), 2);
+    }
+
+    #[test]
+    fn opponent_stages_get_a_longer_grace_then_a_cooldown_after_regressing() {
+        let mut c = Curriculum::new(5);
+        for _ in 0..GRACE_OPPONENT - 1 {
+            assert_eq!(c.observe(goals(0)), None, "grâce longue avec adversaire");
+        }
+        assert_eq!(c.observe(goals(0)), Some(Move::Down(4)));
+        // Palier 4 maîtrisé : pas de promotion avant la fin du délai.
+        for _ in 0..COOLDOWN - 1 {
+            assert_eq!(c.observe(goals(100)), None, "délai après régression");
+        }
+        assert_eq!(c.observe(goals(100)), Some(Move::Up(5)));
+        // Une promotion normale ne déclenche pas de délai.
+        let mut d = Curriculum::new(3);
+        for _ in 0..WINDOW {
+            d.observe(goals(100));
+        }
+        assert_eq!(d.stage(), 4);
+        for _ in 0..WINDOW - 1 {
+            assert_eq!(d.observe(goals(100)), None);
+        }
+        assert_eq!(d.observe(goals(100)), Some(Move::Up(5)));
     }
 
     #[test]

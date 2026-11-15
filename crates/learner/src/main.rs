@@ -5,8 +5,10 @@
 //! `--minutes 0` = sans limite (mode cluster). `--stage S` fige le palier (pas de promotion automatique).
 //! Variables : `JELLYFIN_URL`, `JELLYFIN_API_KEY` (pause D6, désactivée sans clé), `JELLYFIN_RESUME_MINUTES`
 //! (défaut 10), `JELLYFIN_POLL_SECONDS` (défaut 30). SIGTERM/SIGINT : checkpoint final puis sortie.
-//! Le dossier `--out` reçoit `checkpoint.mpk`, `policy.safetensors` et `stage`. Le serveur `--metrics` sert aussi
-//! en lecture seule `GET /policy.safetensors` et `GET /policy.json` (palier, taille, date).
+//! Le dossier `--out` reçoit `checkpoint.mpk`, `policy.safetensors`, `stage` et `opponent-obs-v2`. Le serveur
+//! `--metrics` sert aussi en lecture seule `GET /policy.safetensors` et `GET /policy.json` (palier, taille, date).
+//! Reprise d'un checkpoint sans `opponent-obs-v2` (entraîné avant la correction de l'ordre des voitures) : les poids
+//! d'entrée du bloc adversaire sont remis à zéro une fois (voir `docs/curriculum.md`).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,6 +21,9 @@ use learner::metrics::{Metrics, serve_with_dir};
 use learner::pause::PauseGate;
 use learner::ppo::{PpoConfig, Trainer};
 use rl_env::EnvConfig;
+
+/// Marqueur : le checkpoint du dossier a été entraîné avec le bloc adversaire correct (voitures repérées par id).
+const OPPONENT_OBS_MARKER: &str = "opponent-obs-v2";
 
 fn arg(name: &str) -> Option<String> {
     let a: Vec<String> = std::env::args().collect();
@@ -94,7 +99,8 @@ impl Saver<'_> {
             && self
                 .curriculum
                 .lock()
-                .is_ok_and(|c| c.save(self.out).is_ok());
+                .is_ok_and(|c| c.save(self.out).is_ok())
+            && std::fs::write(self.out.join(OPPONENT_OBS_MARKER), "1\n").is_ok();
         if let Ok(mut m) = self.metrics.lock() {
             if ok {
                 m.checkpoints_ok += 1;
@@ -162,7 +168,15 @@ fn main() {
     if resume {
         let ckpt = out.join("checkpoint");
         match tr.load_checkpoint(&ckpt) {
-            Ok(()) => eprintln!("reprise depuis {} (palier {stage})", ckpt.display()),
+            Ok(()) => {
+                eprintln!("reprise depuis {} (palier {stage})", ckpt.display());
+                if !out.join(OPPONENT_OBS_MARKER).exists() {
+                    tr.reset_opponent_inputs();
+                    eprintln!(
+                        "checkpoint d'avant la correction de l'ordre des voitures : bloc adversaire remis à zéro"
+                    );
+                }
+            }
             Err(e) => eprintln!("pas de reprise ({e}) : départ à neuf"),
         }
     }

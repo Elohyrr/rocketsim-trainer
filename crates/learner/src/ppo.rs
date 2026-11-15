@@ -44,6 +44,25 @@ impl Mlp {
         }
     }
 
+    /// Met à zéro les poids des entrées `from..` de la couche d'entrée (biais et autres couches inchangés).
+    pub fn zero_inputs_from(self, from: usize) -> Self {
+        let w = self.l0.weight.val();
+        let [rows, hidden] = w.dims();
+        if from >= rows {
+            return self;
+        }
+        let keep = w.clone().slice([0..from, 0..hidden]);
+        let pad = Tensor::zeros([rows - from, hidden], &w.device());
+        let weight = Param::from_tensor(Tensor::cat(vec![keep, pad], 0).detach());
+        Self {
+            l0: Linear {
+                weight,
+                bias: self.l0.bias,
+            },
+            ..self
+        }
+    }
+
     pub fn forward(&self, x: Tensor<2>) -> Tensor<2> {
         let x = self.l0.forward(x).tanh();
         let x = self.l1.forward(x).tanh();
@@ -356,8 +375,7 @@ impl Trainer {
         st
     }
 
-    /// Logits de la politique pour une observation (backend burn), pour les tests d'équivalence.
-    /// Change la config de l'env (palier de curriculum), effective au prochain épisode de chaque env.
+    /// Change la config de l'env (palier de curriculum) : tous les envs sont remis à zéro immédiatement.
     pub fn set_env_config(&mut self, cfg: &EnvConfig) {
         self.obs = self.env.set_config(cfg);
         self.selfplay = cfg.opponent == Opponent::SelfPlay;
@@ -366,6 +384,7 @@ impl Trainer {
         }
     }
 
+    /// Logits de la politique pour une observation (backend burn), pour les tests d'équivalence.
     pub fn policy_logits(&self, obs: &[f32]) -> Vec<f32> {
         let x = tensor2(obs.to_vec(), 1, self.obs_dim, &self.plain);
         to_vec(self.model.valid().policy.forward(x))
@@ -418,6 +437,17 @@ impl Trainer {
     /// Charge un checkpoint. Un checkpoint d'avant l'observation adversaire (entrée de `OBS_DIM_V1`) est
     /// reconnu automatiquement : la couche d'entrée est agrandie, les poids des nouvelles entrées sont nuls
     /// (comportement identique tant que l'adversaire est absent).
+    /// Remet à zéro les poids d'entrée du bloc adversaire (acteur et critique) : le réseau se comporte alors comme
+    /// sans adversaire et réapprend ce bloc. Sert à migrer les checkpoints entraînés avant la correction de
+    /// l'ordre des voitures, où ce bloc décrivait la voiture de l'agent (voir `docs/curriculum.md`).
+    pub fn reset_opponent_inputs(&mut self) {
+        let m = self.model.clone();
+        self.model = ActorCritic {
+            policy: m.policy.zero_inputs_from(OBS_DIM_V1),
+            value: m.value.zero_inputs_from(OBS_DIM_V1),
+        };
+    }
+
     pub fn load_checkpoint(&mut self, path: &Path) -> Result<(), String> {
         let current = self.model.clone();
         let loaded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
