@@ -8,6 +8,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+pub mod clip;
+
 use rocketsim_rs::sim::{Arena, CarConfig, CarControls, Team};
 use serde::{Deserialize, Serialize};
 

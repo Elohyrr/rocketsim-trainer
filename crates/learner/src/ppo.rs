@@ -139,6 +139,8 @@ pub struct IterStats {
     pub kl: f64,
     /// Mécaniques détectées pendant l'itération (voiture de l'agent).
     pub mechanics: mechanics::Counts,
+    /// Clips rejouables finis pendant l'itération (vide sans `EnvConfig::record_clips`).
+    pub clips: Vec<rl_env::clip::Clip>,
     /// Coefficient d'entropie et lr utilisés, époques PPO effectivement faites (plafond de KL).
     pub ent_coef: f64,
     pub lr: f64,
@@ -285,6 +287,7 @@ impl Trainer {
             });
             let step = self.env.step_vs(&acts, opp_acts.as_deref());
             st.mechanics.add(&step.mechanics);
+            st.clips.extend(step.clips);
             for e in 0..n {
                 rew_buf.push(step.reward[e]);
                 done_buf.push(step.terminated[e] || step.truncated[e]);

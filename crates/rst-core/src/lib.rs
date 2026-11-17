@@ -3,6 +3,7 @@
 
 pub mod bot;
 pub mod cli;
+pub mod clips;
 pub mod commands;
 pub mod hash;
 pub mod install;

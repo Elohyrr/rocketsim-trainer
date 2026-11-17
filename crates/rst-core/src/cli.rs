@@ -50,8 +50,17 @@ pub struct WatchArgs {
     pub frames: u32,
     /// Enchaîne des coups d'envoi : le bot (bleu) contre un adversaire scripté qui fonce sur la balle ;
     /// remise en jeu 2 s après le premier toucher (R pour passer au suivant)
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["clip", "clips"])]
     pub kickoff: bool,
+    /// Rejoue un clip enregistré par le learner : identifiant, URL ou fichier local (voir --clips)
+    #[arg(long, value_name = "ID|URL|FICHIER", conflicts_with_all = ["policy", "clips"])]
+    pub clip: Option<String>,
+    /// Liste les clips disponibles sur le learner puis quitte
+    #[arg(long, conflicts_with = "policy")]
+    pub clips: bool,
+    /// URL du learner pour --clip / --clips (défaut : $RST_BOT_URL, sinon celle du learner)
+    #[arg(long, value_name = "URL")]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -230,6 +239,14 @@ mod tests {
     #[test]
     fn bot_and_watch_commands() {
         assert!(matches!(p(&["watch"]).cmd, Some(Cmd::Watch(a)) if a.policy.is_none()));
+        assert!(
+            matches!(p(&["watch", "--clip", "x"]).cmd, Some(Cmd::Watch(a)) if a.clip.as_deref() == Some("x"))
+        );
+        assert!(
+            matches!(p(&["watch", "--clips", "--url", "h"]).cmd, Some(Cmd::Watch(a)) if a.clips && a.url.is_some())
+        );
+        assert!(try_parse_from(["rst", "watch", "--clip", "x", "--clips"]).is_err());
+        assert!(try_parse_from(["rst", "watch", "--clip", "x", "--kickoff"]).is_err());
         assert!(matches!(p(&["play", "--vs-bot"]).cmd, Some(Cmd::Play(a)) if a.vs_bot));
         assert!(p(&["--vs-bot"]).play.vs_bot);
         assert!(try_parse_from(["rst", "play", "--policy", "x"]).is_err());

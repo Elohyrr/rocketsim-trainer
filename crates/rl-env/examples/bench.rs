@@ -1,7 +1,8 @@
 //! Benchmark de débit de l'env headless.
 //!
 //! taskset -c 0,1 cargo run --release -p rl-env --example bench -- <threads> <n_envs> <secondes>
-//! NO_DETECT=1 coupe le détecteur de mécaniques (mesure de son coût).
+//! NO_DETECT=1 coupe le détecteur de mécaniques (mesure de son coût) ; CLIPS=1 enregistre des clips (coût de
+//! l'enregistreur) ; STAGE=5 prend le palier 5 (adversaire, coups d'envoi : le profil de la prod).
 //! (politique aléatoire uniforme sur la table d'actions ; steps = décisions, 8 ticks chacune)
 
 use std::time::{Duration, Instant};
@@ -13,12 +14,18 @@ fn main() {
     let threads: usize = a.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
     let n_envs: usize = a.get(2).and_then(|s| s.parse().ok()).unwrap_or(8);
     let secs: u64 = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(10);
+    let stage = std::env::var("STAGE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map_or_else(EnvConfig::default, EnvConfig::for_stage);
+    let opp = stage.opponent != rl_env::Opponent::None;
     let mut v = VecEnv::new(
         n_envs,
         threads,
         EnvConfig {
             detect_mechanics: std::env::var_os("NO_DETECT").is_none(),
-            ..EnvConfig::default()
+            record_clips: std::env::var_os("CLIPS").is_some(),
+            ..stage
         },
         42,
     )
@@ -31,16 +38,24 @@ fn main() {
     let n_act = v.action_count();
     let t = Instant::now();
     let mut steps = 0u64;
+    let mut clips = 0u64;
     while t.elapsed() < Duration::from_secs(secs) {
         let acts: Vec<usize> = (0..n_envs)
             .map(|_| (rng.next_u64() % n_act as u64) as usize)
             .collect();
-        v.step(&acts);
+        if opp {
+            let o: Vec<usize> = (0..n_envs)
+                .map(|_| (rng.next_u64() % n_act as u64) as usize)
+                .collect();
+            clips += v.step_vs(&acts, Some(&o)).clips.len() as u64;
+        } else {
+            clips += v.step(&acts).clips.len() as u64;
+        }
         steps += n_envs as u64;
     }
     let dt = t.elapsed().as_secs_f64();
     println!(
-        "threads={threads} envs={n_envs} steps={steps} en {dt:.1}s -> {:.0} steps/s ({:.0} ticks/s)",
+        "threads={threads} envs={n_envs} steps={steps} en {dt:.1}s -> {:.0} steps/s ({:.0} ticks/s), {clips} clips",
         steps as f64 / dt,
         steps as f64 * 8.0 / dt
     );

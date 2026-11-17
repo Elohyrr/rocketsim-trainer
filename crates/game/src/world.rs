@@ -2,6 +2,7 @@
 //! Indépendant du rendu et du périphérique : testable sans fenêtre.
 
 use macroquad::math::{Quat, Vec3};
+use sim_core::clip::{Clip, Replayer};
 use sim_core::{PadSnapshot, Sim, Snapshot};
 
 use crate::bot::{Brain, Role};
@@ -35,6 +36,9 @@ pub const STALL_RESET: f32 = 12.0;
 /// Boucle de coups d'envoi (`rst watch --kickoff`) : remise en jeu 2 s après le premier toucher, 6 s au plus.
 const KICKOFF_AFTER_TOUCH: f32 = 2.0;
 const KICKOFF_MAX: f32 = 6.0;
+
+/// Pause à la fin d'un clip avant de le rejouer (s).
+const REPLAY_HOLD: f32 = 1.0;
 
 pub const TIME_SCALES: [f32; 4] = [0.25, 0.5, 0.75, 1.0];
 
@@ -98,6 +102,10 @@ pub struct World {
     acc: f32,
     jump_latch: bool,
     seed: u32,
+    /// Rejeu d'un clip (`rst watch --clip`) : la simulation est pilotée par le clip, pas par le bot ni le joueur.
+    replay: Option<Replayer>,
+    /// Temps écoulé depuis la fin du clip (s) : pause avant de le rejouer en boucle.
+    replay_hold: f32,
 }
 
 impl World {
@@ -117,9 +125,27 @@ impl World {
         let car = sim.add_car(true);
         let orange = matches!(bot, Some((_, Role::VsBot))).then(|| sim.add_car(false));
         sim.reset_kickoff(1);
+        Ok(Self::assemble(sim, car, orange, bot))
+    }
+
+    /// Monde qui rejoue `clip` en boucle (`rst watch --clip`) : voiture de l'agent (bleue) puis, s'il y en a une,
+    /// celle de l'adversaire.
+    pub fn with_clip(clip: Clip) -> Result<Self, sim_core::SimError> {
+        let mut sim = Sim::new_soccar()?;
+        let rp = Replayer::start(&mut sim, clip)?;
+        let ids = rp.car_ids().to_vec();
+        let mut w = Self::assemble(sim, ids[0], ids.get(1).copied(), None);
+        w.replay = Some(rp);
+        w.refresh();
+        w.prev = w.cur.clone();
+        Ok(w)
+    }
+
+    fn assemble(sim: Sim, car: u32, orange: Option<u32>, bot: Option<(Brain, Role)>) -> Self {
+        let mut sim = sim;
         let cur = sim.snapshot();
         let pads = sim.pads();
-        Ok(Self {
+        Self {
             sim,
             car,
             orange,
@@ -144,7 +170,9 @@ impl World {
             acc: 0.0,
             jump_latch: false,
             seed: 1,
-        })
+            replay: None,
+            replay_hold: 0.0,
+        }
     }
 
     /// `rst watch --kickoff` : ajoute une voiture orange scriptée (elle fonce sur la balle) et enchaîne les
@@ -180,6 +208,13 @@ impl World {
 
     /// Remise en jeu : coup d'envoi (mode libre) ou nouvel essai (drill).
     pub fn reset(&mut self) {
+        if let Some(rp) = &mut self.replay {
+            let _ = rp.restart(&mut self.sim);
+            self.replay_hold = 0.0;
+            self.refresh();
+            self.prev = self.cur.clone();
+            return;
+        }
         let seed = self.next_seed();
         match self.mode {
             Mode::Free => self.sim.reset_kickoff(seed as i32),
@@ -217,8 +252,8 @@ impl World {
     }
 
     pub fn toggle_drill(&mut self) {
-        if self.bot.is_some() {
-            return; // pas de drill avec un bot
+        if self.bot.is_some() || self.replay.is_some() {
+            return; // pas de drill avec un bot ni pendant un clip
         }
         self.mode = match self.mode {
             Mode::Free => Mode::Drill,
@@ -245,7 +280,7 @@ impl World {
     pub fn advance(&mut self, dt: f32, input: &RawInput, actions: &Actions) -> Vec<Event> {
         let mut events = Vec::new();
         if actions.toggle_ball_cam {
-            if matches!(self.bot, Some((_, Role::Watch))) {
+            if self.replay.is_some() || matches!(self.bot, Some((_, Role::Watch))) {
                 // Spectateur : caméra balle → caméra voiture → vue d'ensemble → caméra balle.
                 (self.ball_cam, self.spectator) = match (self.ball_cam, self.spectator) {
                     (true, _) => (false, false),
@@ -292,7 +327,62 @@ impl World {
         events
     }
 
+    /// Un tick de rejeu : le clip pilote les voitures ; à la fin, 1 s de pause puis on recommence.
+    fn tick_replay(&mut self) {
+        let Some(rp) = &mut self.replay else { return };
+        if self.replay_hold > 0.0 {
+            self.replay_hold += TICK_DT;
+            if self.replay_hold >= REPLAY_HOLD {
+                self.reset();
+            }
+            return;
+        }
+        let done = rp.tick(&mut self.sim);
+        let (step, total) = rp.progress();
+        let ctl = |i: usize| {
+            rp.clip().steps[step.min(total - 1)]
+                .get(i)
+                .map(|c| c.to_controls())
+        };
+        let (mine, theirs) = (ctl(0), ctl(1));
+        self.prev = std::mem::replace(&mut self.cur, self.sim.snapshot());
+        self.boosting = mine.is_some_and(|c| c.boost) && self.cur.cars[0].boost > 0.0;
+        self.bot_boosting =
+            theirs.is_some_and(|c| c.boost) && self.cur.cars.get(1).is_some_and(|c| c.boost > 0.0);
+        let v = self.cur.cars[0].vel;
+        self.supersonic = next_supersonic(
+            self.supersonic,
+            (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(),
+        );
+        if self.cur.tick % 4 == 0 {
+            self.pads = self.sim.pads();
+        }
+        if done {
+            self.replay_hold = TICK_DT;
+        }
+    }
+
+    /// Clip en cours de rejeu : (mécanique, décision courante, total, secondes écoulées, durée, dérive max).
+    pub fn replay_info(&self) -> Option<(&str, usize, usize, f32, f32, f32)> {
+        let rp = self.replay.as_ref()?;
+        let (step, total) = rp.progress();
+        let clip = rp.clip();
+        let per = clip.tick_skip as f32 / sim_core::TICK_RATE as f32;
+        Some((
+            &clip.mechanic,
+            step,
+            total,
+            step as f32 * per,
+            total as f32 * per,
+            rp.max_drift,
+        ))
+    }
+
     fn tick(&mut self, input: RawInput, events: &mut Vec<Event>) {
+        if self.replay.is_some() {
+            self.tick_replay();
+            return;
+        }
         let mut human = input.to_controls();
         let mut bot_boost = false;
         if let Some((brain, role)) = &mut self.bot {
@@ -539,6 +629,54 @@ mod tests {
         }
         assert!(events.contains(&Event::DrillFail));
         assert_eq!(w.drill.attempts, 1);
+    }
+
+    #[test]
+    fn a_clip_replays_in_a_loop() {
+        use sim_core::Controls;
+        use sim_core::clip::{ClipRecorder, TRAIL_STEPS};
+        let dir = sim_core::meshes_dir_from_env().unwrap_or_else(|e| panic!("{e}"));
+        sim_core::init_meshes(&dir).unwrap();
+        let mut sim = Sim::new_soccar().unwrap();
+        let (a, b) = (sim.add_car(true), sim.add_car(false));
+        sim.reset_kickoff(3);
+        let mut rec = ClipRecorder::new(8);
+        let go = Controls {
+            throttle: 1.0,
+            boost: true,
+            ..Default::default()
+        };
+        let mut clip = None;
+        for step in 0..40 {
+            rec.begin_step(&mut sim, &[go, Controls::default()]);
+            sim.set_controls(a, go).unwrap();
+            sim.set_controls(b, Controls::default()).unwrap();
+            sim.step(8);
+            if step == 3 {
+                rec.trigger("wave_dash");
+            }
+            clip = clip.or(rec.end_step(&mut sim));
+        }
+        let clip = clip.expect("clip");
+        assert_eq!(clip.steps.len() as u32, 4 + TRAIL_STEPS);
+        let mut w = World::with_clip(clip).unwrap();
+        assert_eq!(w.cur.cars.len(), 2);
+        let start = w.cur.cars[0].pos;
+        let input = RawInput::default();
+        let actions = Actions::default();
+        // 19 décisions × 8 ticks = 152 ticks ≈ 1,27 s : la voiture avance, puis pause, puis retour au départ.
+        let mut moved = false;
+        let mut looped = false;
+        for _ in 0..600 {
+            w.advance(1.0 / 60.0, &input, &actions);
+            let p = w.cur.cars[0].pos;
+            moved |= (p[1] - start[1]).abs() > 100.0 || (p[0] - start[0]).abs() > 100.0;
+            looped |= moved && (p[0] - start[0]).abs() < 1.0 && (p[1] - start[1]).abs() < 1.0;
+        }
+        assert!(moved, "la voiture doit bouger");
+        assert!(looped, "le clip doit repartir du début");
+        let (mech, ..) = w.replay_info().unwrap();
+        assert_eq!(mech, "wave_dash");
     }
 }
 

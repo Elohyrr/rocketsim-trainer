@@ -43,6 +43,8 @@ pub struct Metrics {
     pub touch_total: u64,
     /// Mécaniques détectées depuis le démarrage, contexte `match` (aucun drill pour l'instant : série `drill` à 0).
     pub mechanics: mechanics::Counts,
+    /// Clips enregistrés depuis le démarrage (`kind="known"` : mécanique du catalogue ; `novel` : à venir).
+    pub clips_saved_known: u64,
     pub goals_scored_total: u64,
     pub goals_conceded_total: u64,
     /// Fraction d'épisodes finis par un but marqué (fenêtre glissante du curriculum).
@@ -151,6 +153,10 @@ impl Metrics {
                 );
             }
         }
+        let _ = writeln!(s, "# TYPE trainer_clips_saved_total counter");
+        for (kind, n) in [("known", self.clips_saved_known), ("novel", 0)] {
+            let _ = writeln!(s, "trainer_clips_saved_total{{kind=\"{kind}\"}} {n}");
+        }
         let _ = writeln!(s, "# TYPE trainer_goals_total counter");
         let _ = writeln!(
             s,
@@ -198,7 +204,8 @@ pub fn serve(addr: &str, m: Arc<Mutex<Metrics>>) -> std::io::Result<std::net::So
 }
 
 /// Comme [`serve`], et sert en lecture seule la dernière politique du dossier `dir` :
-/// `GET /policy.safetensors` et `GET /policy.json` (palier, taille, date ; calculé à la volée).
+/// `GET /policy.safetensors` et `GET /policy.json` (palier, taille, date ; calculé à la volée), puis les clips
+/// rejouables de `dir/clips` : `GET /clips` (liste JSON) et `GET /clips/<id>` (voir `clips.rs`).
 pub fn serve_with_dir(
     addr: &str,
     m: Arc<Mutex<Metrics>>,
@@ -234,6 +241,8 @@ pub fn serve_with_dir(
                     Some(b) => ("200 OK", "application/octet-stream", b),
                     None => ("404 Not Found", "text/plain", Vec::new()),
                 }
+            } else if let Some(r) = crate::clips::route(&req, dir.as_deref()) {
+                r
             } else if req.starts_with("GET /policy.json") {
                 match dir.as_deref().and_then(policy_info) {
                     Some(j) => ("200 OK", "application/json", j.into_bytes()),
@@ -289,6 +298,17 @@ mod tests {
     }
 
     #[test]
+    fn clip_counter_is_exposed() {
+        let m = Metrics {
+            clips_saved_known: 4,
+            ..Default::default()
+        };
+        let t = m.render();
+        assert!(t.contains("trainer_clips_saved_total{kind=\"known\"} 4"));
+        assert!(t.contains("trainer_clips_saved_total{kind=\"novel\"} 0"));
+    }
+
+    #[test]
     fn kickoff_series_are_exposed() {
         let m = Metrics {
             kickoffs_won: 3,
@@ -319,6 +339,8 @@ mod tests {
                 "outcome=\"won\"",
                 "outcome=\"lost\"",
                 "outcome=\"neutral\"",
+                "kind=\"known\"",
+                "kind=\"novel\"",
                 "le=\"",
             ];
             assert!(ok.iter().any(|k| l.contains(k)), "{l}");
