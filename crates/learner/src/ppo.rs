@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::explore::{self, Explore};
+use crate::pool::{POOL_SHARE, Pool};
 use burn::module::{Module, Param};
 use burn::nn::{Linear, LinearConfig};
 use burn::optim::{AdamConfig, GradientsParams, ModuleOptimizer};
@@ -62,6 +63,70 @@ impl Mlp {
             },
             ..self
         }
+    }
+
+    /// Poids au format `policy.N.weight` / `policy.N.bias` (celui de `policy.safetensors`).
+    pub fn to_tensors(&self) -> BTreeMap<String, StTensor> {
+        let mut t = BTreeMap::new();
+        let layers = [
+            ("policy.0", &self.l0),
+            ("policy.1", &self.l1),
+            ("policy.2", &self.out),
+        ];
+        for (name, l) in layers {
+            let w = l.weight.val().into_data();
+            let shape = w.shape().to_vec();
+            t.insert(
+                format!("{name}.weight"),
+                StTensor {
+                    shape,
+                    data: w.try_to_vec::<f32>().expect("f32"),
+                },
+            );
+            let b = l.bias.as_ref().expect("biais").val().into_data();
+            t.insert(
+                format!("{name}.bias"),
+                StTensor {
+                    shape: b.shape().to_vec(),
+                    data: b.try_to_vec::<f32>().expect("f32"),
+                },
+            );
+        }
+        t
+    }
+
+    /// Réseau de mêmes dimensions que `self`, avec les poids de `t` (format de [`Mlp::to_tensors`]).
+    pub fn from_tensors(
+        &self,
+        t: &BTreeMap<String, StTensor>,
+        device: &Device,
+    ) -> Result<Mlp, String> {
+        let layer = |name: &str, l: &Linear| -> Result<Linear, String> {
+            let w = t
+                .get(&format!("{name}.weight"))
+                .ok_or(format!("{name}.weight absent"))?;
+            let b = t
+                .get(&format!("{name}.bias"))
+                .ok_or(format!("{name}.bias absent"))?;
+            let [r, c] = l.weight.dims();
+            if w.shape != [r, c] || b.shape != [c] {
+                return Err(format!(
+                    "{name} : dimensions {:?} au lieu de [{r}, {c}]",
+                    w.shape
+                ));
+            }
+            Ok(Linear {
+                weight: Param::from_tensor(tensor2(w.data.clone(), r, c, device).detach()),
+                bias: Some(Param::from_tensor(
+                    Tensor::<1>::from_data(TensorData::new(b.data.clone(), [c]), device).detach(),
+                )),
+            })
+        };
+        Ok(Mlp {
+            l0: layer("policy.0", &self.l0)?,
+            l1: layer("policy.1", &self.l1)?,
+            out: layer("policy.2", &self.out)?,
+        })
     }
 
     pub fn forward(&self, x: Tensor<2>) -> Tensor<2> {
@@ -127,6 +192,11 @@ pub struct IterStats {
     /// Somme des temps (s) jusqu'au premier toucher de l'agent et nombre de kickoffs touchés.
     pub kick_touch_s_sum: f64,
     pub kick_touched: u64,
+    /// Self-play (hors coups d'envoi) : buts marqués / encaissés contre la copie gelée (`cur_*`) et contre le pool.
+    pub cur_goals: u64,
+    pub cur_conceded: u64,
+    pub pool_goals: u64,
+    pub pool_conceded: u64,
     /// Somme des vitesses (uu/s) au contact.
     pub kick_speed_sum: f64,
     pub reward_mean: f64,
@@ -164,6 +234,8 @@ pub struct Trainer {
     frozen: Option<Mlp>,
     frozen_age: usize,
     selfplay: bool,
+    /// Anciennes politiques (30 % des envs en self-play).
+    pub pool: Pool,
     /// Régulateur d'exploration (ent_coef adaptatif, lr décroissant) ; état persisté par le learner.
     pub explore: Explore,
     /// Échauffement du critique : la politique n'est pas mise à jour (voir [`Trainer::load_actor`]).
@@ -216,6 +288,7 @@ impl Trainer {
             frozen: None,
             frozen_age: 0,
             selfplay,
+            pool: Pool::new(None),
         })
     }
 
@@ -235,6 +308,22 @@ impl Trainer {
             self.frozen_age = 0;
         }
         self.frozen_age += 1;
+        if self.selfplay {
+            self.pool.since_snapshot += 1;
+            if self.pool.is_empty() || self.pool.since_snapshot >= self.pool.every {
+                if let Err(e) = self.pool.push(inner.policy.clone()) {
+                    eprintln!("pool : instantané non sauvegardé ({e})");
+                }
+                eprintln!("pool : instantané pris, {} anciens", self.pool.len());
+            }
+        }
+        // Adversaires de l'itération : copie gelée, sauf `POOL_SHARE` des envs contre un ancien tiré du pool.
+        let pool_pick = self.pool.pick(&mut self.rng).filter(|_| self.selfplay);
+        let on_pool: Vec<bool> = (0..n)
+            .map(|_| pool_pick.is_some() && self.rng.unit() < POOL_SHARE)
+            .collect();
+        let pool_net = pool_pick.and_then(|i| self.pool.get(i)).cloned();
+        let mut vs_pool = (0u64, 0u64);
 
         let mut obs_buf = Vec::with_capacity(h * n * od);
         let mut act_buf = Vec::with_capacity(h * n);
@@ -270,20 +359,30 @@ impl Trainer {
             val_buf.extend(values);
             let opp_acts = self.frozen.as_ref().map(|f| {
                 let ox = tensor2(self.env.opp_obs().to_vec(), n, od, &idev);
-                let lp = to_vec(log_softmax(f.forward(ox), 1));
-                (0..n)
-                    .map(|e| {
-                        let row = &lp[e * na..(e + 1) * na];
-                        let u = self.rng.unit();
-                        let mut c = 0.0f32;
-                        row.iter()
-                            .position(|l| {
-                                c += l.exp();
-                                u < c
-                            })
-                            .unwrap_or(na - 1)
-                    })
-                    .collect::<Vec<usize>>()
+                let sample = |net: &Mlp, rng: &mut Rng| {
+                    let lp = to_vec(log_softmax(net.forward(ox.clone()), 1));
+                    (0..n)
+                        .map(|e| {
+                            let row = &lp[e * na..(e + 1) * na];
+                            let u = rng.unit();
+                            let mut c = 0.0f32;
+                            row.iter()
+                                .position(|l| {
+                                    c += l.exp();
+                                    u < c
+                                })
+                                .unwrap_or(na - 1)
+                        })
+                        .collect::<Vec<usize>>()
+                };
+                let mut acts = sample(f, &mut self.rng);
+                if let Some(pn) = &pool_net {
+                    let from_pool = sample(pn, &mut self.rng);
+                    for e in (0..n).filter(|&e| on_pool[e]) {
+                        acts[e] = from_pool[e];
+                    }
+                }
+                acts
             });
             let step = self.env.step_vs(&acts, opp_acts.as_deref());
             st.mechanics.add(&step.mechanics);
@@ -309,6 +408,20 @@ impl Trainer {
                     continue;
                 }
                 st.episodes += 1;
+                if self.selfplay {
+                    let (g, c) = (
+                        u64::from(ep.outcome == Outcome::Goal),
+                        u64::from(ep.outcome == Outcome::OwnGoal),
+                    );
+                    if on_pool[ep.env] {
+                        st.pool_goals += g;
+                        st.pool_conceded += c;
+                        vs_pool = (vs_pool.0 + 1, vs_pool.1 + c);
+                    } else {
+                        st.cur_goals += g;
+                        st.cur_conceded += c;
+                    }
+                }
                 st.touches += u64::from(ep.touched);
                 st.goals += u64::from(ep.outcome == Outcome::Goal);
                 st.own_goals += u64::from(ep.outcome == Outcome::OwnGoal);
@@ -316,6 +429,9 @@ impl Trainer {
                 len_sum += f64::from(ep.length);
             }
             self.obs = step.obs;
+        }
+        if let Some(i) = pool_pick {
+            self.pool.record(i, vs_pool.0, vs_pool.1);
         }
         // Valeur de bootstrap.
         let x = tensor2(self.obs.clone(), n, od, &idev);
@@ -453,31 +569,7 @@ impl Trainer {
 
     /// Exporte la politique en safetensors (lisible par `policy-runtime`) + métadonnées JSON voisines.
     pub fn export(&self, path: &Path) -> std::io::Result<()> {
-        let mut t = BTreeMap::new();
-        let layers = [
-            ("policy.0", &self.model.policy.l0),
-            ("policy.1", &self.model.policy.l1),
-            ("policy.2", &self.model.policy.out),
-        ];
-        for (name, l) in layers {
-            let w = l.weight.val().into_data();
-            let shape = w.shape().to_vec();
-            t.insert(
-                format!("{name}.weight"),
-                StTensor {
-                    shape,
-                    data: w.try_to_vec::<f32>().expect("f32"),
-                },
-            );
-            let b = l.bias.as_ref().expect("biais").val().into_data();
-            t.insert(
-                format!("{name}.bias"),
-                StTensor {
-                    shape: b.shape().to_vec(),
-                    data: b.try_to_vec::<f32>().expect("f32"),
-                },
-            );
-        }
+        let t = self.model.policy.to_tensors();
         write_safetensors(path, &t).map_err(|e| std::io::Error::other(e.to_string()))?;
         let meta = format!(
             "{{\"obs_dim\":{},\"actions\":{},\"hidden\":{},\"activation\":\"tanh\",\"action_table\":\"rlgym-78\"}}\n",
@@ -506,39 +598,22 @@ impl Trainer {
     /// échauffement du critique (`freeze_policy`) avant d'entraîner la politique.
     pub fn load_actor(&mut self, path: &Path) -> Result<(), String> {
         let t = policy_runtime::read_safetensors(path).map_err(|e| e.to_string())?;
-        let layer = |name: &str, l: &Linear| -> Result<Linear, String> {
-            let w = t
-                .get(&format!("{name}.weight"))
-                .ok_or(format!("{name}.weight absent"))?;
-            let b = t
-                .get(&format!("{name}.bias"))
-                .ok_or(format!("{name}.bias absent"))?;
-            let [r, c] = l.weight.dims();
-            if w.shape != [r, c] || b.shape != [c] {
-                return Err(format!(
-                    "{name} : dimensions {:?} au lieu de [{r}, {c}]",
-                    w.shape
-                ));
-            }
-            Ok(Linear {
-                weight: Param::from_tensor(tensor2(w.data.clone(), r, c, &self.device).detach()),
-                bias: Some(Param::from_tensor(
-                    Tensor::<1>::from_data(TensorData::new(b.data.clone(), [c]), &self.device)
-                        .detach(),
-                )),
-            })
-        };
-        let p = &self.model.policy;
-        let policy = Mlp {
-            l0: layer("policy.0", &p.l0)?,
-            l1: layer("policy.1", &p.l1)?,
-            out: layer("policy.2", &p.out)?,
-        };
+        let policy = self.model.policy.from_tensors(&t, &self.device)?;
         self.model = ActorCritic {
             policy,
             value: self.model.value.clone(),
         };
         Ok(())
+    }
+
+    /// Copie de la politique courante, sur le backend sans autodiff (adversaire, référence d'Elo).
+    pub fn policy_snapshot(&self) -> Mlp {
+        self.model.valid().policy
+    }
+
+    /// Backend sans autodiff (celui de [`Trainer::policy_snapshot`]).
+    pub fn plain_device(&self) -> Device {
+        self.plain.clone()
     }
 
     pub fn reset_opponent_inputs(&mut self) {

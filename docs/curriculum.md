@@ -11,7 +11,7 @@ courant est la métrique `trainer_curriculum_stage` et le fichier `<out>/stage` 
 | 3 | balle en mouvement : vitesse horizontale initiale aléatoire (0,2 à 1500 uu/s), rebonds | idem |
 | 4 | positions difficiles (1/3 près des murs ou du fond, 1/3 en l'air basse, 1/3 loin du but adverse), balle jusqu'à 1000 uu/s | but, ou 400 décisions |
 | 5 | adversaire statique (voiture orange immobile devant sa cage), départs mélangés (50 % aléatoires, 50 % positions difficiles), balle jusqu'à 1000 uu/s | idem |
-| 6 | self-play : l'adversaire est une copie gelée de la politique, remise à jour toutes les 50 itérations | idem |
+| 6 | self-play : adversaire = copie gelée (70 % des envs) ou ancien du pool (30 %), récompense à somme nulle ; maintien jugé sur l'Elo (`docs/self-play.md`) | idem |
 
 Récompenses dès le palier 2 : +10 pour un but marqué (+Y), **−5 pour un but contre son camp** (balle dans le but −Y,
 y compris un but encaissé en self-play), 0,1 par toucher, 0,05 × vitesse vers la balle.

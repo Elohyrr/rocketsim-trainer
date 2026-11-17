@@ -4,9 +4,11 @@
 pub mod best;
 pub mod clips;
 pub mod curriculum;
+pub mod elo;
 pub mod eval;
 pub mod explore;
 pub mod jellyfin;
 pub mod metrics;
 pub mod pause;
+pub mod pool;
 pub mod ppo;
