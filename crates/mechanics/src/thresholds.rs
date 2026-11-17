@@ -1,0 +1,91 @@
+//! Seuils du détecteur (spec §2.1, valeurs de départ). Durées en ticks à 120 Hz, distances en uu,
+//! vitesses en uu/s.
+
+/// Deux changements de `ball_hit_tick` séparés d'au plus ce nombre de ticks = un seul toucher (contact
+/// continu : balle sur le toit, poussée du nez).
+pub const TOUCH_MERGE_TICKS: u64 = 4;
+
+/// Toucher aérien : balle au-dessus de cette hauteur.
+pub const AERIAL_BALL_MIN_Z: f32 = 300.0;
+/// Toucher aérien : en l'air depuis au moins 0,3 s (depuis le dernier contact roues-terrain).
+pub const AERIAL_MIN_AIR_TICKS: u32 = 36;
+
+/// Air dribble : deux touchers aériens espacés de moins de 1 s…
+pub const AIR_DRIBBLE_MAX_GAP_TICKS: u64 = 120;
+/// … balle au-dessus de cette hauteur à chaque toucher (et boost actif entre les deux).
+pub const AIR_DRIBBLE_BALL_MIN_Z: f32 = 500.0;
+
+/// Flip reset : voiture au-dessus de cette hauteur…
+pub const RESET_MIN_Z: f32 = 250.0;
+/// … centre de la balle à moins de cette distance du centre de la voiture, côté roues.
+pub const RESET_BALL_DIST: f32 = 200.0;
+/// Ticks tolérés entre le passage `on_ground` et la remise à zéro des drapeaux de saut/flip.
+pub const RESET_CONFIRM_TICKS: u8 = 3;
+
+/// Plafond : roues au plafond si `up.z` < −0,9 et z > 1 900.
+pub const CEILING_UP_Z: f32 = -0.9;
+pub const CEILING_MIN_Z: f32 = 1900.0;
+/// Ceiling shot : toucher aérien (flip disponible) dans les 3 s après avoir quitté le plafond.
+pub const CEILING_SHOT_WINDOW_TICKS: u64 = 360;
+
+/// Mur : roues sur une surface dont la normale est horizontale (|up.z| < 0,5) au-dessus de 200 uu.
+pub const WALL_MAX_ABS_UP_Z: f32 = 0.5;
+pub const WALL_MIN_Z: f32 = 200.0;
+/// Wall shot : toucher sur le mur ou dans la seconde qui suit le départ du mur (sans retour au sol).
+pub const WALL_SHOT_WINDOW_TICKS: u64 = 120;
+
+/// Double touch : second toucher en l'air au plus 3 s après le premier, rebond de la balle sur un mur entre
+/// les deux, sans retour au sol.
+pub const DOUBLE_TOUCH_WINDOW_TICKS: u64 = 360;
+/// Arène RocketSim (soccar) : murs latéraux x = ±4 096, murs du fond y = ±5 120, rayon de balle 91,25.
+pub const ARENA_SIDE_X: f32 = 4096.0;
+pub const ARENA_BACK_Y: f32 = 5120.0;
+pub const BALL_RADIUS: f32 = 91.25;
+/// Marge (au-delà du rayon) pour considérer la balle au contact d'un mur.
+pub const WALL_BOUNCE_MARGIN: f32 = 120.0;
+/// Vitesse normale minimale (avant rebond) pour compter un rebond de la balle sur un mur.
+pub const WALL_BOUNCE_MIN_SPEED: f32 = 100.0;
+
+/// Dribble : balle dans le repère voiture (hauteur `up`, avant, côté).
+pub const DRIBBLE_UP_MIN: f32 = 110.0;
+pub const DRIBBLE_UP_MAX: f32 = 190.0;
+pub const DRIBBLE_MAX_ABS_FWD: f32 = 110.0;
+pub const DRIBBLE_MAX_ABS_SIDE: f32 = 80.0;
+/// Dribble : vitesse balle − voiture.
+pub const DRIBBLE_MAX_REL_SPEED: f32 = 400.0;
+/// Dribble : voiture à plat (exclut voiture coincée contre un mur).
+pub const DRIBBLE_MIN_UP_Z: f32 = 0.7;
+/// Dribble : maintenu 0,5 s.
+pub const DRIBBLE_MIN_TICKS: u32 = 60;
+/// Dribble : trou toléré (petit rebond sur le toit) sans remettre la durée à zéro.
+pub const DRIBBLE_GAP_TICKS: u32 = 6;
+
+/// Flick : dodge au plus 0,4 s après la fin d'un dribble…
+pub const FLICK_DODGE_WINDOW_TICKS: u64 = 48;
+/// … puis toucher et balle > 1 500 uu/s au plus 0,3 s après le dodge.
+pub const FLICK_HIT_WINDOW_TICKS: u64 = 36;
+pub const FLICK_MIN_BALL_SPEED: f32 = 1500.0;
+
+/// Dodge diagonal : les deux composantes (normalisées) au moins à ce niveau.
+pub const DIAGONAL_MIN_COMPONENT: f32 = 0.3;
+/// Annulation : tangage opposé au dodge, au moins à cette amplitude, au plus 0,15 s après le dodge.
+pub const CANCEL_MIN_PITCH: f32 = 0.5;
+pub const CANCEL_WINDOW_TICKS: u64 = 18;
+
+/// Speed flip : retour au sol au plus 0,8 s après le dodge, vitesse horizontale > 1 900 uu/s.
+pub const SPEED_FLIP_MAX_LAND_TICKS: u64 = 96;
+pub const SPEED_FLIP_MIN_LAND_SPEED: f32 = 1900.0;
+
+/// Wave dash : retour au sol au plus 6 ticks après le dodge, gain de vitesse horizontale > 250 uu/s.
+pub const WAVE_DASH_MAX_LAND_TICKS: u64 = 6;
+pub const WAVE_DASH_MIN_GAIN: f32 = 250.0;
+
+/// Half flip : dodge essentiellement arrière (composante avant normalisée < −0,7), annulation, roulis
+/// (|roll| ≥ 0,5 après l'annulation), retour au sol en 1,5 s, cap tourné de plus de ≈ 143° (cos < −0,8).
+pub const HALF_FLIP_MAX_FWD: f32 = -0.7;
+pub const HALF_FLIP_MIN_ROLL: f32 = 0.5;
+pub const HALF_FLIP_MAX_LAND_TICKS: u64 = 180;
+pub const HALF_FLIP_MAX_HEADING_COS: f32 = -0.8;
+
+/// Durée de vie maximale de l'état « dodge en cours » (au-delà, oublié).
+pub const DODGE_MEMORY_TICKS: u64 = 180;

@@ -137,6 +137,8 @@ pub struct IterStats {
     pub value_loss: f64,
     pub entropy: f64,
     pub kl: f64,
+    /// Mécaniques détectées pendant l'itération (voiture de l'agent).
+    pub mechanics: mechanics::Counts,
     /// Coefficient d'entropie et lr utilisés, époques PPO effectivement faites (plafond de KL).
     pub ent_coef: f64,
     pub lr: f64,
@@ -282,6 +284,7 @@ impl Trainer {
                     .collect::<Vec<usize>>()
             });
             let step = self.env.step_vs(&acts, opp_acts.as_deref());
+            st.mechanics.add(&step.mechanics);
             for e in 0..n {
                 rew_buf.push(step.reward[e]);
                 done_buf.push(step.terminated[e] || step.truncated[e]);

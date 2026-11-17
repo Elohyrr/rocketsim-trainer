@@ -8,6 +8,7 @@ rust-version = "1.95"
 publish = false
 
 [dependencies]
+mechanics = { path = "../mechanics" }
 rl-env = { path = "../rl-env" }
 policy-runtime = { path = "../policy-runtime" }
 burn = { version = "=0.22.1", features = ["flex", "autodiff"] }

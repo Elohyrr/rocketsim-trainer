@@ -41,6 +41,8 @@ pub struct Metrics {
     pub curriculum_stage: u32,
     pub unrecognized_sequences_total: u64,
     pub touch_total: u64,
+    /// Mécaniques détectées depuis le démarrage, contexte `match` (aucun drill pour l'instant : série `drill` à 0).
+    pub mechanics: mechanics::Counts,
     pub goals_scored_total: u64,
     pub goals_conceded_total: u64,
     /// Fraction d'épisodes finis par un but marqué (fenêtre glissante du curriculum).
@@ -140,11 +142,15 @@ impl Metrics {
             let _ = writeln!(s, "trainer_pause_reason{{reason=\"{r}\"}} {}", u8::from(on));
         }
         let _ = writeln!(s, "# TYPE trainer_mechanic_total counter");
-        let _ = writeln!(
-            s,
-            "trainer_mechanic_total{{mechanic=\"touch\"}} {}",
-            self.touch_total
-        );
+        for m in mechanics::Mechanic::ALL {
+            for (ctx, n) in [("match", self.mechanics.get(m)), ("drill", 0)] {
+                let _ = writeln!(
+                    s,
+                    "trainer_mechanic_total{{mechanic=\"{}\",context=\"{ctx}\"}} {n}",
+                    m.label()
+                );
+            }
+        }
         let _ = writeln!(s, "# TYPE trainer_goals_total counter");
         let _ = writeln!(
             s,
@@ -307,7 +313,7 @@ mod tests {
                 "reason=\"none\"",
                 "reason=\"jellyfin\"",
                 "reason=\"manual\"",
-                "mechanic=\"touch\"",
+                "mechanic=\"",
                 "side=\"scored\"",
                 "side=\"conceded\"",
                 "outcome=\"won\"",
@@ -316,7 +322,34 @@ mod tests {
                 "le=\"",
             ];
             assert!(ok.iter().any(|k| l.contains(k)), "{l}");
+            if l.contains("mechanic=") {
+                assert!(
+                    mechanics::Mechanic::ALL
+                        .iter()
+                        .any(|m| l.contains(&format!("mechanic=\"{}\"", m.label()))),
+                    "{l}"
+                );
+                assert!(
+                    l.contains("context=\"match\"") || l.contains("context=\"drill\""),
+                    "{l}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn mechanic_counters_are_exposed_per_context() {
+        let mut m = Metrics::default();
+        m.mechanics.0[mechanics::Mechanic::FlipReset.index()] = 3;
+        let t = m.render();
+        assert!(t.contains("trainer_mechanic_total{mechanic=\"flip_reset\",context=\"match\"} 3"));
+        assert!(t.contains("trainer_mechanic_total{mechanic=\"flip_reset\",context=\"drill\"} 0"));
+        assert_eq!(
+            t.lines()
+                .filter(|l| l.starts_with("trainer_mechanic_total{"))
+                .count(),
+            24
+        );
     }
 
     #[test]

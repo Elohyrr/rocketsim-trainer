@@ -174,6 +174,8 @@ pub struct EnvConfig {
     pub kickoff_prob: f32,
     /// Coups d'envoi : l'adversaire reste immobile (contrôle d'évaluation) au lieu de foncer sur la balle.
     pub kickoff_idle_opponent: bool,
+    /// Détecteur de mécaniques (tick par tick, sans effet sur la récompense) ; coupé pour mesurer son coût.
+    pub detect_mechanics: bool,
 }
 
 /// Tirage des positions de départ.
@@ -215,6 +217,7 @@ impl Default for EnvConfig {
             opponent: Opponent::None,
             kickoff_prob: 0.0,
             kickoff_idle_opponent: false,
+            detect_mechanics: true,
         }
     }
 }
@@ -400,6 +403,9 @@ pub struct Env {
     /// Tick de départ du kickoff en cours ; temps jusqu'au premier toucher de l'agent (s) une fois touché.
     kickoff_t0: u64,
     kickoff_first_s: Option<f32>,
+    /// Détecteur de mécaniques de la voiture de l'agent (sans effet sur la récompense) et ses compteurs.
+    detector: mechanics::Detector,
+    mech: mechanics::Counts,
 }
 
 impl Env {
@@ -418,6 +424,8 @@ impl Env {
             kickoff: None,
             kickoff_t0: 0,
             kickoff_first_s: None,
+            detector: mechanics::Detector::new(),
+            mech: mechanics::Counts::default(),
         };
         e.reset();
         Ok(e)
@@ -432,6 +440,11 @@ impl Env {
 
     pub fn action_count(&self) -> usize {
         self.actions.len()
+    }
+
+    /// Compteurs de mécaniques depuis le dernier appel (remis à zéro).
+    pub fn take_mechanics(&mut self) -> mechanics::Counts {
+        std::mem::take(&mut self.mech)
     }
 
     /// Change la configuration (palier de curriculum). Si la présence d'un adversaire change, la simulation est
@@ -496,6 +509,7 @@ impl Env {
     /// Reset aléatoire : voiture et balle tirées dans le terrain, distance minimale entre elles.
     pub fn reset(&mut self) -> [f32; OBS_DIM] {
         self.kickoff = None;
+        self.detector.reset();
         if self.opp.is_some()
             && self.cfg.kickoff_prob > 0.0
             && self.rng.unit() < self.cfg.kickoff_prob
@@ -646,7 +660,16 @@ impl Env {
                     .expect("voiture adverse connue");
             }
         }
-        self.sim.step(self.cfg.tick_skip);
+        if self.cfg.detect_mechanics {
+            // Détection au tick près : on avance tick par tick (même physique que `step(tick_skip)`).
+            for _ in 0..self.cfg.tick_skip {
+                self.sim.step(1);
+                let (c, b) = (self.sim.car_tick(self.car), self.sim.ball_tick());
+                self.detector.tick(&c, &b, &mut self.mech);
+            }
+        } else {
+            self.sim.step(self.cfg.tick_skip);
+        }
         self.steps += 1;
 
         let touch_now = self.sim.last_ball_touch_tick(self.car);
@@ -921,6 +944,8 @@ pub struct VecStep {
     pub terminated: Vec<bool>,
     pub truncated: Vec<bool>,
     pub finished: Vec<EpisodeStats>,
+    /// Mécaniques détectées pendant ce pas (tous envs, voiture de l'agent).
+    pub mechanics: mechanics::Counts,
 }
 
 struct Reply {
@@ -931,6 +956,7 @@ struct Reply {
     terminated: Vec<bool>,
     truncated: Vec<bool>,
     finished: Vec<EpisodeStats>,
+    mechanics: mechanics::Counts,
 }
 
 enum Cmd {
@@ -1020,6 +1046,7 @@ impl VecEnv {
             out.terminated.extend(r.terminated);
             out.truncated.extend(r.truncated);
             out.finished.extend(r.finished);
+            out.mechanics.add(&r.mechanics);
         }
         out
     }
@@ -1125,6 +1152,7 @@ fn worker_loop(
             terminated: Vec::new(),
             truncated: Vec::new(),
             finished: Vec::new(),
+            mechanics: mechanics::Counts::default(),
         };
         match cmd {
             Cmd::Stop => return,
@@ -1172,6 +1200,7 @@ fn worker_loop(
                     if e.has_opponent() {
                         reply.opp_obs.extend_from_slice(&e.observe_opponent());
                     }
+                    reply.mechanics.add(&e.take_mechanics());
                 }
             }
         }

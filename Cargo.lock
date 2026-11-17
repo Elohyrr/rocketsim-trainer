@@ -4164,6 +4164,7 @@ name = "learner"
 version = "0.0.1"
 dependencies = [
  "burn",
+ "mechanics",
  "policy-runtime",
  "rl-env",
  "serde_json",
@@ -4482,6 +4483,10 @@ dependencies = [
  "cfg-if",
  "rayon",
 ]
+
+[[package]]
+name = "mechanics"
+version = "0.0.1"
 
 [[package]]
 name = "memchr"
@@ -6096,6 +6101,7 @@ dependencies = [
 name = "rl-env"
 version = "0.0.1"
 dependencies = [
+ "mechanics",
  "sim-core",
 ]
 
@@ -6571,6 +6577,7 @@ name = "sim-core"
 version = "0.0.1"
 dependencies = [
  "cxx",
+ "mechanics",
  "rocketsim_rs",
  "serde",
  "serde_json",
