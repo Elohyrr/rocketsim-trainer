@@ -12,6 +12,7 @@ Règles : labels à valeurs bornées (énumérations fixes), jamais d'identifian
 | `trainer_reward_mean` | gauge | — | 1 |
 | `trainer_episode_length_mean` | gauge | — | 1 |
 | `trainer_policy_loss`, `trainer_value_loss`, `trainer_entropy`, `trainer_kl` | gauge | — | 4 |
+| `trainer_entropy_target`, `trainer_entropy_coef`, `trainer_learning_rate` (régulateur d'exploration, `explore.rs`) | gauge | — | 3 |
 | `trainer_iteration_seconds` | histogram (≤ 8 buckets) | — | ≈ 10 |
 | `trainer_checkpoint_age_seconds` | gauge | — | 1 |
 | `trainer_checkpoints_total` | counter | `result` = ok\|error | 2 |

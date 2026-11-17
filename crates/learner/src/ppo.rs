@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::explore::{self, Explore};
 use burn::module::{Module, Param};
 use burn::nn::{Linear, LinearConfig};
 use burn::optim::{AdamConfig, GradientsParams, ModuleOptimizer};
@@ -84,11 +85,9 @@ pub struct PpoConfig {
     pub hidden: usize,
     pub epochs: usize,
     pub minibatch: usize,
-    pub lr: f64,
     pub gamma: f32,
     pub lambda: f32,
     pub clip: f32,
-    pub ent_coef: f32,
     pub vf_coef: f32,
     pub seed: u64,
 }
@@ -102,11 +101,9 @@ impl Default for PpoConfig {
             hidden: 128,
             epochs: 4,
             minibatch: 512,
-            lr: 1e-3,
             gamma: 0.99,
             lambda: 0.95,
             clip: 0.2,
-            ent_coef: 0.01,
             vf_coef: 0.5,
             seed: 1,
         }
@@ -142,6 +139,10 @@ pub struct IterStats {
     pub kl: f64,
     /// Mécaniques détectées pendant l'itération (voiture de l'agent).
     pub mechanics: mechanics::Counts,
+    /// Coefficient d'entropie et lr utilisés, époques PPO effectivement faites (plafond de KL).
+    pub ent_coef: f64,
+    pub lr: f64,
+    pub epochs_run: usize,
     pub collect_seconds: f64,
     pub train_seconds: f64,
 }
@@ -161,6 +162,10 @@ pub struct Trainer {
     frozen: Option<Mlp>,
     frozen_age: usize,
     selfplay: bool,
+    /// Régulateur d'exploration (ent_coef adaptatif, lr décroissant) ; état persisté par le learner.
+    pub explore: Explore,
+    /// Échauffement du critique : la politique n'est pas mise à jour (voir [`Trainer::load_actor`]).
+    pub freeze_policy: bool,
 }
 
 /// Itérations entre deux mises à jour de la copie gelée en self-play.
@@ -195,6 +200,8 @@ impl Trainer {
         let selfplay = env_cfg_selfplay;
         Ok(Self {
             rng: Rng::new(cfg.seed ^ 0xA5A5),
+            explore: Explore::default(),
+            freeze_policy: false,
             cfg,
             env,
             model,
@@ -338,7 +345,9 @@ impl Trainer {
         let total = h * n;
         let mut idx: Vec<usize> = (0..total).collect();
         let (mut pl, mut vl, mut en, mut kl, mut cnt) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        let (ent_coef, lr) = (self.explore.ent_coef as f32, self.explore.lr());
         for _ in 0..self.cfg.epochs {
+            let (kl_before, cnt_before) = (kl, cnt);
             for i in (1..total).rev() {
                 idx.swap(i, (self.rng.next_u64() % (i as u64 + 1)) as usize);
             }
@@ -361,7 +370,13 @@ impl Trainer {
                 let adv_t = tensor2(ad, m, 1, d);
                 let ret_t = tensor2(rt, m, 1, d);
 
-                let logp_all = log_softmax(self.model.policy.forward(x.clone()), 1);
+                let logits = self.model.policy.forward(x.clone());
+                let logits = if self.freeze_policy {
+                    logits.detach()
+                } else {
+                    logits
+                };
+                let logp_all = log_softmax(logits, 1);
                 let logp = (logp_all.clone() * onehot).sum_dim(1);
                 let ratio = (logp.clone() - old_lp.clone()).exp();
                 let s1 = ratio.clone() * adv_t.clone();
@@ -373,8 +388,12 @@ impl Trainer {
                 let v = self.model.value.forward(x);
                 let val_loss = (v - ret_t).powf_scalar(2.0).mean();
                 let entropy = -(logp_all.clone().exp() * logp_all).sum_dim(1).mean();
-                let loss = pol_loss.clone() + val_loss.clone() * self.cfg.vf_coef
-                    - entropy.clone() * self.cfg.ent_coef;
+                let loss = if self.freeze_policy {
+                    val_loss.clone() * self.cfg.vf_coef
+                } else {
+                    pol_loss.clone() + val_loss.clone() * self.cfg.vf_coef
+                        - entropy.clone() * ent_coef
+                };
 
                 pl += scalar(pol_loss.clone().reshape([1]));
                 vl += scalar(val_loss.clone().reshape([1]));
@@ -383,7 +402,12 @@ impl Trainer {
                 cnt += 1.0;
 
                 let grads = GradientsParams::from_grads(loss.backward(), &self.model);
-                self.model = self.opt.step(self.cfg.lr, self.model.clone(), grads);
+                self.model = self.opt.step(lr, self.model.clone(), grads);
+            }
+            st.epochs_run += 1;
+            // Plafond de KL : la politique a trop bougé sur cette époque, on garde les données pour la suivante.
+            if (kl - kl_before) / (cnt - cnt_before) > explore::KL_MAX {
+                break;
             }
         }
         st.train_seconds = t1.elapsed().as_secs_f64();
@@ -392,6 +416,9 @@ impl Trainer {
         st.value_loss = vl / cnt;
         st.entropy = en / cnt;
         st.kl = kl / cnt;
+        st.ent_coef = f64::from(ent_coef);
+        st.lr = lr;
+        self.explore.update(total as u64, st.entropy);
         if st.episodes > 0 {
             st.reward_mean = ret_sum / st.episodes as f64;
             st.length_mean = len_sum / st.episodes as f64;
@@ -466,6 +493,46 @@ impl Trainer {
     /// Remet à zéro les poids d'entrée du bloc adversaire (acteur et critique) : le réseau se comporte alors comme
     /// sans adversaire et réapprend ce bloc. Sert à migrer les checkpoints entraînés avant la correction de
     /// l'ordre des voitures, où ce bloc décrivait la voiture de l'agent (voir `docs/curriculum.md`).
+    /// Remplace l'acteur par celui d'une politique exportée (`policy.safetensors`, même architecture) ; le
+    /// critique reste tel quel. Sert à repartir d'une politique servie (outil d'essai local) : prévoir un
+    /// échauffement du critique (`freeze_policy`) avant d'entraîner la politique.
+    pub fn load_actor(&mut self, path: &Path) -> Result<(), String> {
+        let t = policy_runtime::read_safetensors(path).map_err(|e| e.to_string())?;
+        let layer = |name: &str, l: &Linear| -> Result<Linear, String> {
+            let w = t
+                .get(&format!("{name}.weight"))
+                .ok_or(format!("{name}.weight absent"))?;
+            let b = t
+                .get(&format!("{name}.bias"))
+                .ok_or(format!("{name}.bias absent"))?;
+            let [r, c] = l.weight.dims();
+            if w.shape != [r, c] || b.shape != [c] {
+                return Err(format!(
+                    "{name} : dimensions {:?} au lieu de [{r}, {c}]",
+                    w.shape
+                ));
+            }
+            Ok(Linear {
+                weight: Param::from_tensor(tensor2(w.data.clone(), r, c, &self.device).detach()),
+                bias: Some(Param::from_tensor(
+                    Tensor::<1>::from_data(TensorData::new(b.data.clone(), [c]), &self.device)
+                        .detach(),
+                )),
+            })
+        };
+        let p = &self.model.policy;
+        let policy = Mlp {
+            l0: layer("policy.0", &p.l0)?,
+            l1: layer("policy.1", &p.l1)?,
+            out: layer("policy.2", &p.out)?,
+        };
+        self.model = ActorCritic {
+            policy,
+            value: self.model.value.clone(),
+        };
+        Ok(())
+    }
+
     pub fn reset_opponent_inputs(&mut self) {
         let m = self.model.clone();
         self.model = ActorCritic {

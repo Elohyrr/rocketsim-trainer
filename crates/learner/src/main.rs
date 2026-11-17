@@ -2,7 +2,7 @@
 //!
 //! learner --eval-kickoff N --policy policy.safetensors [--idle] : évalue les coups d'envoi (voir `eval.rs`).
 //! learner [--minutes M] [--envs N] [--threads T] [--out DIR] [--metrics ADDR] [--resume]
-//!         [--checkpoint-minutes N] [--stage S]
+//!         [--checkpoint-minutes N] [--stage S] [--init-actor policy.safetensors [--critic-warmup N]]
 //! `--minutes 0` = sans limite (mode cluster). `--stage S` fige le palier (pas de promotion automatique).
 //! Variables : `JELLYFIN_URL`, `JELLYFIN_API_KEY` (pause D6, désactivée sans clé), `JELLYFIN_RESUME_MINUTES`
 //! (défaut 10), `JELLYFIN_POLL_SECONDS` (défaut 30). SIGTERM/SIGINT : checkpoint final puis sortie.
@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use learner::curriculum::{Curriculum, IterResult, Move};
+use learner::explore::Explore;
 use learner::jellyfin::Jellyfin;
 use learner::metrics::{Metrics, serve_with_dir};
 use learner::pause::PauseGate;
@@ -101,6 +102,7 @@ impl Saver<'_> {
                 .curriculum
                 .lock()
                 .is_ok_and(|c| c.save(self.out).is_ok())
+            && self.tr.explore.save(self.out).is_ok()
             && std::fs::write(self.out.join(OPPONENT_OBS_MARKER), "1\n").is_ok();
         if let Ok(mut m) = self.metrics.lock() {
             if ok {
@@ -158,6 +160,7 @@ fn main() {
     }
     let metrics = Arc::new(Mutex::new(Metrics {
         curriculum_stage: stage,
+        entropy_target: learner::explore::ENT_TARGET,
         ..Metrics::default()
     }));
     if let Some(addr) = arg("--metrics") {
@@ -193,6 +196,13 @@ fn main() {
         match tr.load_checkpoint(&ckpt) {
             Ok(()) => {
                 eprintln!("reprise depuis {} (palier {stage})", ckpt.display());
+                tr.explore = Explore::load(&out);
+                eprintln!(
+                    "exploration : ent_coef {:.4}, {} pas cumulés, lr {:.2e}",
+                    tr.explore.ent_coef,
+                    tr.explore.steps,
+                    tr.explore.lr()
+                );
                 if !out.join(OPPONENT_OBS_MARKER).exists() {
                     tr.reset_opponent_inputs();
                     eprintln!(
@@ -201,6 +211,25 @@ fn main() {
                 }
             }
             Err(e) => eprintln!("pas de reprise ({e}) : départ à neuf"),
+        }
+    }
+    // Outil d'essai local : repartir de l'acteur d'une politique servie (critique neuf, échauffé d'abord).
+    let mut warmup: usize = 0;
+    if let Some(f) = arg("--init-actor") {
+        match tr.load_actor(Path::new(&f)) {
+            Ok(()) => {
+                warmup = arg("--critic-warmup")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(300);
+                tr.freeze_policy = warmup > 0;
+                eprintln!(
+                    "acteur chargé depuis {f} ; échauffement du critique : {warmup} itérations"
+                );
+            }
+            Err(e) => {
+                eprintln!("--init-actor : {e}");
+                std::process::exit(2);
+            }
         }
     }
     eprintln!("palier de curriculum : {stage}");
@@ -214,7 +243,7 @@ fn main() {
     let mut it = 0;
     let mut saver_last = Instant::now();
     println!(
-        "iter stage steps_total steps/s ep_reward ep_len touch_rate goal_rate goals own_goals entropy kl collect_s train_s kick_won kick_lost kick_neutral kick_t_s kick_speed"
+        "iter stage steps_total steps/s ep_reward ep_len touch_rate goal_rate goals own_goals entropy kl collect_s train_s kick_won kick_lost kick_neutral kick_t_s kick_speed ent_coef lr"
     );
     while !stop.load(Ordering::Relaxed) && limit.is_none_or(|l| t0.elapsed() < l) {
         // D6 : lecture vidéo en cours → checkpoint puis pause (CPU ≈ 0) jusqu'à N min après la fin.
@@ -253,6 +282,10 @@ fn main() {
         let ti = Instant::now();
         let s = tr.iteration();
         it += 1;
+        if tr.freeze_policy && it >= warmup {
+            tr.freeze_policy = false;
+            eprintln!("échauffement du critique terminé");
+        }
         steps += s.steps;
         eps += s.episodes;
         touches += s.touches;
@@ -283,7 +316,7 @@ fn main() {
             tr.set_env_config(&env_cfg(mv.stage()));
         }
         println!(
-            "{it} {cur_stage} {steps} {:.0} {:.3} {:.1} {:.2} {:.2} {} {} {:.3} {:.4} {:.2} {:.2} {} {} {} {:.2} {:.0}",
+            "{it} {cur_stage} {steps} {:.0} {:.3} {:.1} {:.2} {:.2} {} {} {:.3} {:.4} {:.2} {:.2} {} {} {} {:.2} {:.0} {:.4} {:.2e}",
             s.steps as f64 / dt,
             s.reward_mean,
             s.length_mean,
@@ -299,7 +332,9 @@ fn main() {
             s.kick_lost,
             s.kick_neutral,
             s.kick_touch_s_sum / s.kick_touched.max(1) as f64,
-            s.kick_speed_sum / s.kick_touched.max(1) as f64
+            s.kick_speed_sum / s.kick_touched.max(1) as f64,
+            s.ent_coef,
+            s.lr
         );
         if let Ok(mut m) = metrics.lock() {
             m.steps_total = steps;
@@ -311,6 +346,9 @@ fn main() {
             m.value_loss = s.value_loss;
             m.entropy = s.entropy;
             m.kl = s.kl;
+            m.entropy_target = learner::explore::ENT_TARGET;
+            m.ent_coef = s.ent_coef;
+            m.learning_rate = s.lr;
             m.touch_total = touches;
             mech_total.add(&s.mechanics);
             m.mechanics = mech_total.clone();
