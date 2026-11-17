@@ -23,13 +23,13 @@ Règles : labels à valeurs bornées (énumérations fixes), jamais d'identifian
 | `trainer_kickoffs_total` | counter | `outcome` = won\|lost\|neutral (coups d'envoi des paliers 5 et 6) | 3 |
 | `trainer_kickoff_first_touch_seconds` | gauge (temps moyen jusqu'au premier toucher de l'agent, dernière itération avec toucher) | — | 1 |
 | `trainer_kickoff_touch_speed` | gauge (vitesse moyenne au contact, uu/s) | — | 1 |
-| `trainer_mechanic_total` | counter | `mechanic` ∈ catalogue fermé (≈ 12) | ≈ 12 |
+| `trainer_mechanic_total` | counter | `mechanic` ∈ catalogue fermé (12), `context` = match\|drill | 24 |
 | `trainer_unrecognized_sequences_total` | counter | — | 1 |
 | `process_*` (RSS, CPU) | gauge/counter | — | ≈ 6 |
 
-Total estimé : ≈ 58 séries. Taux de kickoffs gagnés : `rate(trainer_kickoffs_total{outcome="won"}[15m]) / sum(rate(trainer_kickoffs_total[15m]))`. Catalogue `mechanic` (heuristiques, voir `docs/decisions.md` D9) : `touch`, `aerial`,
-`air_dribble`, `flip_reset`, `ceiling_shot`, `wall_shot`, `double_touch`, `flick`, `bump`, `demo`, `half_flip`,
-`other`.
+Total estimé : ≈ 85 séries. Taux de kickoffs gagnés : `rate(trainer_kickoffs_total{outcome="won"}[15m]) / sum(rate(trainer_kickoffs_total[15m]))`. Catalogue `mechanic` (détecteur par tick, `docs/mechanics.md`) : `touch`, `aerial_touch`, `air_dribble`, `flip_reset`,
+`ceiling_shot`, `wall_shot`, `double_touch`, `flick`, `dribble`, `speed_flip`, `wave_dash`, `half_flip`. La série `drill`
+reste à 0 tant qu'il n'y a pas de drills.
 
 ## Envoi vers Grafana Cloud
 

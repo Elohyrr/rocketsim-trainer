@@ -228,6 +228,39 @@ impl Sim {
             .map_err(|_| SimError::UnknownCar(car))
     }
 
+    /// Place une voiture en l'air avec une orientation et une vitesse données, saut et double saut déjà utilisés
+    /// (pas de flip disponible). Sert aux scénarios scriptés (flip reset, tests du détecteur).
+    pub fn place_car_airborne(
+        &mut self,
+        car: u32,
+        pos: V3,
+        vel: V3,
+        axes: [V3; 3],
+    ) -> Result<(), SimError> {
+        let r = |a: V3| rocketsim_rs::math::Vec3::new(a[0], a[1], a[2]);
+        let mut c = self.arena.pin_mut().get_car(car);
+        c.pos = r(pos);
+        c.vel = r(vel);
+        c.ang_vel = r([0.0; 3]);
+        c.rot_mat.forward = r(axes[0]);
+        c.rot_mat.right = r(axes[1]);
+        c.rot_mat.up = r(axes[2]);
+        c.is_on_ground = false;
+        c.wheels_with_contact = [false; 4];
+        c.has_jumped = true;
+        c.has_double_jumped = true;
+        c.has_flipped = true;
+        c.is_flipping = false;
+        c.is_jumping = false;
+        c.air_time = 1.0;
+        c.air_time_since_jump = 1.0;
+        c.boost = 0.0;
+        self.arena
+            .pin_mut()
+            .set_car(car, c)
+            .map_err(|_| SimError::UnknownCar(car))
+    }
+
     /// Boosts au sol : position, grosse (100) ou petite (12), et disponibilité.
     pub fn pads(&self) -> Vec<PadSnapshot> {
         (0..self.arena.num_pads())
@@ -240,6 +273,48 @@ impl Sim {
                 }
             })
             .collect()
+    }
+
+    /// État d'une voiture pour le détecteur de mécaniques (lecture à chaque tick de physique).
+    pub fn car_tick(&mut self, id: u32) -> mechanics::CarTick {
+        let tick = self.arena.get_tick_count();
+        let c = self.arena.pin_mut().get_car(id);
+        mechanics::CarTick {
+            tick,
+            pos: v(c.pos),
+            vel: v(c.vel),
+            ang_vel: v(c.ang_vel),
+            forward: v(c.rot_mat.forward),
+            right: v(c.rot_mat.right),
+            up: v(c.rot_mat.up),
+            on_ground: c.is_on_ground,
+            wheels_contact: c.wheels_with_contact.iter().filter(|w| **w).count() as u8,
+            has_jumped: c.has_jumped,
+            has_double_jumped: c.has_double_jumped,
+            has_flipped: c.has_flipped,
+            is_flipping: c.is_flipping,
+            has_flip_or_jump: c.has_flip_or_jump(),
+            // RocketSim stocke un couple (-dir.y, dir.x, 0) ; le détecteur veut la direction (avant, latéral, 0).
+            flip_rel_torque: [c.flip_rel_torque.y, -c.flip_rel_torque.x, 0.0],
+            boosting: c.is_boosting,
+            supersonic: c.is_supersonic,
+            world_contact: c.world_contact.has_contact,
+            pitch_input: c.last_controls.pitch,
+            roll_input: c.last_controls.roll,
+            ball_hit_tick: c
+                .ball_hit_info
+                .is_valid
+                .then_some(c.ball_hit_info.tick_count_when_hit),
+            air_time: c.air_time,
+        }
+    }
+
+    pub fn ball_tick(&mut self) -> mechanics::BallTick {
+        let b = self.arena.pin_mut().get_ball();
+        mechanics::BallTick {
+            pos: v(b.pos),
+            vel: v(b.vel),
+        }
     }
 
     pub fn step(&mut self, ticks: u32) {

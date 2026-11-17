@@ -1,6 +1,7 @@
 //! Benchmark de débit de l'env headless.
 //!
 //! taskset -c 0,1 cargo run --release -p rl-env --example bench -- <threads> <n_envs> <secondes>
+//! NO_DETECT=1 coupe le détecteur de mécaniques (mesure de son coût).
 //! (politique aléatoire uniforme sur la table d'actions ; steps = décisions, 8 ticks chacune)
 
 use std::time::{Duration, Instant};
@@ -12,7 +13,16 @@ fn main() {
     let threads: usize = a.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
     let n_envs: usize = a.get(2).and_then(|s| s.parse().ok()).unwrap_or(8);
     let secs: u64 = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(10);
-    let mut v = VecEnv::new(n_envs, threads, EnvConfig::default(), 42).unwrap_or_else(|e| {
+    let mut v = VecEnv::new(
+        n_envs,
+        threads,
+        EnvConfig {
+            detect_mechanics: std::env::var_os("NO_DETECT").is_none(),
+            ..EnvConfig::default()
+        },
+        42,
+    )
+    .unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(2);
     });

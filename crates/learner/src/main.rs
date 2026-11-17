@@ -208,6 +208,7 @@ fn main() {
     let t0 = Instant::now();
     let limit = (minutes > 0.0).then(|| Duration::from_secs_f64(minutes * 60.0));
     let (mut steps, mut eps, mut touches) = (0u64, 0u64, 0u64);
+    let mut mech_total = mechanics::Counts::default();
     let (mut goals, mut own_goals) = (0u64, 0u64);
     let (mut kick_won, mut kick_lost, mut kick_neutral) = (0u64, 0u64, 0u64);
     let mut it = 0;
@@ -311,6 +312,8 @@ fn main() {
             m.entropy = s.entropy;
             m.kl = s.kl;
             m.touch_total = touches;
+            mech_total.add(&s.mechanics);
+            m.mechanics = mech_total.clone();
             m.goals_scored_total = goals;
             m.goals_conceded_total = own_goals;
             m.goal_rate = goal_rate;

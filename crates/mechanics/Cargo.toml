@@ -1,0 +1,10 @@
+[package]
+name = "mechanics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Détecteur de mécaniques Rocket League par tick (sans récompense)"
+
+[dependencies]
