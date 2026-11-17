@@ -3,6 +3,7 @@
 
 pub mod curriculum;
 pub mod eval;
+pub mod explore;
 pub mod jellyfin;
 pub mod metrics;
 pub mod pause;

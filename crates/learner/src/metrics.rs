@@ -25,6 +25,10 @@ pub struct Metrics {
     pub value_loss: f64,
     pub entropy: f64,
     pub kl: f64,
+    /// Entropie visée (nat), coefficient d'entropie adaptatif et lr courant (exploration, `explore.rs`).
+    pub entropy_target: f64,
+    pub ent_coef: f64,
+    pub learning_rate: f64,
     pub iter_bucket_counts: [u64; BUCKETS.len()],
     pub iter_count: u64,
     pub iter_sum: f64,
@@ -85,6 +89,9 @@ impl Metrics {
         g("trainer_value_loss", "gauge", self.value_loss);
         g("trainer_entropy", "gauge", self.entropy);
         g("trainer_kl", "gauge", self.kl);
+        g("trainer_entropy_target", "gauge", self.entropy_target);
+        g("trainer_entropy_coef", "gauge", self.ent_coef);
+        g("trainer_learning_rate", "gauge", self.learning_rate);
         g(
             "trainer_checkpoint_age_seconds",
             "gauge",
