@@ -8,3 +8,5 @@ collision-meshes/
 /checkpoints/
 *.ckpt
 .env
+# Dossiers --out locaux (checkpoints, essais)
+/runs/
