@@ -6,6 +6,8 @@
 //! `--minutes 0` = sans limite (mode cluster). `--stage S` fige le palier (pas de promotion automatique).
 //! Variables : `JELLYFIN_URL`, `JELLYFIN_API_KEY` (pause D6, désactivée sans clé), `JELLYFIN_RESUME_MINUTES`
 //! (défaut 10), `JELLYFIN_POLL_SECONDS` (défaut 30). SIGTERM/SIGINT : checkpoint final puis sortie.
+//! Clips : une mécanique reconnue en match enregistre un clip rejouable dans `<out>/clips` (anneau borné :
+//! `--clips-max N` (200), `--clips-mb M` (200) ; `--no-clips` pour couper), servi par `GET /clips` et `GET /clips/<id>`.
 //! Le dossier `--out` reçoit `checkpoint.mpk`, `policy.safetensors`, `stage` et `opponent-obs-v2`. Le serveur
 //! `--metrics` sert aussi en lecture seule `GET /policy.safetensors` et `GET /policy.json` (palier, taille, date).
 //! Reprise d'un checkpoint sans `opponent-obs-v2` (entraîné avant la correction de l'ordre des voitures) : les poids
@@ -16,6 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use learner::clips::{ClipStore, DEFAULT_MAX_CLIPS};
 use learner::curriculum::{Curriculum, IterResult, Move};
 use learner::explore::Explore;
 use learner::jellyfin::Jellyfin;
@@ -176,9 +179,25 @@ fn main() {
 
     // `--kickoff-prob P` : surcharge la part de coups d'envoi aux paliers 5/6 (0 = témoin sans kickoff).
     let kp: Option<f32> = arg("--kickoff-prob").and_then(|s| s.parse().ok());
+    let want_clips = !std::env::args().any(|a| a == "--no-clips");
+    let mut clip_store = want_clips
+        .then(|| {
+            let max = arg("--clips-max")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(DEFAULT_MAX_CLIPS);
+            let mb: u64 = arg("--clips-mb")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(200);
+            ClipStore::open(&out, max, mb * 1024 * 1024)
+                .inspect_err(|e| eprintln!("clips désactivés : {e}"))
+                .ok()
+        })
+        .flatten();
+    let record_clips = clip_store.is_some();
     let env_cfg = move |st: u32| {
         let c = EnvConfig::for_stage(st);
         EnvConfig {
+            record_clips,
             kickoff_prob: if c.kickoff_prob > 0.0 {
                 kp.unwrap_or(c.kickoff_prob)
             } else {
@@ -241,6 +260,7 @@ fn main() {
     let (mut goals, mut own_goals) = (0u64, 0u64);
     let (mut kick_won, mut kick_lost, mut kick_neutral) = (0u64, 0u64, 0u64);
     let mut it = 0;
+    let mut clips_saved = 0u64;
     let mut saver_last = Instant::now();
     println!(
         "iter stage steps_total steps/s ep_reward ep_len touch_rate goal_rate goals own_goals entropy kl collect_s train_s kick_won kick_lost kick_neutral kick_t_s kick_speed ent_coef lr"
@@ -286,6 +306,20 @@ fn main() {
             tr.freeze_policy = false;
             eprintln!("échauffement du critique terminé");
         }
+        let mut clips_new = 0;
+        if let Some(store) = clip_store.as_mut() {
+            for c in s.clips.iter().cloned() {
+                match store.add(c, it as u64) {
+                    Ok(Some(e)) => {
+                        clips_new += 1;
+                        eprintln!("clip {} ({} décisions, {:.1} s)", e.id, e.steps, e.seconds);
+                    }
+                    Ok(None) => {}
+                    Err(e) => eprintln!("clip non écrit : {e}"),
+                }
+            }
+        }
+        clips_saved += clips_new;
         steps += s.steps;
         eps += s.episodes;
         touches += s.touches;
@@ -352,6 +386,7 @@ fn main() {
             m.touch_total = touches;
             mech_total.add(&s.mechanics);
             m.mechanics = mech_total.clone();
+            m.clips_saved_known = clips_saved;
             m.goals_scored_total = goals;
             m.goals_conceded_total = own_goals;
             m.goal_rate = goal_rate;

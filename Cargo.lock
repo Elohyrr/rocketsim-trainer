@@ -4167,8 +4167,11 @@ dependencies = [
  "mechanics",
  "policy-runtime",
  "rl-env",
+ "rocketsim_rs",
+ "serde",
  "serde_json",
  "signal-hook",
+ "tempfile",
 ]
 
 [[package]]

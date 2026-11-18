@@ -10,9 +10,11 @@
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 
+use sim_core::clip::{Clip, ClipRecorder};
 use sim_core::{Controls, Sim, init_meshes, meshes_dir_from_env};
 
 pub use sim_core::SimError;
+pub use sim_core::clip;
 
 /// Dimension de l'observation d'avant l'adversaire (checkpoints historiques, voir `docs/curriculum.md`).
 pub const OBS_DIM_V1: usize = 33;
@@ -176,6 +178,9 @@ pub struct EnvConfig {
     pub kickoff_idle_opponent: bool,
     /// Détecteur de mécaniques (tick par tick, sans effet sur la récompense) ; coupé pour mesurer son coût.
     pub detect_mechanics: bool,
+    /// Enregistre un clip rejouable quand une mécanique (hors simple toucher) est reconnue ; demande
+    /// `detect_mechanics`. Voir [`Env::take_clips`].
+    pub record_clips: bool,
 }
 
 /// Tirage des positions de départ.
@@ -218,6 +223,7 @@ impl Default for EnvConfig {
             kickoff_prob: 0.0,
             kickoff_idle_opponent: false,
             detect_mechanics: true,
+            record_clips: false,
         }
     }
 }
@@ -406,12 +412,17 @@ pub struct Env {
     /// Détecteur de mécaniques de la voiture de l'agent (sans effet sur la récompense) et ses compteurs.
     detector: mechanics::Detector,
     mech: mechanics::Counts,
+    /// Enregistreur de clips, clips finis en attente d'être repris, dernier contrôle de l'adversaire.
+    rec: ClipRecorder,
+    clips: Vec<Clip>,
+    opp_ctl: Controls,
 }
 
 impl Env {
     /// `init_meshes` doit avoir réussi avant (une fois par processus).
     pub fn new(cfg: EnvConfig, seed: u64) -> Result<Self, SimError> {
         let (sim, car, opp) = Self::build_sim(&cfg)?;
+        let cfg_skip = cfg.tick_skip;
         let mut e = Self {
             sim,
             car,
@@ -426,6 +437,9 @@ impl Env {
             kickoff_first_s: None,
             detector: mechanics::Detector::new(),
             mech: mechanics::Counts::default(),
+            rec: ClipRecorder::new(cfg_skip),
+            clips: Vec::new(),
+            opp_ctl: Controls::default(),
         };
         e.reset();
         Ok(e)
@@ -447,11 +461,28 @@ impl Env {
         std::mem::take(&mut self.mech)
     }
 
+    /// Clips finis depuis le dernier appel (vide sans `record_clips`).
+    pub fn take_clips(&mut self) -> Vec<Clip> {
+        std::mem::take(&mut self.clips)
+    }
+
+    /// Fin d'épisode : fige le clip en attente (la simulation est encore dans l'état final) et repart à zéro.
+    fn end_episode(&mut self) {
+        if self.cfg.record_clips
+            && let Some(c) = self.rec.finish(&mut self.sim)
+        {
+            self.clips.push(c);
+        }
+        self.rec.reset();
+        self.opp_ctl = Controls::default();
+    }
+
     /// Change la configuration (palier de curriculum). Si la présence d'un adversaire change, la simulation est
     /// reconstruite ; dans tous les cas l'appelant doit faire un [`Env::reset`] ensuite.
     pub fn set_config(&mut self, cfg: EnvConfig) {
         let had = self.opp.is_some();
         let wants = cfg.opponent != Opponent::None;
+        self.rec = ClipRecorder::new(cfg.tick_skip);
         self.cfg = cfg;
         if had != wants
             && let Ok((sim, car, opp)) = Self::build_sim(&self.cfg)
@@ -508,6 +539,7 @@ impl Env {
 
     /// Reset aléatoire : voiture et balle tirées dans le terrain, distance minimale entre elles.
     pub fn reset(&mut self) -> [f32; OBS_DIM] {
+        self.end_episode();
         self.kickoff = None;
         self.detector.reset();
         if self.opp.is_some()
@@ -561,6 +593,7 @@ impl Env {
     /// miroir, balle au centre, pads remis. Léger bruit de position/cap (±50 uu, ±0,05 rad) pour que les
     /// épisodes ne soient pas identiques. Sans adversaire, seule la voiture de l'agent est placée.
     pub fn reset_kickoff(&mut self, spawn: Option<usize>) -> [f32; OBS_DIM] {
+        self.end_episode();
         let idx = spawn.unwrap_or_else(|| (self.rng.next_u64() % 5) as usize) % 5;
         let [x, y, yaw] = KICKOFF_SPAWNS[idx];
         let seed = (self.rng.next_u64() & 0x7FFF_FFFF) as i32;
@@ -655,17 +688,44 @@ impl Env {
                 opp_action
             };
             if let Some(a) = a {
+                self.opp_ctl = self.actions.get(a);
                 self.sim
-                    .set_controls(opp, self.actions.get(a))
+                    .set_controls(opp, self.opp_ctl)
                     .expect("voiture adverse connue");
+            }
+        }
+        let recording = self.cfg.detect_mechanics && self.cfg.record_clips;
+        if recording {
+            // Ids triés = ordre d'ajout : l'agent d'abord, puis l'adversaire.
+            let mine = self.actions.get(action);
+            if self.opp.is_some() {
+                self.rec.begin_step(&mut self.sim, &[mine, self.opp_ctl]);
+            } else {
+                self.rec.begin_step(&mut self.sim, &[mine]);
             }
         }
         if self.cfg.detect_mechanics {
             // Détection au tick près : on avance tick par tick (même physique que `step(tick_skip)`).
+            let before = self.mech.clone();
             for _ in 0..self.cfg.tick_skip {
                 self.sim.step(1);
                 let (c, b) = (self.sim.car_tick(self.car), self.sim.ball_tick());
                 self.detector.tick(&c, &b, &mut self.mech);
+            }
+            if recording {
+                // Tout sauf le simple toucher (trop fréquent) ; la plus rare des mécaniques vues ce pas.
+                let rarest = mechanics::Mechanic::ALL
+                    .into_iter()
+                    .filter(|&m| {
+                        m != mechanics::Mechanic::Touch && self.mech.get(m) > before.get(m)
+                    })
+                    .max_by_key(|m| m.index());
+                if let Some(m) = rarest {
+                    self.rec.trigger(m.label());
+                }
+                if let Some(c) = self.rec.end_step(&mut self.sim) {
+                    self.clips.push(c);
+                }
             }
         } else {
             self.sim.step(self.cfg.tick_skip);
@@ -946,6 +1006,8 @@ pub struct VecStep {
     pub finished: Vec<EpisodeStats>,
     /// Mécaniques détectées pendant ce pas (tous envs, voiture de l'agent).
     pub mechanics: mechanics::Counts,
+    /// Clips rejouables finis pendant ce pas (vide sans `EnvConfig::record_clips`).
+    pub clips: Vec<Clip>,
 }
 
 struct Reply {
@@ -957,6 +1019,7 @@ struct Reply {
     truncated: Vec<bool>,
     finished: Vec<EpisodeStats>,
     mechanics: mechanics::Counts,
+    clips: Vec<Clip>,
 }
 
 enum Cmd {
@@ -1047,6 +1110,7 @@ impl VecEnv {
             out.truncated.extend(r.truncated);
             out.finished.extend(r.finished);
             out.mechanics.add(&r.mechanics);
+            out.clips.extend(r.clips);
         }
         out
     }
@@ -1153,6 +1217,7 @@ fn worker_loop(
             truncated: Vec::new(),
             finished: Vec::new(),
             mechanics: mechanics::Counts::default(),
+            clips: Vec::new(),
         };
         match cmd {
             Cmd::Stop => return,
@@ -1201,6 +1266,7 @@ fn worker_loop(
                         reply.opp_obs.extend_from_slice(&e.observe_opponent());
                     }
                     reply.mechanics.add(&e.take_mechanics());
+                    reply.clips.extend(e.take_clips());
                 }
             }
         }

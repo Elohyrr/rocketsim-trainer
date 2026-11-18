@@ -249,6 +249,18 @@ fn hud(w: &World, pad_name: Option<&str>, binds_warn: &[String], show_help: bool
             Color::from_rgba(120, 220, 255, 255),
         );
     }
+    // Clip
+    if let Some((mech, _, _, t, total, drift)) = w.replay_info() {
+        let t = format!("CLIP {mech} | {t:.1} / {total:.1} s | dérive max {drift:.1} uu");
+        let d = measure_text(&t, None, 22, 1.0);
+        draw_text(
+            &t,
+            (sw - d.width) / 2.0,
+            80.0,
+            22.0,
+            Color::from_rgba(150, 200, 255, 255),
+        );
+    }
     // Bot
     if let Some((brain, role)) = &w.bot {
         let t = match role {
@@ -302,7 +314,21 @@ fn hud(w: &World, pad_name: Option<&str>, binds_warn: &[String], show_help: bool
             Color::from_rgba(255, 220, 80, 255),
         );
     }
-    if show_help && matches!(w.bot, Some((_, Role::Watch))) {
+    if show_help && w.replay_info().is_some() {
+        let lines = [
+            "C camera balle / voiture / spectateur   [ ] ralenti   R rejouer le clip",
+            "Le clip tourne en boucle   Echap quitter",
+        ];
+        for (i, l) in lines.iter().enumerate() {
+            draw_text(
+                l,
+                14.0,
+                sh - 44.0 + i as f32 * 22.0,
+                20.0,
+                Color::from_rgba(230, 230, 240, 200),
+            );
+        }
+    } else if show_help && matches!(w.bot, Some((_, Role::Watch))) {
         let lines = [
             "C camera balle / voiture / spectateur   [ ] ralenti   R remise en jeu",
             "Le bot conduit seul ; la partie repart apres chaque but   Echap quitter",
@@ -375,6 +401,8 @@ struct Session {
     drill: bool,
     kickoff: bool,
     bot: Option<(Brain, Role)>,
+    /// Clip à rejouer (`rst watch --clip`).
+    clip: Option<sim_core::clip::Clip>,
 }
 
 fn start(s: Session) {
@@ -400,10 +428,59 @@ fn play(args: PlayArgs) {
         drill: args.drill,
         kickoff: false,
         bot,
+        clip: None,
     });
 }
 
+/// `rst watch --clips` / `--clip` : liste ou télécharge depuis le learner. `Ok(None)` : liste affichée, rien à jouer.
+fn watch_clip(args: &WatchArgs) -> Result<Option<sim_core::clip::Clip>, String> {
+    use rst_core::{bot, clips};
+    let base = bot::resolve_url(
+        args.url.as_deref(),
+        std::env::var(bot::URL_ENV).ok().as_deref(),
+    );
+    if args.clips {
+        println!(
+            "{}",
+            clips::format_list(&clips::fetch_list(&rst_core::update::Curl, &base)?)
+        );
+        return Ok(None);
+    }
+    let Some(arg) = &args.clip else {
+        return Ok(None);
+    };
+    let src = clips::resolve(arg, &base);
+    let bytes = clips::load(&rst_core::update::Curl, &src)?;
+    sim_core::clip::Clip::from_json(&bytes).map(Some)
+}
+
 fn watch(args: WatchArgs) {
+    if args.clip.is_some() || args.clips {
+        match watch_clip(&args) {
+            Ok(None) => return,
+            Ok(Some(clip)) => {
+                eprintln!(
+                    "clip {} : {} ({:.1} s)",
+                    clip.id,
+                    clip.mechanic,
+                    clip.seconds()
+                );
+                return start(Session {
+                    screenshot: args.screenshot,
+                    frames: args.frames,
+                    demo: false,
+                    drill: false,
+                    kickoff: false,
+                    bot: None,
+                    clip: Some(clip),
+                });
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
     let brain = load_brain(args.policy.as_deref());
     start(Session {
         screenshot: args.screenshot,
@@ -412,6 +489,7 @@ fn watch(args: WatchArgs) {
         drill: false,
         kickoff: args.kickoff,
         bot: Some((brain, Role::Watch)),
+        clip: None,
     });
 }
 
@@ -423,6 +501,7 @@ async fn run(session: Session) {
         drill,
         kickoff,
         bot,
+        clip,
     } = session;
 
     let dir = match ensure_meshes().await {
@@ -439,9 +518,10 @@ async fn run(session: Session) {
         eprintln!("{e}");
         return;
     }
-    let mut world = match bot {
-        Some((brain, role)) => World::with_bot(brain, role),
-        None => World::new(),
+    let mut world = match (clip, bot) {
+        (Some(clip), _) => World::with_clip(clip),
+        (None, Some((brain, role))) => World::with_bot(brain, role),
+        (None, None) => World::new(),
     }
     .expect("arène");
     if drill {
