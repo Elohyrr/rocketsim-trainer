@@ -15,6 +15,8 @@ use rl_env::{EnvConfig, KickoffResult, Outcome, VecEnv};
 
 use crate::ppo::Mlp;
 
+/// Palier du self-play (jugé sur l'Elo).
+pub const SELFPLAY_STAGE: u32 = 6;
 /// Note du fonceur scripté (ancre de l'échelle).
 pub const CHARGER_ELO: f64 = 1000.0;
 /// Matchs par référence.

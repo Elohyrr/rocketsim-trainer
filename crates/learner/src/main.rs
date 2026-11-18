@@ -432,8 +432,9 @@ fn main() {
             tr.set_env_config(&env_cfg(mv.stage()));
             guard.reset();
         }
-        // Garde-fou d'exploration et meilleur état du palier (paliers jugés sur le taux de but).
-        if cur_stage >= 2 && promoted.is_none() {
+        // Garde-fou d'exploration et meilleur état du palier (paliers 2 à 5, jugés sur le taux de but ; le palier 6
+        // est jugé sur l'Elo, voir plus bas : son taux de but est symétrique).
+        if (2..elo::SELFPLAY_STAGE).contains(&cur_stage) && promoted.is_none() {
             match guard.observe(s.goals, s.episodes, tr.explore.scale < 1.0) {
                 Some(GuardEvent::BackOff { recent, reference }) => {
                     tr.explore.back_off();
@@ -469,6 +470,7 @@ fn main() {
         }
         if cur_stage >= 5 && elo_last.is_none_or(|t| t.elapsed() >= elo_every) {
             let mut st = curriculum.lock().expect("curriculum").elo.clone();
+            let best_before = st.best;
             let te = Instant::now();
             match elo::measure(&tr.policy_snapshot(), &mut st, &out, &tr.plain_device()) {
                 Ok(rep) => {
@@ -499,8 +501,20 @@ fn main() {
                         }
                         m.elo_matches_total += u64::from(rep.matches);
                     }
+                    // Palier 6 : le « meilleur état » est celui du record d'Elo (taux de but inconnu : −1).
+                    if cur_stage == elo::SELFPLAY_STAGE && st.best > best_before {
+                        let name = format!("best-stage-{cur_stage}");
+                        match best::snapshot(&tr, &out, &name, cur_stage, -1.0) {
+                            Ok(_) => eprintln!(
+                                "meilleur état du palier {cur_stage} : Elo {:.0} → {name}",
+                                st.best
+                            ),
+                            Err(e) => eprintln!("{name} : {e}"),
+                        }
+                    }
                     if let Some(mv) = mv {
                         stage_down += 1;
+                        guard.reset();
                         eprintln!(
                             "régression : palier {} (Elo en baisse sur {} mesures)",
                             mv.stage(),

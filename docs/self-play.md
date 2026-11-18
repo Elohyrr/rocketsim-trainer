@@ -47,3 +47,11 @@ Fichiers sur le PVC dans `--out` (aucun changement de volume). Réglages : `--el
 - Local : essai court (voir la PR) : Elo mesuré, pool qui se remplit et se recharge, palier 5 non dégradé.
 - Prod : **aucune régression 6 → 5 sur 48 h** (`trainer_stage_changes_total{direction="down"}` constant) et
   `trainer_elo` croissant sur la semaine ; surveiller `trainer_elo_vs{ref="best"}` (≈ 1000 + écart au record).
+
+## Avec le garde-fou d'entropie et les points de restauration (`docs/exploration.md`)
+
+- Garde-fou (`Guard`) et `best-stage-N` : paliers 2 à 5 seulement (taux de but). Au palier 6 le taux de but est
+  symétrique : le garde-fou y est coupé et `best-stage-6/` est pris à chaque **record d'Elo**. Une régression 6 → 5 par
+  l'Elo remet le garde-fou à zéro.
+- Une restauration (`restore-from`) efface `elo.json` si la source n'en a pas (sinon le record d'Elo d'une politique
+  plus forte bloquerait la promotion) ; `pool/` et `refs/` sont conservés (d'anciens adversaires restent valables).

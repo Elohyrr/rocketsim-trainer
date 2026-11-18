@@ -113,7 +113,7 @@ impl Best {
 
 /// Fichiers d'état effacés de `--out` lors d'une restauration si la source ne les a pas (sinon l'état restauré
 /// serait mélangé à l'ancien : `explore.json` d'un autre réglage, marqueur d'un autre checkpoint).
-const OPTIONAL_STATE: [&str; 2] = ["explore.json", OPPONENT_OBS_MARKER];
+const OPTIONAL_STATE: [&str; 3] = ["explore.json", "elo.json", OPPONENT_OBS_MARKER];
 
 /// Applique `<out>/restore-from` s'il existe ; renvoie le dossier restauré.
 pub fn apply_restore(out: &Path) -> Result<Option<PathBuf>, String> {
