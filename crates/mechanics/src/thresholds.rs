@@ -129,3 +129,51 @@ pub const CARRIED_BALL_DIST: f32 = 250.0;
 
 /// Jugement d'un toucher : vitesse de balle maximale dans les 4 ticks qui suivent (inclus le tick du toucher).
 pub const HIT_JUDGE_TICKS: u64 = 4;
+
+// ---- groupe carry
+
+/// Hood dribble : moyenne de la position avant de la balle (repère voiture, uu) pendant le contrôle au-delà de
+/// laquelle la balle est sur le capot plutôt que sur le toit.
+pub const HOOD_MIN_MEAN_FWD: f32 = 35.0;
+
+/// Reverse dribble : vitesse longitudinale (vel·forward, uu/s) en dessous de laquelle la voiture recule.
+pub const REVERSE_MAX_FWD_SPEED: f32 = -300.0;
+/// Reverse dribble : portage en marche arrière d'au moins 0,5 s (ticks)…
+pub const REVERSE_MIN_TICKS: u32 = 60;
+/// … avec au moins ce nombre de touchers distincts…
+pub const REVERSE_MIN_TOUCHES: u32 = 3;
+/// … et au moins cette distance parcourue (uu).
+pub const REVERSE_MIN_DIST: f32 = 400.0;
+
+/// Wall dribble : portage sur un mur d'au moins 0,5 s (ticks), au moins 400 uu parcourus.
+pub const WALL_DRIBBLE_MIN_TICKS: u32 = 60;
+pub const WALL_DRIBBLE_MIN_DIST: f32 = 400.0;
+/// Ceiling dribble : portage au plafond d'au moins 0,4 s (ticks).
+pub const CEILING_DRIBBLE_MIN_TICKS: u32 = 48;
+/// Wall / ceiling dribble : touchers distincts minimum pendant le portage (la balle ne tient pas seule).
+pub const SURFACE_DRIBBLE_MIN_TOUCHES: u32 = 1;
+
+/// Bounce dribble : au moins 3 touchers, espacés de 10 à 60 ticks…
+pub const BOUNCE_DRIBBLE_MIN_TOUCHES: u32 = 3;
+pub const BOUNCE_DRIBBLE_MIN_GAP_TICKS: u64 = 10;
+pub const BOUNCE_DRIBBLE_MAX_GAP_TICKS: u64 = 60;
+/// … voiture au sol à plus de 300 uu/s (vitesse horizontale)…
+pub const BOUNCE_DRIBBLE_MIN_CAR_SPEED: f32 = 300.0;
+/// … balle sous 300 uu de hauteur et à moins de 500 uu de la voiture à chaque toucher…
+pub const BOUNCE_DRIBBLE_BALL_MAX_Z: f32 = 300.0;
+pub const BOUNCE_DRIBBLE_MAX_DIST: f32 = 500.0;
+/// … toucher doux : vitesse de balle après le toucher sous 1 500 uu/s.
+pub const BOUNCE_DRIBBLE_MAX_BALL_SPEED: f32 = 1500.0;
+/// Rebond de la balle au sol : centre sous 140 uu (rayon 91,25 + marge) et vitesse verticale qui passe de
+/// moins de −50 uu/s à positive.
+pub const BALL_FLOOR_BOUNCE_MAX_Z: f32 = 140.0;
+pub const BALL_FLOOR_BOUNCE_MIN_VZ: f32 = 50.0;
+
+/// Musty flick : dodge arrière (composante avant normalisée < −0,5)…
+pub const MUSTY_MAX_FWD: f32 = -0.5;
+/// … avec la balle au-dessus de la voiture au moment du dodge (hauteur dans le repère voiture, uu).
+pub const MUSTY_MIN_BALL_UP: f32 = 60.0;
+/// Delayed flick : dodge au moins 0,3 s (ticks) après le saut, balle toujours portée.
+pub const DELAYED_FLICK_MIN_TICKS: u64 = 36;
+/// Breezi flick : vitesse de rotation autour de l'axe haut de la voiture (|ang_vel·up|, rad/s) au toucher.
+pub const BREEZI_MIN_YAW_RATE: f32 = 3.0;
