@@ -21,8 +21,14 @@
   #view canvas { display:block; width:100%; height:100%; }
   #hud { position:absolute; left:8px; top:8px; right:8px; pointer-events:none; display:flex; justify-content:space-between; gap:8px; font-size:13px; text-shadow:0 1px 3px #000; }
   #hud .b { background:#0009; border-radius:6px; padding:4px 8px; }
-  #boost { display:inline-block; width:70px; height:8px; border:1px solid #fff8; vertical-align:middle; margin-left:4px; }
-  #boost i { display:block; height:100%; background:var(--acc); width:0; }
+  #hud .g { display:flex; flex-direction:column; gap:4px; align-items:flex-start; }
+  #hud .g.r { align-items:flex-end; }
+  .gauge { display:flex; align-items:center; gap:6px; background:#0009; border-radius:6px; padding:4px 8px; font-variant-numeric:tabular-nums; }
+  .gauge .bar { display:inline-block; width:64px; height:9px; border:1px solid #fff8; border-radius:2px; overflow:hidden; }
+  .gauge .bar i { display:block; height:100%; width:0; }
+  .gauge.blue .bar i { background:var(--blue); } .gauge.orange .bar i { background:var(--orange); }
+  .gauge b { min-width:2.2em; text-align:right; }
+  .gauge.agent { outline:1px solid #fffa; }
   #msg { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--dim); text-align:center; padding:20px; pointer-events:none; }
   #ctl { background:var(--panel); border-top:1px solid var(--line); padding:8px 12px; padding-bottom:max(8px,env(safe-area-inset-bottom)); }
   .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
@@ -72,7 +78,7 @@
   <div class="wrap">
     <main>
       <div id="view"></div>
-      <div id="hud"><div class="b" id="hudl"></div><div class="b" id="hudr"></div></div>
+      <div id="hud"><div class="g"><div class="b" id="hudl"></div></div><div class="g r" id="gauges"></div></div>
       <div id="msg">Choisis un clip dans la liste.</div>
     </main>
     <section id="ctl">
@@ -172,10 +178,60 @@ function makeCar(blue, agent) {
   }
   const fl = new THREE.Mesh(new THREE.ConeGeometry(18, 90, 8).rotateZ(Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffa31a }));
   fl.position.set(-110, 8, 0); fl.visible = false; g.userData.flame = fl; g.add(fl);
+  const core = new THREE.Mesh(new THREE.ConeGeometry(9, 60, 8).rotateZ(Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xfff2a8 }));
+  core.position.set(-95, 8, 0); fl.add(core); core.position.set(5, 0, 0); g.userData.core = core;
   g.matrixAutoUpdate = false;
   scene.add(g); return g;
 }
-let cars = [];
+let cars = [], gaugeEls = [];
+
+/* ---------- Boosts au sol ---------- */
+const PADCOL = 0xffb62e, PADOFF = 0x4a4f57;
+let pads = []; // { mesh, big, flash, x }
+const padGroup = new THREE.Group(); scene.add(padGroup);
+function buildPads(t) {
+  padGroup.clear(); pads = [];
+  const pp = t.pads; if (!pp || !pp.big || !pp.big.length) return;
+  const small = new THREE.CylinderGeometry(70, 70, 8, 20), big = new THREE.CylinderGeometry(120, 120, 18, 24);
+  const orb = new THREE.SphereGeometry(75, 14, 10);
+  for (let i = 0; i < pp.big.length; i++) {
+    const g = new THREE.Group(), isBig = pp.big[i];
+    const mat = new THREE.MeshBasicMaterial({ color: PADCOL, transparent: true });
+    const disc = new THREE.Mesh(isBig ? big : small, mat); disc.position.y = isBig ? 9 : 4; g.add(disc);
+    let sph = null;
+    if (isBig) { sph = new THREE.Mesh(orb, mat); sph.position.y = 130; g.add(sph); }
+    const ring = new THREE.Mesh(new THREE.RingGeometry(1, 1.25, 28).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }));
+    ring.position.y = 12; g.add(ring);
+    g.position.copy(P(pp.pos[i * 3], pp.pos[i * 3 + 1], pp.pos[i * 3 + 2]));
+    g.position.y = 0; // posés au sol
+    padGroup.add(g);
+    pads.push({ g, mat, disc, sph, ring, big: isBig, state: true, flash: -1 });
+  }
+}
+// État d'un pad à l'image f : initial + événements jusqu'à f (images triées).
+function padStateAt(t, f, out) {
+  const pp = t.pads; for (let i = 0; i < pp.active0.length; i++) out[i] = pp.active0[i];
+  for (let e = 0; e < pp.events.length; e += 3) { if (pp.events[e] > f) break; out[pp.events[e + 1]] = pp.events[e + 2] === 1; }
+  return out;
+}
+const _ps = [];
+function updatePads(t, x, now) {
+  if (!pads.length) return;
+  const f = Math.floor(x); padStateAt(t, f, _ps);
+  // ramassage dans les ~0,3 s qui précèdent : flash (anneau qui grandit)
+  const lo = Math.max(0, f - Math.round(0.35 / t.dt)); let fl = {};
+  const ev = t.pads.events;
+  for (let e = 0; e < ev.length; e += 3) if (ev[e + 2] === 0 && ev[e] <= f && ev[e] >= lo) fl[ev[e + 1]] = (x - ev[e]) * t.dt;
+  pads.forEach((p, i) => {
+    const on = _ps[i];
+    p.mat.color.setHex(on ? PADCOL : PADOFF); p.mat.opacity = on ? 1 : 0.45;
+    p.disc.scale.y = on ? 1 : 0.5;
+    if (p.sph) { p.sph.visible = on; if (on) p.sph.position.y = 130 + Math.sin(now / 350 + i) * 12; }
+    const a = fl[i];
+    if (a !== undefined) { const k = a / 0.35, r = (p.big ? 120 : 70) * (1 + k * 2.2); p.ring.scale.set(r, 1, r); p.ring.material.opacity = 0.9 * (1 - k); p.ring.visible = true; }
+    else p.ring.visible = false;
+  });
+}
 
 const _f = new THREE.Vector3(), _u = new THREE.Vector3(), _z = new THREE.Vector3(), _m = new THREE.Matrix4();
 function place(obj, a, b, k, f) { // a, b : images voisines ; k : fraction ; f : décalage de la pose dans le tableau
@@ -244,6 +300,9 @@ function setTraj(t) {
   traj = t; $('msg').style.display = 'none';
   for (const c of cars) scene.remove(c);
   cars = t.cars.map((c, i) => makeCar(c.blue, i === t.agent));
+  buildPads(t);
+  $('gauges').innerHTML = t.cars.map((c, i) => `<div class="gauge ${c.blue ? 'blue' : 'orange'}${i === t.agent ? ' agent' : ''}"><span>${i === t.agent ? 'Agent' : (c.blue ? 'Bleu' : 'Orange')}</span><span class="bar"><i></i></span><b></b></div>`).join('');
+  gaugeEls = [...$('gauges').children].map(d => [d.querySelector('i'), d.querySelector('b')]);
   if (ballPath) scene.remove(ballPath);
   const pts = []; for (let i = 0; i < t.frames; i++) pts.push(P(t.ball[i * 9], t.ball[i * 9 + 1], t.ball[i * 9 + 2]));
   ballPath = line(pts, 0xffffff, 0.35); scene.add(ballPath);
@@ -291,13 +350,17 @@ function frame(now) {
     ballMesh.matrixAutoUpdate = false; ballMesh.updateMatrixWorld(true);
     traj.cars.forEach((c, n) => {
       const p = place(cars[n], c.pose.slice(i * 9, i * 9 + 9), c.pose.slice(i * 9 + 9, i * 9 + 18), k, 0);
-      cars[n].userData.flame.visible = (c.flags[i] & 2) !== 0;
+      const fi = (c.flags[i] & 2) !== 0 || (c.flags[Math.min(i + 1, traj.frames - 1)] & 2) !== 0 && k > 0.5;
+      const fl = cars[n].userData.flame; fl.visible = fi;
+      if (fi) { const s = 0.85 + Math.random() * 0.5; fl.scale.set(s * 1.3, 1, 1); }
+      const bo = c.boost[i] + (c.boost[Math.min(i + 1, traj.frames - 1)] - c.boost[i]) * k;
+      if (gaugeEls[n]) { gaugeEls[n][0].style.width = bo + '%'; gaugeEls[n][1].textContent = Math.round(bo); }
       cars[n].updateMatrixWorld(true);
       if (n === traj.agent) {
         _cp.copy(p); _cf.setFromMatrixColumn(cars[n].matrix, 0);
-        $('hudr').innerHTML = `Agent · boost ${Math.round(c.boost[i])}<span id="boost"><i style="width:${c.boost[i]}%"></i></span>`;
       }
     });
+    updatePads(traj, x, now);
     if (!seeking) $('seek').value = Math.round(time / end * 1000);
     $('time').textContent = `${time.toFixed(1)} / ${end.toFixed(1)} s`;
     if (camMode === 'ball') { orbit.target.lerp(_bp, 0.2); }

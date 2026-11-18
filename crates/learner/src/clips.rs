@@ -548,6 +548,10 @@ mod tests {
         assert_eq!(v["ball"].as_array().unwrap().len(), frames * 9);
         assert_eq!(v["cars"].as_array().unwrap().len(), 2);
         assert_eq!(v["cars"][1]["blue"], false);
+        assert_eq!(v["cars"][0]["boost"].as_array().unwrap().len(), frames);
+        assert_eq!(v["pads"]["big"].as_array().unwrap().len(), 34);
+        assert_eq!(v["pads"]["pos"].as_array().unwrap().len(), 34 * 3);
+        assert_eq!(v["pads"]["active0"].as_array().unwrap().len(), 34);
         // Deuxième appel : servi par le cache, identique ; autre fréquence : autre résultat.
         assert_eq!(get(&format!("/clips/{}/trajectory", e.id)).2, body);
         let v60: serde_json::Value =
