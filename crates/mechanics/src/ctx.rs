@@ -96,4 +96,6 @@ pub struct Ctx<'a> {
     /// Dodge à ce tick.
     pub dodge_now: bool,
     pub base: Base,
+    /// Sens d'attaque : vrai si la voiture attaque vers y < 0 (équipe orange).
+    pub attack_neg: bool,
 }

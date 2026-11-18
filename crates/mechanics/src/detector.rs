@@ -781,6 +781,7 @@ impl Detector {
             dodge_age: self.last_dodge.map(|d| n - d.tick),
             dodge_now: dodge,
             base,
+            attack_neg: self.attack_neg,
         };
         let mut out = Out {
             counts,
