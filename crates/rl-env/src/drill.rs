@@ -46,7 +46,8 @@ pub fn base_bonus(m: Mechanic) -> f32 {
         Mechanic::WallShot => 0.5,
         Mechanic::AerialTouch | Mechanic::DoubleTouch => 0.4,
         Mechanic::Dribble => 0.3,
-        Mechanic::Touch | Mechanic::SpeedFlip | Mechanic::WaveDash | Mechanic::HalfFlip => 0.0,
+        // Le catalogue étendu (PR catalogue) ne rapporte aucun bonus : à décider avec les drills.
+        _ => 0.0,
     }
 }
 

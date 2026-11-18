@@ -124,3 +124,8 @@ pub const GOAL_LINE_Y: f32 = 5124.25;
 
 /// Décollage au boost sans saut : intentionnel si la balle est portée (côté toit, à moins de 250 uu du centre).
 pub const CARRIED_BALL_DIST: f32 = 250.0;
+
+// ---------------------------------------------------------------- catalogue étendu
+
+/// Jugement d'un toucher : vitesse de balle maximale dans les 4 ticks qui suivent (inclus le tick du toucher).
+pub const HIT_JUDGE_TICKS: u64 = 4;

@@ -9,18 +9,31 @@
 //! Unités RocketSim (uu, uu/s). Seuils : module [`thresholds`]. Séquences synthétiques rejouables (tests,
 //! autres crates) : module [`script`]. Documentation : `docs/mechanics.md`.
 
+mod ctx;
+mod detail;
 mod detector;
+mod ext_carry;
+mod ext_hit;
+mod ext_move;
 mod quality;
 pub mod script;
+mod script_carry;
+mod script_hit;
+mod script_move;
 pub mod thresholds;
 
 pub use detector::{Detector, Events, Mode};
+pub use ctx::{Base, Ctx, DodgeInfo, Hit};
+pub use detail::{Detail, Records, Support};
 pub use quality::{Quality, QualityTracker};
+
+/// Nombre de mécaniques du catalogue.
+pub const MECH_COUNT: usize = 41;
 
 /// Fréquence de la physique (ticks par seconde).
 pub const TICK_HZ: f32 = 120.0;
 
-/// Catalogue fermé des mécaniques détectées (12, ordre de [`Mechanic::ALL`] = index des compteurs).
+/// Catalogue fermé des mécaniques détectées (41, ordre de [`Mechanic::ALL`] = index des compteurs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Mechanic {
     Touch,
@@ -35,10 +48,39 @@ pub enum Mechanic {
     SpeedFlip,
     WaveDash,
     HalfFlip,
+    PowerShot,
+    Pinch,
+    KuxirPinch,
+    Cushion,
+    BackboardRead,
+    BackboardDouble,
+    Redirect,
+    AirRollShot,
+    ResetShot,
+    DoubleReset,
+    CeilingReset,
+    WallToAirDribble,
+    BounceDribble,
+    HoodDribble,
+    ReverseDribble,
+    WallDribble,
+    CeilingDribble,
+    Flick45,
+    Flick90,
+    MustyFlick,
+    DelayedFlick,
+    BreeziFlick,
+    ChainDash,
+    WallDash,
+    FastAerial,
+    Stall,
+    TornadoSpin,
+    Recovery,
+    HalfVolley,
 }
 
 impl Mechanic {
-    pub const ALL: [Mechanic; 12] = [
+    pub const ALL: [Mechanic; MECH_COUNT] = [
         Mechanic::Touch,
         Mechanic::AerialTouch,
         Mechanic::AirDribble,
@@ -51,6 +93,35 @@ impl Mechanic {
         Mechanic::SpeedFlip,
         Mechanic::WaveDash,
         Mechanic::HalfFlip,
+        Mechanic::PowerShot,
+        Mechanic::Pinch,
+        Mechanic::KuxirPinch,
+        Mechanic::Cushion,
+        Mechanic::BackboardRead,
+        Mechanic::BackboardDouble,
+        Mechanic::Redirect,
+        Mechanic::AirRollShot,
+        Mechanic::ResetShot,
+        Mechanic::DoubleReset,
+        Mechanic::CeilingReset,
+        Mechanic::WallToAirDribble,
+        Mechanic::BounceDribble,
+        Mechanic::HoodDribble,
+        Mechanic::ReverseDribble,
+        Mechanic::WallDribble,
+        Mechanic::CeilingDribble,
+        Mechanic::Flick45,
+        Mechanic::Flick90,
+        Mechanic::MustyFlick,
+        Mechanic::DelayedFlick,
+        Mechanic::BreeziFlick,
+        Mechanic::ChainDash,
+        Mechanic::WallDash,
+        Mechanic::FastAerial,
+        Mechanic::Stall,
+        Mechanic::TornadoSpin,
+        Mechanic::Recovery,
+        Mechanic::HalfVolley,
     ];
 
     /// Valeur du label Prometheus `mechanic`.
@@ -68,7 +139,61 @@ impl Mechanic {
             Mechanic::SpeedFlip => "speed_flip",
             Mechanic::WaveDash => "wave_dash",
             Mechanic::HalfFlip => "half_flip",
+            Mechanic::PowerShot => "power_shot",
+            Mechanic::Pinch => "pinch",
+            Mechanic::KuxirPinch => "kuxir_pinch",
+            Mechanic::Cushion => "cushion",
+            Mechanic::BackboardRead => "backboard_read",
+            Mechanic::BackboardDouble => "backboard_double",
+            Mechanic::Redirect => "redirect",
+            Mechanic::AirRollShot => "air_roll_shot",
+            Mechanic::ResetShot => "reset_shot",
+            Mechanic::DoubleReset => "double_reset",
+            Mechanic::CeilingReset => "ceiling_reset",
+            Mechanic::WallToAirDribble => "wall_to_air_dribble",
+            Mechanic::BounceDribble => "bounce_dribble",
+            Mechanic::HoodDribble => "hood_dribble",
+            Mechanic::ReverseDribble => "reverse_dribble",
+            Mechanic::WallDribble => "wall_dribble",
+            Mechanic::CeilingDribble => "ceiling_dribble",
+            Mechanic::Flick45 => "flick_45",
+            Mechanic::Flick90 => "flick_90",
+            Mechanic::MustyFlick => "musty_flick",
+            Mechanic::DelayedFlick => "delayed_flick",
+            Mechanic::BreeziFlick => "breezi_flick",
+            Mechanic::ChainDash => "chain_dash",
+            Mechanic::WallDash => "wall_dash",
+            Mechanic::FastAerial => "fast_aerial",
+            Mechanic::Stall => "stall",
+            Mechanic::TornadoSpin => "tornado_spin",
+            Mechanic::Recovery => "recovery",
+            Mechanic::HalfVolley => "half_volley",
         }
+    }
+
+    /// Vrai si la mécanique garde un record (meilleure vitesse de balle, uu/s) : métrique
+    /// `trainer_mechanic_record{mechanic}`.
+    pub fn has_record(self) -> bool {
+        use Mechanic::*;
+        matches!(
+            self,
+            PowerShot
+                | Pinch
+                | KuxirPinch
+                | Flick
+                | Flick45
+                | Flick90
+                | MustyFlick
+                | DelayedFlick
+                | BreeziFlick
+                | WallShot
+                | CeilingShot
+                | DoubleTouch
+                | BackboardDouble
+                | Redirect
+                | AirRollShot
+                | ResetShot
+        )
     }
 
     /// Position dans [`Mechanic::ALL`] et dans [`Counts`].
@@ -123,8 +248,14 @@ pub struct BallTick {
 }
 
 /// Compteurs par mécanique (index = [`Mechanic::index`]).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Counts(pub [u64; 12]);
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Counts(pub [u64; MECH_COUNT]);
+
+impl Default for Counts {
+    fn default() -> Self {
+        Self([0; MECH_COUNT])
+    }
+}
 
 impl Counts {
     #[inline]
@@ -181,7 +312,36 @@ mod tests {
                 "dribble",
                 "speed_flip",
                 "wave_dash",
-                "half_flip"
+                "half_flip",
+                "power_shot",
+                "pinch",
+                "kuxir_pinch",
+                "cushion",
+                "backboard_read",
+                "backboard_double",
+                "redirect",
+                "air_roll_shot",
+                "reset_shot",
+                "double_reset",
+                "ceiling_reset",
+                "wall_to_air_dribble",
+                "bounce_dribble",
+                "hood_dribble",
+                "reverse_dribble",
+                "wall_dribble",
+                "ceiling_dribble",
+                "flick_45",
+                "flick_90",
+                "musty_flick",
+                "delayed_flick",
+                "breezi_flick",
+                "chain_dash",
+                "wall_dash",
+                "fast_aerial",
+                "stall",
+                "tornado_spin",
+                "recovery",
+                "half_volley"
             ]
         );
     }

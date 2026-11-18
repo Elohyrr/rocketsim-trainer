@@ -10,12 +10,13 @@ fn tous_les_cas_scriptes() {
     let mut failures = Vec::new();
     for case in script::cases() {
         let got = script::replay(&case.frames);
-        if got != case.expected {
+        let seen = case.observed(&got);
+        if seen != case.expected {
             failures.push(format!(
                 "{} : attendu {:?}, obtenu {:?}",
                 case.name,
                 case.expected.nonzero(),
-                got.nonzero()
+                seen.nonzero()
             ));
         }
         assert_eq!(
@@ -188,9 +189,11 @@ fn concatenation_des_cas() {
     let mut expected = Counts::default();
     for case in script::cases() {
         det.reset();
+        let mut local = Counts::default();
         for (c, b) in &case.frames {
-            det.tick(c, b, &mut counts);
+            det.tick(c, b, &mut local);
         }
+        counts.add(&case.observed(&local));
         expected.add(&case.expected);
     }
     assert_eq!(counts, expected);

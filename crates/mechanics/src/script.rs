@@ -21,6 +21,43 @@ pub struct Case {
     pub frames: Vec<Frame>,
     /// Compteurs exacts attendus (conséquences naturelles comprises, ex. `Touch`).
     pub expected: Counts,
+    /// Vrai : tous les compteurs sont comparés. Faux (cas d'origine) : seules les 12 premières mécaniques,
+    /// les mécaniques du catalogue étendu n'étant pas listées dans l'attendu.
+    pub exact: bool,
+}
+
+/// Nombre de mécaniques du catalogue d'origine (premiers index de [`Mechanic::ALL`]).
+pub const LEGACY_COUNT: usize = 12;
+
+impl Case {
+    /// Compteurs du rejeu à comparer à `expected` (masque les mécaniques étendues si `!exact`).
+    pub fn observed(&self, got: &Counts) -> Counts {
+        let mut c = got.clone();
+        if !self.exact {
+            for v in c.0.iter_mut().skip(LEGACY_COUNT) {
+                *v = 0;
+            }
+        }
+        c
+    }
+}
+
+/// Cas du catalogue étendu (comparaison exacte de tous les compteurs).
+pub fn case(
+    name: &'static str,
+    mechanic: Mechanic,
+    positive: bool,
+    frames: Vec<Frame>,
+    expected: &[(Mechanic, u64)],
+) -> Case {
+    Case {
+        name,
+        mechanic,
+        positive,
+        frames,
+        expected: counts(expected),
+        exact: true,
+    }
 }
 
 /// Rejoue une séquence dans un détecteur neuf (règles v2) et rend les compteurs.
@@ -955,8 +992,9 @@ pub fn cases() -> Vec<Case> {
         positive,
         frames,
         expected: counts(expected),
+        exact: false,
     };
-    vec![
+    let mut all = vec![
         c("touch", Touch, true, touch_sequence(), &[(Touch, 1)]),
         c(
             "touch_negative",
@@ -1280,5 +1318,9 @@ pub fn cases() -> Vec<Case> {
             half_flip_negative_ground_turn_sequence(),
             &[],
         ),
-    ]
+    ];
+    all.extend(crate::script_hit::cases());
+    all.extend(crate::script_carry::cases());
+    all.extend(crate::script_move::cases());
+    all
 }
