@@ -230,6 +230,22 @@ impl Metrics {
                 );
             }
         }
+        let _ = writeln!(s, "# TYPE trainer_mechanic_record gauge");
+        for m in mechanics::Mechanic::ALL
+            .into_iter()
+            .filter(|m| m.has_record())
+        {
+            let best = self
+                .mechanics
+                .records()
+                .get(m)
+                .max(self.drill_mechanics.records().get(m));
+            let _ = writeln!(
+                s,
+                "trainer_mechanic_record{{mechanic=\"{}\"}} {best}",
+                m.label()
+            );
+        }
         let _ = writeln!(s, "# TYPE trainer_drill_episodes_total counter");
         for d in scenarios::Drill::ALL {
             let _ = writeln!(
@@ -417,10 +433,21 @@ mod tests {
         }
         let n = count_series(&m.render());
         assert!(
-            n < 110,
-            "objectif < 110 séries (plafond dur : 500), obtenu {n}"
+            n < 200,
+            "objectif < 200 séries (plafond dur : 500), obtenu {n}"
         );
         assert!(n < MAX_SERIES);
+    }
+
+    #[test]
+    fn mechanic_records_are_exposed() {
+        let mut m = Metrics::default();
+        m.mechanics.1.observe(mechanics::Mechanic::Pinch, 4200.0);
+        m.drill_mechanics.1.observe(mechanics::Mechanic::Pinch, 4800.0);
+        let t = m.render();
+        assert!(t.contains("trainer_mechanic_record{mechanic=\"pinch\"} 4800"));
+        assert!(t.contains("trainer_mechanic_record{mechanic=\"power_shot\"} 0"));
+        assert!(!t.contains("trainer_mechanic_record{mechanic=\"touch\"}"));
     }
 
     #[test]

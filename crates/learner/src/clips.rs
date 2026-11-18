@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rl_env::clip::{Clip, Trajectory};
 use serde::{Deserialize, Serialize};
-use sim_core::clip::ClipQuality;
+use sim_core::clip::{ClipDetail, ClipQuality};
 use sim_core::{Sim, SimError};
 
 pub const DIR: &str = "clips";
@@ -43,6 +43,9 @@ pub struct Entry {
     /// Qualité mesurée après la mécanique (absente des clips v1).
     #[serde(default)]
     pub quality: Option<ClipQuality>,
+    /// Valeur et support de la mécanique (vitesse de balle d'un pinch, son support…).
+    #[serde(default)]
+    pub detail: Option<ClipDetail>,
 }
 
 fn v1() -> u32 {
@@ -181,6 +184,7 @@ impl ClipStore {
             bytes: data.len() as u64,
             detector: clip.detector.max(1),
             quality: clip.quality,
+            detail: clip.detail.clone(),
         };
         self.last.insert(clip.mechanic, now);
         self.entries.push(e.clone());
@@ -382,6 +386,7 @@ mod tests {
             steps: vec![vec![Ctl(0.0, 0.0, 0.0, 0.0, 0.0, 0)]; 2],
             detector: 2,
             quality: None,
+            detail: None,
         }
     }
 

@@ -196,6 +196,22 @@ impl Mechanic {
         )
     }
 
+    /// Priorité du clip quand plusieurs mécaniques se déclenchent dans le même pas (plus grand = plus précieux ;
+    /// à égalité, l'index le plus élevé gagne). Le simple toucher n'est jamais clippé.
+    pub fn clip_priority(self) -> u8 {
+        use Mechanic::*;
+        match self {
+            FlipReset | ResetShot | DoubleReset | CeilingReset | KuxirPinch => 9,
+            Pinch | CeilingShot | AirDribble | WallToAirDribble | BackboardDouble | DoubleTouch
+            | Flick | Flick45 | Flick90 | MustyFlick | DelayedFlick | BreeziFlick | Redirect
+            | AirRollShot => 8,
+            PowerShot | WallShot | SpeedFlip | ChainDash | WallDash | Stall | TornadoSpin
+            | BackboardRead | BounceDribble | WallDribble | CeilingDribble | ReverseDribble => 6,
+            Touch => 0,
+            _ => 3,
+        }
+    }
+
     /// Position dans [`Mechanic::ALL`] et dans [`Counts`].
     #[inline]
     pub fn index(self) -> usize {
