@@ -185,16 +185,13 @@ pub struct EnvConfig {
     /// Enregistre un clip rejouable quand une mécanique (hors simple toucher) est reconnue ; demande
     /// `detect_mechanics`. Voir [`Env::take_clips`].
     pub record_clips: bool,
-<<<<<<< ours
     /// Garde les règles d'origine (v1) du détecteur de mécaniques au lieu des règles strictes (v2).
     pub detector_v1: bool,
-=======
     /// Part des épisodes qui sont des drills de mécaniques (0 = désactivé ; sans effet quand `end_on_touch`).
     /// Voir `docs/drills.md` : sans adversaire actif, exclus des stats de curriculum, bonus de méca seulement ici.
     pub drill_prob: f32,
     /// Registre partagé des bonus de méca payés (décroissance sur 1 h glissante) ; à partager entre les paliers.
     pub bonus_ledger: Arc<BonusLedger>,
->>>>>>> theirs
 }
 
 /// Tirage des positions de départ.
@@ -238,12 +235,9 @@ impl Default for EnvConfig {
             kickoff_idle_opponent: false,
             detect_mechanics: true,
             record_clips: false,
-<<<<<<< ours
             detector_v1: false,
-=======
             drill_prob: 0.0,
             bonus_ledger: Arc::default(),
->>>>>>> theirs
         }
     }
 }
@@ -440,15 +434,12 @@ pub struct Env {
     rec: ClipRecorder,
     clips: Vec<Clip>,
     opp_ctl: Controls,
-<<<<<<< ours
     /// Clip construit qui attend sa qualité (mesurée 3 s après la mécanique) et le suivi correspondant.
     clip_wait: Option<Clip>,
     quality: Option<mechanics::QualityTracker>,
-=======
     /// Drill en cours (None en match) et son bonus ; compteurs de drill depuis la dernière reprise.
     drill: Option<(Drill, drill::EpisodeBonus)>,
     drill_report: DrillReport,
->>>>>>> theirs
 }
 
 impl Env {
@@ -474,13 +465,10 @@ impl Env {
             rec: ClipRecorder::new(cfg_skip),
             clips: Vec::new(),
             opp_ctl: Controls::default(),
-<<<<<<< ours
             clip_wait: None,
             quality: None,
-=======
             drill: None,
             drill_report: DrillReport::default(),
->>>>>>> theirs
         };
         e.reset();
         Ok(e)
@@ -502,7 +490,6 @@ impl Env {
         std::mem::take(&mut self.mech)
     }
 
-<<<<<<< ours
     fn mode(cfg: &EnvConfig) -> mechanics::Mode {
         if cfg.detector_v1 {
             mechanics::Mode::V1
@@ -524,7 +511,8 @@ impl Env {
             });
             self.clips.push(c);
         }
-=======
+    }
+
     /// Compteurs de drill depuis le dernier appel (remis à zéro).
     pub fn take_drill_report(&mut self) -> DrillReport {
         std::mem::take(&mut self.drill_report)
@@ -533,7 +521,6 @@ impl Env {
     /// Drill de l'épisode en cours (None en match).
     pub fn drill(&self) -> Option<Drill> {
         self.drill.as_ref().map(|d| d.0)
->>>>>>> theirs
     }
 
     /// Clips finis depuis le dernier appel (vide sans `record_clips`).
@@ -870,19 +857,15 @@ impl Env {
             for _ in 0..self.cfg.tick_skip {
                 self.sim.step(1);
                 let (c, b) = (self.sim.car_tick(self.car), self.sim.ball_tick());
-<<<<<<< ours
-                self.detector.tick(&c, &b, &mut self.mech);
+                self.detector.tick(&c, &b, &mut seen);
                 if let Some(t) = self.quality.as_mut() {
                     t.observe(&b);
                 }
-=======
-                self.detector.tick(&c, &b, &mut seen);
             }
             if in_drill {
                 self.drill_report.mechanics.add(&seen);
             } else {
                 self.mech.add(&seen);
->>>>>>> theirs
             }
             if recording {
                 // Tout sauf le simple toucher (trop fréquent) ; la plus rare des mécaniques vues ce pas.
