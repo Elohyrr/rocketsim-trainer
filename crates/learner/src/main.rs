@@ -3,7 +3,8 @@
 //! learner --eval-kickoff N --policy policy.safetensors [--idle] : évalue les coups d'envoi (voir `eval.rs`).
 //! learner [--minutes M] [--envs N] [--threads T] [--out DIR] [--metrics ADDR] [--resume]
 //!         [--checkpoint-minutes N] [--stage S] [--init-actor policy.safetensors [--critic-warmup N]]
-//!         [--elo-minutes N] [--pool-every N]
+//!         [--elo-minutes N] [--pool-every N] [--drill-prob P]
+//! `--drill-prob P` (ou `DRILL_PROB`) : part des épisodes en drill de mécaniques (0 = coupé, défaut ; 0,3 conseillé).
 //! `--minutes 0` = sans limite (mode cluster). `--stage S` fige le palier (pas de promotion automatique).
 //! Variables : `JELLYFIN_URL`, `JELLYFIN_API_KEY` (pause D6, désactivée sans clé), `JELLYFIN_RESUME_MINUTES`
 //! (défaut 10), `JELLYFIN_POLL_SECONDS` (défaut 30). SIGTERM/SIGINT : checkpoint final puis sortie.
@@ -209,6 +210,14 @@ fn main() {
 
     // `--kickoff-prob P` : surcharge la part de coups d'envoi aux paliers 5/6 (0 = témoin sans kickoff).
     let kp: Option<f32> = arg("--kickoff-prob").and_then(|s| s.parse().ok());
+    // `--drill-prob P` (ou DRILL_PROB) : part des épisodes en drill de mécaniques (défaut 0 = désactivé ;
+    // 0,3 conseillé). Voir docs/drills.md.
+    let drill_prob: f32 = arg("--drill-prob")
+        .or_else(|| std::env::var("DRILL_PROB").ok())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0f32)
+        .clamp(0.0, 0.9);
+    let ledger = std::sync::Arc::new(rl_env::BonusLedger::default());
     let want_clips = !std::env::args().any(|a| a == "--no-clips");
     // `--detector-v1` ou `DETECTOR_V1=1` : règles d'origine du détecteur de mécaniques (sinon v2, strictes).
     let detector_v1 = std::env::args().any(|a| a == "--detector-v1")
@@ -232,6 +241,8 @@ fn main() {
         EnvConfig {
             record_clips,
             detector_v1,
+            drill_prob: if c.end_on_touch { 0.0 } else { drill_prob },
+            bonus_ledger: ledger.clone(),
             kickoff_prob: if c.kickoff_prob > 0.0 {
                 kp.unwrap_or(c.kickoff_prob)
             } else {
@@ -325,6 +336,7 @@ fn main() {
     let limit = (minutes > 0.0).then(|| Duration::from_secs_f64(minutes * 60.0));
     let (mut steps, mut eps, mut touches) = (0u64, 0u64, 0u64);
     let mut mech_total = mechanics::Counts::default();
+    let mut drill_total = rl_env::DrillReport::default();
     let (mut goals, mut own_goals) = (0u64, 0u64);
     let (mut kick_won, mut kick_lost, mut kick_neutral) = (0u64, 0u64, 0u64);
     let mut it = 0;
@@ -573,6 +585,11 @@ fn main() {
             m.touch_total = touches;
             mech_total.add(&s.mechanics);
             m.mechanics = mech_total.clone();
+            drill_total.add(&s.drill);
+            m.drill_mechanics = drill_total.mechanics.clone();
+            m.drill_bonus = drill_total.bonus.clone();
+            m.drill_episodes = drill_total.episodes;
+            m.drill_recovery = drill_total.recovery;
             m.clips_saved_known = clips_saved;
             m.goals_scored_total = goals;
             m.goals_conceded_total = own_goals;

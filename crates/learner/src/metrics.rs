@@ -44,8 +44,14 @@ pub struct Metrics {
     pub curriculum_stage: u32,
     pub unrecognized_sequences_total: u64,
     pub touch_total: u64,
-    /// Mécaniques détectées depuis le démarrage, contexte `match` (aucun drill pour l'instant : série `drill` à 0).
+    /// Mécaniques détectées depuis le démarrage, contexte `match`.
     pub mechanics: mechanics::Counts,
+    /// Mécaniques détectées en drill (contexte `drill`), bonus payés par mécanique, épisodes par drill.
+    pub drill_mechanics: mechanics::Counts,
+    pub drill_bonus: mechanics::Counts,
+    pub drill_episodes: [u64; scenarios::DRILL_COUNT],
+    /// Verdicts du drill de récupération (ordre de `rl_env::drill::RecoveryOutcome::ALL`).
+    pub drill_recovery: [u64; 4],
     /// Clips enregistrés depuis le démarrage (`kind="known"` : mécanique du catalogue ; `novel` : à venir).
     pub clips_saved_known: u64,
     pub goals_scored_total: u64,
@@ -213,13 +219,47 @@ impl Metrics {
         }
         let _ = writeln!(s, "# TYPE trainer_mechanic_total counter");
         for m in mechanics::Mechanic::ALL {
-            for (ctx, n) in [("match", self.mechanics.get(m)), ("drill", 0)] {
+            for (ctx, n) in [
+                ("match", self.mechanics.get(m)),
+                ("drill", self.drill_mechanics.get(m)),
+            ] {
                 let _ = writeln!(
                     s,
                     "trainer_mechanic_total{{mechanic=\"{}\",context=\"{ctx}\"}} {n}",
                     m.label()
                 );
             }
+        }
+        let _ = writeln!(s, "# TYPE trainer_drill_episodes_total counter");
+        for d in scenarios::Drill::ALL {
+            let _ = writeln!(
+                s,
+                "trainer_drill_episodes_total{{drill=\"{}\"}} {}",
+                d.label(),
+                self.drill_episodes[d.index()]
+            );
+        }
+        let _ = writeln!(s, "# TYPE trainer_drill_bonus_total counter");
+        // Seules les mécaniques qui peuvent recevoir un bonus ont une série (budget de séries, voir ci-dessus).
+        for m in mechanics::Mechanic::ALL
+            .into_iter()
+            .filter(|m| rl_env::drill::base_bonus(*m) > 0.0)
+        {
+            let _ = writeln!(
+                s,
+                "trainer_drill_bonus_total{{mechanic=\"{}\"}} {}",
+                m.label(),
+                self.drill_bonus.get(m)
+            );
+        }
+        let _ = writeln!(s, "# TYPE trainer_drill_recovery_total counter");
+        for o in rl_env::drill::RecoveryOutcome::ALL {
+            let _ = writeln!(
+                s,
+                "trainer_drill_recovery_total{{outcome=\"{}\"}} {}",
+                o.label(),
+                self.drill_recovery[o.index()]
+            );
         }
         let _ = writeln!(s, "# TYPE trainer_clips_saved_total counter");
         for (kind, n) in [("known", self.clips_saved_known), ("novel", 0)] {
@@ -367,6 +407,7 @@ fn policy_info(dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use scenarios::DRILL_COUNT;
 
     #[test]
     fn series_stay_far_below_the_cap() {
@@ -375,7 +416,10 @@ mod tests {
             m.observe_iteration(f64::from(i) * 0.1);
         }
         let n = count_series(&m.render());
-        assert!(n < 100, "objectif < 100 séries, obtenu {n}");
+        assert!(
+            n < 110,
+            "objectif < 110 séries (plafond dur : 500), obtenu {n}"
+        );
         assert!(n < MAX_SERIES);
     }
 
@@ -433,6 +477,11 @@ mod tests {
                 "reason=\"jellyfin\"",
                 "reason=\"manual\"",
                 "mechanic=\"",
+                "drill=\"",
+                "outcome=\"good\"",
+                "outcome=\"wheels\"",
+                "outcome=\"bad\"",
+                "outcome=\"none\"",
                 "side=\"scored\"",
                 "side=\"conceded\"",
                 "outcome=\"won\"",
@@ -457,10 +506,12 @@ mod tests {
                         .any(|m| l.contains(&format!("mechanic=\"{}\"", m.label()))),
                     "{l}"
                 );
-                assert!(
-                    l.contains("context=\"match\"") || l.contains("context=\"drill\""),
-                    "{l}"
-                );
+                if l.starts_with("trainer_mechanic_total") {
+                    assert!(
+                        l.contains("context=\"match\"") || l.contains("context=\"drill\""),
+                        "{l}"
+                    );
+                }
             }
         }
     }
@@ -477,6 +528,26 @@ mod tests {
                 .filter(|l| l.starts_with("trainer_mechanic_total{"))
                 .count(),
             24
+        );
+    }
+
+    #[test]
+    fn drill_series_are_exposed() {
+        let mut m = Metrics::default();
+        m.drill_episodes[scenarios::Drill::WallBall.index()] = 7;
+        m.drill_bonus.0[mechanics::Mechanic::Flick.index()] = 2;
+        m.drill_recovery[0] = 4;
+        m.drill_mechanics.0[mechanics::Mechanic::Dribble.index()] = 5;
+        let t = m.render();
+        assert!(t.contains("trainer_drill_episodes_total{drill=\"wall_ball\"} 7"));
+        assert!(t.contains("trainer_drill_bonus_total{mechanic=\"flick\"} 2"));
+        assert!(t.contains("trainer_drill_recovery_total{outcome=\"good\"} 4"));
+        assert!(t.contains("trainer_mechanic_total{mechanic=\"dribble\",context=\"drill\"} 5"));
+        assert_eq!(
+            t.lines()
+                .filter(|l| l.starts_with("trainer_drill_"))
+                .count(),
+            DRILL_COUNT + 8 + 4
         );
     }
 

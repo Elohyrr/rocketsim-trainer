@@ -209,6 +209,8 @@ pub struct IterStats {
     pub kl: f64,
     /// Mécaniques détectées pendant l'itération (voiture de l'agent).
     pub mechanics: mechanics::Counts,
+    /// Drills : épisodes par drill, mécaniques vues en drill, bonus payés (voir `docs/drills.md`).
+    pub drill: rl_env::DrillReport,
     /// Clips rejouables finis pendant l'itération (vide sans `EnvConfig::record_clips`).
     pub clips: Vec<rl_env::clip::Clip>,
     /// Coefficient d'entropie et lr utilisés, époques PPO effectivement faites (plafond de KL).
@@ -331,6 +333,7 @@ impl Trainer {
         let mut val_buf = Vec::with_capacity((h + 1) * n);
         let mut rew_buf = Vec::with_capacity(h * n);
         let mut done_buf = Vec::with_capacity(h * n);
+        let mut drill_buf: Vec<bool> = Vec::with_capacity(h * n);
         let mut st = IterStats::default();
         let (mut ret_sum, mut len_sum) = (0.0f64, 0.0f64);
 
@@ -386,6 +389,8 @@ impl Trainer {
             });
             let step = self.env.step_vs(&acts, opp_acts.as_deref());
             st.mechanics.add(&step.mechanics);
+            st.drill.add(&step.drill_report);
+            drill_buf.extend(step.in_drill.iter().copied());
             st.clips.extend(step.clips);
             for e in 0..n {
                 rew_buf.push(step.reward[e]);
@@ -394,6 +399,10 @@ impl Trainer {
             // Troncature (timeout) : on traite comme une fin d'épisode (valeur future nulle) — approximation
             // acceptable pour des épisodes courts ; voir docs/bench.md.
             for ep in &step.finished {
+                // Épisodes de drill : hors stats de curriculum (but, Elo, promotion) et hors compteurs d'épisodes.
+                if ep.drill.is_some() {
+                    continue;
+                }
                 if let Some(k) = &ep.kickoff {
                     match k.result {
                         KickoffResult::Won => st.kick_won += 1,
@@ -463,7 +472,9 @@ impl Trainer {
         let t1 = std::time::Instant::now();
         let total = h * n;
         let mut idx: Vec<usize> = (0..total).collect();
-        let (mut pl, mut vl, mut en, mut kl, mut cnt) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        let (mut pl, mut vl, mut kl, mut cnt) = (0.0, 0.0, 0.0, 0.0);
+        // Entropie du garde-fou : seulement sur les décisions de match (les drills l'entraînent mais ne la mesurent pas).
+        let (mut en_match, mut en_n, mut en_all) = (0.0f64, 0.0f64, 0.0f64);
         let (ent_coef, lr) = (self.explore.ent_coef as f32, self.explore.lr());
         for _ in 0..self.cfg.epochs {
             let (kl_before, cnt_before) = (kl, cnt);
@@ -475,7 +486,9 @@ impl Trainer {
                 let mut ob = Vec::with_capacity(m * od);
                 let mut oh = vec![0.0f32; m * na];
                 let (mut olp, mut ad, mut rt) = (Vec::new(), Vec::new(), Vec::new());
+                let mut match_w = Vec::with_capacity(m);
                 for (j, &i) in chunk.iter().enumerate() {
+                    match_w.push(f32::from(u8::from(!drill_buf[i])));
                     ob.extend_from_slice(&obs_buf[i * od..(i + 1) * od]);
                     oh[j * na + act_buf[i] as usize] = 1.0;
                     olp.push(logp_buf[i]);
@@ -506,7 +519,12 @@ impl Trainer {
                 let pol_loss = -(s1.min_pair(s2)).mean();
                 let v = self.model.value.forward(x);
                 let val_loss = (v - ret_t).powf_scalar(2.0).mean();
-                let entropy = -(logp_all.clone().exp() * logp_all).sum_dim(1).mean();
+                let ent_vec = -(logp_all.clone().exp() * logp_all).sum_dim(1);
+                let w = tensor2(match_w, m, 1, d);
+                en_match += scalar((ent_vec.clone() * w.clone()).sum().reshape([1]));
+                en_n += scalar(w.sum().reshape([1]));
+                en_all += scalar(ent_vec.clone().sum().reshape([1]));
+                let entropy = ent_vec.mean();
                 let loss = if self.freeze_policy {
                     val_loss.clone() * self.cfg.vf_coef
                 } else {
@@ -516,7 +534,6 @@ impl Trainer {
 
                 pl += scalar(pol_loss.clone().reshape([1]));
                 vl += scalar(val_loss.clone().reshape([1]));
-                en += scalar(entropy.reshape([1]));
                 kl += scalar((old_lp - logp).mean().reshape([1]));
                 cnt += 1.0;
 
@@ -533,7 +550,12 @@ impl Trainer {
         st.steps = total as u64;
         st.policy_loss = pl / cnt;
         st.value_loss = vl / cnt;
-        st.entropy = en / cnt;
+        // Sans décision de match (rollout entièrement en drill) : repli sur toutes les décisions.
+        st.entropy = if en_n > 0.0 {
+            en_match / en_n
+        } else {
+            en_all / total as f64
+        };
         st.kl = kl / cnt;
         st.ent_coef = f64::from(ent_coef);
         st.lr = lr;

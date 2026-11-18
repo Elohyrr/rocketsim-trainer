@@ -263,6 +263,43 @@ impl Sim {
             .map_err(|_| SimError::UnknownCar(car))
     }
 
+    /// Place une voiture en l'air (état de départ d'un drill) : position, vitesse, axes (avant, droite, haut) et
+    /// vitesse angulaire et boost donnés. Le saut est déjà fait ; le flip est encore disponible si `flip_available` (sinon dépensé).
+    #[allow(clippy::too_many_arguments)]
+    pub fn place_car_free(
+        &mut self,
+        car: u32,
+        pos: V3,
+        vel: V3,
+        ang_vel: V3,
+        axes: [V3; 3],
+        boost: f32,
+        flip_available: bool,
+    ) -> Result<(), SimError> {
+        let r = |a: V3| rocketsim_rs::math::Vec3::new(a[0], a[1], a[2]);
+        let mut c = self.arena.pin_mut().get_car(car);
+        c.pos = r(pos);
+        c.vel = r(vel);
+        c.ang_vel = r(ang_vel);
+        c.rot_mat.forward = r(axes[0]);
+        c.rot_mat.right = r(axes[1]);
+        c.rot_mat.up = r(axes[2]);
+        c.is_on_ground = false;
+        c.wheels_with_contact = [false; 4];
+        c.has_jumped = true;
+        c.has_double_jumped = !flip_available;
+        c.has_flipped = !flip_available;
+        c.is_flipping = false;
+        c.is_jumping = false;
+        c.air_time = 0.3;
+        c.air_time_since_jump = 0.3;
+        c.boost = boost;
+        self.arena
+            .pin_mut()
+            .set_car(car, c)
+            .map_err(|_| SimError::UnknownCar(car))
+    }
+
     /// Boosts au sol : position, grosse (100) ou petite (12), et disponibilité.
     pub fn pads(&self) -> Vec<PadSnapshot> {
         (0..self.arena.num_pads())
