@@ -315,7 +315,7 @@ mod tests {
         let d = det.detail(Mechanic::Flick45);
         assert!(d.value > 1500.0 && d.value < 2900.0, "{d:?}");
         assert_eq!(d.support, Support::None);
-        assert_eq!(det.records().get(Mechanic::Flick45), d.value);
+        assert_eq!(counts.records().get(Mechanic::Flick45), d.value);
     }
 
     /// Les variantes de dribble ne gardent pas de record (valeur 0) mais leur support.
@@ -328,6 +328,6 @@ mod tests {
         }
         assert_eq!(counts.get(Mechanic::WallDribble), 1);
         assert_eq!(det.detail(Mechanic::WallDribble).support, Support::Wall);
-        assert_eq!(det.records().get(Mechanic::WallDribble), 0.0);
+        assert_eq!(counts.records().get(Mechanic::WallDribble), 0.0);
     }
 }

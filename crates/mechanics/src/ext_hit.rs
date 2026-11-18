@@ -271,8 +271,8 @@ mod tests {
         assert_eq!(pinch_support([0.0, 0.0, 800.0], [-190.0, 0.0, 800.0]), None);
     }
 
-    /// Rejoue un cas du groupe et rend le détecteur.
-    fn replay_case(name: &str) -> crate::Detector {
+    /// Rejoue un cas du groupe et rend le détecteur et les compteurs.
+    fn replay_case(name: &str) -> (crate::Detector, crate::Counts) {
         let case = crate::script_hit::cases()
             .into_iter()
             .find(|c| c.name == name)
@@ -282,22 +282,22 @@ mod tests {
         for (c, b) in &case.frames {
             det.tick(c, b, &mut counts);
         }
-        det
+        (det, counts)
     }
 
     #[test]
     fn details_et_records() {
-        let det = replay_case("kuxir_pinch");
+        let (det, counts) = replay_case("kuxir_pinch");
         for m in [Mechanic::Pinch, Mechanic::KuxirPinch] {
             let d = det.detail(m);
             assert_eq!(d.support, Support::Wall);
             assert!(d.value > 3700.0 && d.value < 3800.0, "{m:?} : {}", d.value);
-            assert_eq!(det.records().get(m), d.value);
+            assert_eq!(counts.records().get(m), d.value);
         }
-        let det = replay_case("cushion");
+        let (det, counts) = replay_case("cushion");
         assert_eq!(det.detail(Mechanic::Cushion).support, Support::Ground);
-        assert_eq!(det.records().get(Mechanic::Cushion), 0.0);
-        let det = replay_case("backboard_double");
-        assert!(det.records().get(Mechanic::BackboardDouble) > 1000.0);
+        assert_eq!(counts.records().get(Mechanic::Cushion), 0.0);
+        let (_, counts) = replay_case("backboard_double");
+        assert!(counts.records().get(Mechanic::BackboardDouble) > 1000.0);
     }
 }

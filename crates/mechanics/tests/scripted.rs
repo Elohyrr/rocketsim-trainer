@@ -220,3 +220,27 @@ fn bench_ns_par_tick() {
         black_box(counts.total())
     );
 }
+
+#[test]
+fn anciens_cas_et_catalogue_etendu() {
+    // Les cas d'origine ne listent pas les mécaniques étendues : on relève ce qu'elles y reconnaissent
+    // (conséquences naturelles, ex. un flick de dribble est aussi un flick_45) pour les passer en revue.
+    let mut vu = Vec::new();
+    for case in script::cases().iter().filter(|c| !c.exact) {
+        let got = script::replay(&case.frames);
+        for m in Mechanic::ALL.iter().skip(script::LEGACY_COUNT) {
+            if got.get(*m) > 0 {
+                vu.push(format!("{}→{}", case.name, m.label()));
+            }
+        }
+    }
+    // Attendu : le wall to air dribble est un air dribble ; le double touch d'origine rebondit sur le mur du fond.
+    assert_eq!(
+        vu,
+        [
+            "wall_to_air_dribble→wall_to_air_dribble",
+            "double_touch→backboard_read",
+            "double_touch→backboard_double"
+        ]
+    );
+}

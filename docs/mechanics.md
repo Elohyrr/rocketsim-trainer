@@ -3,7 +3,7 @@
 Détecteur **par tick, sans récompense** (étude du 15/11/2026, §2.1 et §4.1–4.2). Un `Detector` par voiture,
 appelé à chaque tick de physique (120 Hz, dans la boucle des 8 ticks d'une décision) avec un `CarTick` et un
 `BallTick` ; `reset()` à chaque nouvel épisode ou téléportation (le tick suivant sert seulement à initialiser).
-Chaque occurrence reconnue incrémente **une fois** `Counts[mechanic]` (→ `trainer_mechanic_total{mechanic}`).
+Chaque occurrence reconnue incrémente **une fois** `Counts[mechanic]` (→ `trainer_mechanic_total{mechanic,context}`).
 Pas d'allocation ; ≈ 60 ns/tick mesurés en release (test `bench_ns_par_tick`, `-- --nocapture`).
 
 ## Événements (un tick = un masque `Events`)
@@ -81,6 +81,79 @@ des clips v1 subsistent.
 Seuils de la spec conservés tels quels ; ajouts du détecteur (non chiffrés dans la spec) : fusion des touchers
 ≤ 4 ticks, confirmation du reset en 3 ticks, tolérance de 6 ticks dans le dribble, fenêtre wall shot 1 s,
 double touch 3 s, half flip 1,5 s et cos < −0,8.
+
+## Catalogue étendu (41 mécaniques)
+
+Recherche : définitions communautaires (guides ginx, dignitas, gamersrdy, ggrecon ; Liquipedia et le wiki Fandom
+n'étaient pas lisibles) et constantes RLGym (vitesse max de balle 6 000, voiture 2 300, supersonique 2 200).
+Chaque mécanique est classée **(a)** fiable avec ce qu'on lit (voiture et balle de l'agent par tick), **(b)**
+approximation (dite), **(c)** non détectable. Une occurrence compte une fois ; les sous-types comptent **en plus** de
+leur famille (un `kuxir_pinch` est aussi un `pinch`, un `flick_45` est aussi un `flick`). Valeur = vitesse de balle après
+le toucher (uu/s, jugée sur les 4 ticks qui suivent) ; la colonne « record » indique celles qui alimentent
+`trainer_mechanic_record{mechanic}` (meilleure valeur depuis le démarrage du learner, matchs et drills).
+
+| Méca | Cat. | Signature (seuils : `thresholds.rs`) | Record |
+| --- | --- | --- | --- |
+| `touch` | a | `ball_hit_tick` change (contacts ≤ 4 ticks fusionnés) | |
+| `power_shot` | a | balle > 3 000 uu/s après toucher, gain ≥ 500, pas un pinch | oui |
+| `pinch` | a | gain > 2 500, balle > 3 500 après, **coincée** (< rayon + 60 uu d'une surface, voiture côté intérieur). Support en métadonnée : `ground`, `wall`, `backwall`, `corner`, `ceiling` | oui |
+| `kuxir_pinch` | b | pinch contre mur/fond/coin, dodge ≤ 0,35 s avant, balle > 1 500 uu/s vers le but adverse (le départ du mur défensif n'est pas exigé) | oui |
+| `cushion` (catch) | b | balle > 1 000 avant, vitesse relative balle−voiture < 400 après, vitesse après < 0,5 × avant | |
+| `redirect` | b | voiture en l'air (z > 300), balle > 1 500 avant et après, déviée > 45° | oui |
+| `air_roll_shot` | b | toucher aérien (≥ 0,3 s en l'air, balle z > 300), \|ω·avant\| > 3 rad/s ou \|roll\| ≥ 0,5, sans dodge ≤ 0,65 s, balle > 1 500 | oui |
+| `backboard_read` | b | toucher ≤ 2 s après un rebond de la balle sur le mur du fond, balle z > 300 | |
+| `backboard_double` | a | `double_touch` dont le rebond est sur le mur du fond | oui |
+| `half_volley` | b | toucher 1 à 8 ticks après un rebond de balle au sol, balle z < 300, > 1 800 après | |
+| `aerial_touch`, `air_dribble`, `wall_shot`, `double_touch`, `ceiling_shot`, `flip_reset` | a/b | voir ci-dessus (v2) | wall_shot, ceiling_shot, double_touch |
+| `dribble` | a | v2 ci-dessus | |
+| `hood_dribble` | b | dribble dont la balle est sur le capot (avant moyen > 35 uu) | |
+| `reverse_dribble` | b | balle sur le toit, voiture en marche arrière (< −300 uu/s) ≥ 0,5 s, 3 touchers, 400 uu | |
+| `wall_dribble` | b | portage sur un mur ≥ 0,5 s, 400 uu, ≥ 1 toucher | |
+| `ceiling_dribble` | b | portage au plafond ≥ 0,4 s | |
+| `bounce_dribble` | b | ≥ 3 touchers doux (10–60 ticks d'écart) voiture au sol > 300 uu/s, balle qui rebondit au sol entre deux | |
+| `flick` | a | dodge ≤ 0,4 s après un dribble, balle > 1 500 | oui |
+| `flick_45` / `flick_90` | b | flick avec dodge diagonal avant (secteurs 1, 7) / latéral (2, 6) | oui |
+| `musty_flick` | b | flick avec dodge arrière (avant < −0,5), balle au-dessus du capot ; la bascule du nez n'est pas vérifiée | oui |
+| `delayed_flick` | b | dodge ≥ 0,3 s après le saut, balle encore portée | oui |
+| `breezi_flick` | b | flick avec rotation \|ω·haut\| > 3 rad/s au toucher (approximation « tornade » : l'air roll n'est pas vu) | oui |
+| `wall_to_air_dribble` | b | `air_dribble` dont la voiture roulait sur un mur ≤ 1,5 s avant le premier toucher | |
+| `double_reset` | a | 2e flip reset sans toucher le terrain (le 3e n'est pas recompté) | |
+| `ceiling_reset` | b | flip reset avec la balle à z > 1 800 (sens « roues au plafond » non compté : c'est `ceiling_shot`) | |
+| `reset_shot` | b | après un reset, nouveau dodge puis toucher ≤ 0,3 s, balle > 1 500 | oui |
+| `speed_flip`, `wave_dash`, `half_flip` | a/b | voir catalogue v1 | |
+| `chain_dash` (zap dash) | b | 2 wave dashes à ≤ 1,5 s | |
+| `wall_dash` | b | dodge ≤ 0,3 s après le mur, retour au terrain ≤ 1 s, gain > 200 uu/s | |
+| `fast_aerial` | b | saut puis second saut sans dodge ≤ 0,35 s, boost et nez vers le haut entre les deux | |
+| `stall` | b | dodge en l'air (z > 300) latéral/arrière avec roulis, vitesse < 60 % de l'avant dans les 0,3 s (le lacet n'est pas lu) | |
+| `tornado_spin` | b | \|ω·haut\| > 4 rad/s ≥ 0,3 s en l'air | |
+| `recovery` | b | atterrissage à plat après ≥ 0,6 s en l'air dont un moment renversé/de côté, en gardant ≥ 60 % de la vitesse | |
+
+Séries Prometheus : `trainer_mechanic_total{mechanic,context}` = 41 × 2 ; `trainer_mechanic_record{mechanic}` = 16 ; le
+total reste très sous les 500 séries (test `series_stay_far_below_the_cap`). Les nouvelles mécaniques ne rapportent
+**aucun bonus** en drill (`base_bonus` → 0) : à décider. Clips : toutes sauf `touch` ; la mécanique la plus précieuse
+du pas gagne (`Mechanic::clip_priority`), le clip porte `detail = {value, support}` (vitesse de balle, support du pinch)
+et la page web liste les mécaniques présentes dans les clips (filtre automatique) avec la valeur et le support.
+
+### (c) Non détectable avec CarTick/BallTick de l'agent
+
+| Méca | Raison |
+| --- | --- |
+| `bump`, `demo`, `pinch` contre une voiture | aucune donnée de l'adversaire dans `CarTick` (demo = état « démolie » de l'autre voiture) |
+| `50/50` | deux voitures adverses : l'adversaire n'est pas observé |
+| `boost steal`, gestion de boost | ni pads ni quantité de boost dans `CarTick` |
+| `fake`, `shadow defense`, `kill`/`clear`/`pass`/`rotation`, `bang it` | dépendent de l'intention et de la position des autres joueurs (une fake = absence de toucher) |
+| `psycho` | définition floue selon les sources (backboard, retourné), pas de signature stable |
+| `ceiling musty` | combinaison de reset, plafond et musty non définie de façon univoque ; couvert partiellement par `ceiling_shot` + `musty_flick` |
+| `powerslide`, `bunny hop`, `curb dash`, `pogo` | frein à main et lacet absents des entrées ; signature trop proche d'un virage ou d'un saut ordinaire |
+| `squishy save`, `turtle dive`, `tomahawk`, `popping`, `ground pound` | trop floues ou dépendantes du contexte (rumble, intention) |
+| `ball cam`, caméra | état de caméra absent de la simulation |
+| `pre-flip`, `drop kick` | le « vers où la balle sera » est une intention ; `drop kick` ≈ `half_volley` côté avant le rebond, non mesuré |
+| `flip cancel` | non listée à part : le détecteur de base lit déjà l'annulation (`CANCEL`) pour speed flip et half flip |
+| `aztral pinch` | = pinch (coin/mur offensif) : couvert par `pinch` + support `corner`/`wall` |
+
+Faux positifs connus : un tir au sol très puissant (balle à l'arrêt près d'un mur) peut dépasser 3 500 après gain > 2 500
+sans vrai pincement ; le critère « voiture côté intérieur » les limite. Les seuils sont des valeurs de départ à ajuster sur
+de vraies parties.
 
 ## Conventions d'entrée (câblage)
 

@@ -308,7 +308,7 @@ mod tests {
         }
         let v = (2000.0f32 * 2000.0 + 300.0 * 300.0).sqrt();
         assert!((det.detail(Mechanic::ResetShot).value - v).abs() < 1.0);
-        assert!((det.records().get(Mechanic::ResetShot) - v).abs() < 1.0);
+        assert!((counts.records().get(Mechanic::ResetShot) - v).abs() < 1.0);
         assert!(!Mechanic::Recovery.has_record());
     }
 }
