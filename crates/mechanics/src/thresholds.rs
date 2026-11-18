@@ -238,3 +238,51 @@ pub const MUSTY_MIN_BALL_UP: f32 = 60.0;
 pub const DELAYED_FLICK_MIN_TICKS: u64 = 36;
 /// Breezi flick : vitesse de rotation autour de l'axe haut de la voiture (|ang_vel·up|, rad/s) au toucher.
 pub const BREEZI_MIN_YAW_RATE: f32 = 3.0;
+// ---- groupe move
+
+/// Wall to air dribble : la voiture roulait sur un mur au plus 1,5 s (ticks) avant le premier toucher de la chaîne.
+pub const W2AD_MAX_WALL_TICKS: u64 = 180;
+/// Ceiling reset : hauteur minimale du centre de la balle au flip reset (uu ; plafond à 2 044).
+pub const CEILING_RESET_BALL_MIN_Z: f32 = 1800.0;
+/// Reset shot : toucher au plus 0,3 s (ticks) après le dodge qui suit le reset…
+pub const RESET_SHOT_HIT_TICKS: u64 = 36;
+/// … et balle envoyée à plus de cette vitesse (uu/s, jugée après le toucher).
+pub const RESET_SHOT_MIN_SPEED: f32 = 1500.0;
+/// Chain dash : deux wave dashes à au plus 1,5 s (ticks) d'écart.
+pub const CHAIN_DASH_MAX_GAP_TICKS: u64 = 180;
+/// Wall dash : dodge au plus 0,3 s (ticks) après avoir quitté le mur…
+pub const WALL_DASH_DODGE_TICKS: u64 = 36;
+/// … retour au terrain au plus 1 s (ticks) après le dodge…
+pub const WALL_DASH_LAND_TICKS: u64 = 120;
+/// … avec un gain de vitesse (uu/s) par rapport au tick d'avant le dodge.
+pub const WALL_DASH_MIN_GAIN: f32 = 200.0;
+/// Fast aerial : second saut au plus 0,35 s (ticks) après le premier…
+pub const FAST_AERIAL_MAX_GAP_TICKS: u64 = 42;
+/// … avec un tangage vers le haut (−1 = nez vers le bas) au-delà de ce niveau entre les deux.
+pub const FAST_AERIAL_MIN_PITCH: f32 = 0.3;
+/// Stall : voiture au-dessus de cette hauteur (uu) au dodge…
+pub const STALL_MIN_Z: f32 = 300.0;
+/// … roulis commandé d'au moins cette amplitude (sauf voiture inversée)…
+pub const STALL_MIN_ROLL: f32 = 0.5;
+/// … vitesse avant le dodge d'au moins (uu/s)…
+pub const STALL_MIN_SPEED_BEFORE: f32 = 300.0;
+/// … puis vitesse tombée sous cette fraction de la vitesse avant le dodge (chute > 40 %)…
+pub const STALL_MAX_SPEED_RATIO: f32 = 0.6;
+/// … au plus 0,3 s (ticks) après le dodge.
+pub const STALL_WINDOW_TICKS: u64 = 36;
+/// Tornado spin : en l'air depuis au moins 0,25 s (ticks)…
+pub const TORNADO_MIN_AIR_TICKS: u32 = 30;
+/// … rotation autour de l'axe `up` de la voiture au-delà de cette vitesse (rad/s)…
+pub const TORNADO_MIN_SPIN: f32 = 4.0;
+/// … maintenue au moins 0,3 s (ticks consécutifs).
+pub const TORNADO_MIN_TICKS: u32 = 36;
+/// Recovery : au moins 0,6 s (ticks) en l'air…
+pub const RECOVERY_MIN_AIR_TICKS: u32 = 72;
+/// … voiture renversée ou de côté à un moment (`up.z` sous ce seuil)…
+pub const RECOVERY_FLIPPED_UP_Z: f32 = 0.2;
+/// … atterrissage à plat (`up.z` au-dessus de ce seuil)…
+pub const RECOVERY_LAND_UP_Z: f32 = 0.8;
+/// … en gardant cette fraction de la vitesse horizontale du début de la phase aérienne…
+pub const RECOVERY_MIN_KEEP: f32 = 0.6;
+/// … et au moins cette vitesse horizontale (uu/s) à l'atterrissage.
+pub const RECOVERY_MIN_SPEED: f32 = 400.0;
