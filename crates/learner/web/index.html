@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1318">
+<title>Clips du bot — rocketsim-trainer</title>
+<style>
+  :root { --bg:#0f1318; --panel:#171c23; --line:#2a323d; --fg:#e6e9ee; --dim:#8b95a3; --blue:#3b8cff; --orange:#ff8a2b; --acc:#5ad1a0; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:15px/1.35 system-ui,sans-serif; overflow:hidden; }
+  button,select { font:inherit; color:var(--fg); background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 12px; min-height:40px; cursor:pointer; }
+  button:active { background:var(--line); }
+  button.on { border-color:var(--acc); color:var(--acc); }
+  #app { display:flex; flex-direction:column; height:100%; height:100dvh; }
+  header { display:flex; align-items:center; gap:10px; padding:8px 12px; padding-top:max(8px,env(safe-area-inset-top)); background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  header small { color:var(--dim); font-weight:normal; }
+  main { position:relative; flex:1; min-height:0; }
+  #view { position:absolute; inset:0; touch-action:none; }
+  #view canvas { display:block; width:100%; height:100%; }
+  #hud { position:absolute; left:8px; top:8px; right:8px; pointer-events:none; display:flex; justify-content:space-between; gap:8px; font-size:13px; text-shadow:0 1px 3px #000; }
+  #hud .b { background:#0009; border-radius:6px; padding:4px 8px; }
+  #boost { display:inline-block; width:70px; height:8px; border:1px solid #fff8; vertical-align:middle; margin-left:4px; }
+  #boost i { display:block; height:100%; background:var(--acc); width:0; }
+  #msg { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--dim); text-align:center; padding:20px; pointer-events:none; }
+  #ctl { background:var(--panel); border-top:1px solid var(--line); padding:8px 12px; padding-bottom:max(8px,env(safe-area-inset-bottom)); }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .row + .row { margin-top:8px; }
+  #bar { position:relative; flex:1; min-width:120px; }
+  #seek { width:100%; margin:0; height:32px; }
+  #trig { position:absolute; top:0; width:2px; height:6px; background:var(--orange); pointer-events:none; display:none; }
+  #time { font-variant-numeric:tabular-nums; color:var(--dim); min-width:84px; text-align:right; }
+  .grow { flex:1; }
+  #list { position:absolute; inset:0; background:var(--bg); z-index:5; display:none; flex-direction:column; }
+  #list.open { display:flex; }
+  #filters { display:flex; gap:6px; padding:10px 12px; overflow-x:auto; flex:none; border-bottom:1px solid var(--line); }
+  #filters button { white-space:nowrap; padding:6px 10px; min-height:36px; }
+  #sortrow { display:flex; align-items:center; gap:8px; padding:8px 12px; color:var(--dim); flex:none; }
+  #items { overflow-y:auto; flex:1; -webkit-overflow-scrolling:touch; }
+  .item { display:flex; justify-content:space-between; gap:8px; padding:12px; border-bottom:1px solid var(--line); cursor:pointer; }
+  .item:active,.item.cur { background:var(--panel); }
+  .item b { font-weight:600; }
+  .item span { color:var(--dim); font-size:13px; }
+  #body { position:relative; flex:1; min-height:0; display:flex; }
+  .wrap { flex:1; display:flex; flex-direction:column; min-width:0; min-height:0; }
+  @media (min-width:900px) {
+    #list { position:static; display:flex; width:340px; flex:none; border-right:1px solid var(--line); }
+    #btnlist,#close { display:none; }
+  }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="app">
+  <header>
+    <button id="btnlist">☰ Clips</button>
+    <h1 id="title">Clips du bot <small id="count"></small></h1>
+    <button id="share" title="Copier le lien">🔗</button>
+  </header>
+  <div id="body">
+  <aside id="list">
+    <div id="filters"></div>
+    <div id="sortrow"><span id="n"></span><span class="grow"></span><button id="sort">Plus récents</button><button id="close">Fermer</button></div>
+    <div id="items"></div>
+  </aside>
+  <div class="wrap">
+    <main>
+      <div id="view"></div>
+      <div id="hud"><div class="b" id="hudl"></div><div class="b" id="hudr"></div></div>
+      <div id="msg">Choisis un clip dans la liste.</div>
+    </main>
+    <section id="ctl">
+      <div class="row">
+        <button id="play" style="min-width:52px">▶</button>
+        <div id="bar"><div id="trig"></div><input id="seek" type="range" min="0" max="1000" value="0"></div>
+        <div id="time">0.0 / 0.0 s</div>
+      </div>
+      <div class="row">
+        <button id="speed">1×</button>
+        <button id="loop" class="on">Boucle</button>
+        <span class="grow"></span>
+        <button data-cam="free" class="cam on">Libre</button>
+        <button data-cam="ball" class="cam">Balle</button>
+        <button data-cam="agent" class="cam">Agent</button>
+      </div>
+    </section>
+  </div>
+  </div>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const $ = id => document.getElementById(id);
+const BLUE = 0x3b8cff, ORANGE = 0xff8a2b;
+// Repère RocketSim (x, y, z haut ; ≈ cm) → three (x, y haut, -y) : rotation propre, but orange au fond.
+const P = (x, y, z) => new THREE.Vector3(x, z, -y);
+
+/* ---------- Terrain simplifié ---------- */
+const HX = 4096, HY = 5120, HZ = 2044, GW = 893, GH = 643, GD = 880;
+const view = $('view');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+view.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0e12);
+scene.fog = new THREE.Fog(0x0b0e12, 9000, 22000);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.4); sun.position.set(-2000, 6000, 3000); scene.add(sun);
+const camera = new THREE.PerspectiveCamera(55, 1, 20, 40000);
+camera.position.set(0, 3800, 7600);
+const orbit = new OrbitControls(camera, renderer.domElement);
+orbit.target.set(0, 300, 0); orbit.enableDamping = true; orbit.maxDistance = 16000; orbit.minDistance = 150;
+orbit.maxPolarAngle = Math.PI * 0.499;
+
+function line(pts, color, op = 1) {
+  const g = new THREE.BufferGeometry().setFromPoints(pts);
+  return new THREE.Line(g, new THREE.LineBasicMaterial({ color, transparent: op < 1, opacity: op }));
+}
+(function buildField() {
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(HX * 2, HY * 2).rotateX(-Math.PI / 2),
+    new THREE.MeshLambertMaterial({ color: 0x1d3a2b }));
+  scene.add(floor);
+  const wm = new THREE.MeshBasicMaterial({ color: 0x8fb4ff, transparent: true, opacity: 0.07, side: THREE.DoubleSide, depthWrite: false });
+  const wall = (w, h, x, y, z, ry) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), wm); m.position.set(x, y, z); m.rotation.y = ry; scene.add(m); };
+  wall(HY * 2, HZ, -HX, HZ / 2, 0, Math.PI / 2); wall(HY * 2, HZ, HX, HZ / 2, 0, Math.PI / 2);
+  for (const s of [-1, 1]) { // murs de fond avec l'ouverture du but
+    const seg = (HX - GW);
+    wall(seg, HZ, -(GW + seg / 2), HZ / 2, s * HY, 0); wall(seg, HZ, GW + seg / 2, HZ / 2, s * HY, 0);
+    wall(GW * 2, HZ - GH, 0, GH + (HZ - GH) / 2, s * HY, 0);
+  }
+  const edge = 0x6f8fb8;
+  scene.add(line([P(-HX, -HY, 0), P(HX, -HY, 0), P(HX, HY, 0), P(-HX, HY, 0), P(-HX, -HY, 0)], 0xffffff, 0.7));
+  scene.add(line([P(-HX, -HY, HZ), P(HX, -HY, HZ), P(HX, HY, HZ), P(-HX, HY, HZ), P(-HX, -HY, HZ)], edge, 0.5));
+  for (const [x, y] of [[-HX, -HY], [HX, -HY], [HX, HY], [-HX, HY]]) scene.add(line([P(x, y, 0), P(x, y, HZ)], edge, 0.5));
+  scene.add(line([P(-HX, 0, 0.5), P(HX, 0, 0.5)], 0xffffff, 0.6));
+  const circ = []; for (let i = 0; i <= 64; i++) circ.push(P(Math.cos(i / 64 * 6.2832) * 1000, Math.sin(i / 64 * 6.2832) * 1000, 0.5));
+  scene.add(line(circ, 0xffffff, 0.6));
+  for (const [s, col] of [[-1, BLUE], [1, ORANGE]]) { // buts (cadres) et surface de but
+    const y0 = s * HY, y1 = s * (HY + GD);
+    scene.add(line([P(-GW, y0, 0), P(-GW, y1, 0), P(GW, y1, 0), P(GW, y0, 0)], col));
+    scene.add(line([P(-GW, y0, GH), P(-GW, y1, GH), P(GW, y1, GH), P(GW, y0, GH), P(-GW, y0, GH)], col));
+    scene.add(line([P(-GW, y1, 0), P(-GW, y1, GH)], col)); scene.add(line([P(GW, y1, 0), P(GW, y1, GH)], col));
+    scene.add(line([P(-1000, y0, 0.5), P(-1000, s * (HY - 1200), 0.5), P(1000, s * (HY - 1200), 0.5), P(1000, y0, 0.5)], col, 0.5));
+    const net = new THREE.Mesh(new THREE.BoxGeometry(GW * 2, GH, GD), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.08, depthWrite: false }));
+    net.position.set(0, GH / 2, -s * (HY + GD / 2)); scene.add(net);
+  }
+})();
+
+/* ---------- Balle et voitures ---------- */
+const ballMesh = new THREE.Group();
+ballMesh.add(new THREE.Mesh(new THREE.IcosahedronGeometry(91.25, 2), new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.6, flatShading: true })));
+ballMesh.add(new THREE.Mesh(new THREE.IcosahedronGeometry(92.5, 1), new THREE.MeshBasicMaterial({ color: 0x222222, wireframe: true })));
+scene.add(ballMesh);
+let ballPath = null;
+
+function makeCar(blue, agent) {
+  const col = blue ? BLUE : ORANGE, g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color: col, roughness: 0.5, emissive: agent ? col : 0x000000, emissiveIntensity: agent ? 0.35 : 0 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(118, 32, 84), mat); body.position.set(10, 8, 0); g.add(body);
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(50, 22, 70), new THREE.MeshStandardMaterial({ color: 0x14181d, roughness: 0.4 })); cab.position.set(-10, 32, 0); g.add(cab);
+  const nose = new THREE.Mesh(new THREE.BoxGeometry(10, 10, 60), new THREE.MeshBasicMaterial({ color: 0xffffff })); nose.position.set(70, 10, 0); g.add(nose);
+  if (agent) {
+    g.add(new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(124, 40, 90)).translate(10, 8, 0), new THREE.LineBasicMaterial({ color: 0xffffff })));
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(30, 70, 4).rotateX(Math.PI), new THREE.MeshBasicMaterial({ color: 0xffe14d })); cone.position.set(0, 140, 0); g.add(cone);
+  }
+  const fl = new THREE.Mesh(new THREE.ConeGeometry(18, 90, 8).rotateZ(Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffa31a }));
+  fl.position.set(-110, 8, 0); fl.visible = false; g.userData.flame = fl; g.add(fl);
+  g.matrixAutoUpdate = false;
+  scene.add(g); return g;
+}
+let cars = [];
+
+const _f = new THREE.Vector3(), _u = new THREE.Vector3(), _z = new THREE.Vector3(), _m = new THREE.Matrix4();
+function place(obj, a, b, k, f) { // a, b : images voisines ; k : fraction ; f : décalage de la pose dans le tableau
+  const g = (i, o) => a[i + o] + (b[i + o] - a[i + o]) * k;
+  const pos = P(g(f, 0), g(f, 1), g(f, 2));
+  _f.copy(P(g(f, 3), g(f, 4), g(f, 5))).normalize();
+  _u.copy(P(g(f, 6), g(f, 7), g(f, 8))).normalize();
+  _z.crossVectors(_f, _u).normalize();
+  _u.crossVectors(_z, _f);
+  _m.makeBasis(_f, _u, _z).setPosition(pos);
+  obj.matrix.copy(_m); obj.matrixWorldNeedsUpdate = true;
+  return pos;
+}
+
+/* ---------- Données ---------- */
+let list = [], filter = '', newest = true, cur = null, traj = null;
+const labels = m => m.replace(/_/g, ' ');
+const fmtDate = u => new Date(u * 1000).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+
+async function loadList() {
+  try {
+    const r = await fetch('clips'); list = await r.json();
+  } catch (e) { $('msg').textContent = 'Liste indisponible.'; return; }
+  renderList();
+  const id = location.hash.slice(1);
+  if (id) select(id); else if (list.length) $('list').classList.add('open');
+}
+function renderList() {
+  const counts = {}; for (const c of list) counts[c.mechanic] = (counts[c.mechanic] || 0) + 1;
+  const f = $('filters'); f.innerHTML = '';
+  const mk = (key, text) => { const b = document.createElement('button'); b.textContent = text; if (filter === key) b.className = 'on'; b.onclick = () => { filter = key; renderList(); }; f.appendChild(b); };
+  mk('', `Tout ${list.length}`);
+  for (const m of Object.keys(counts).sort((a, b) => counts[b] - counts[a])) mk(m, `${labels(m)} ${counts[m]}`);
+  let rows = list.filter(c => !filter || c.mechanic === filter).sort((a, b) => (newest ? b.created_unix - a.created_unix : a.created_unix - b.created_unix));
+  $('n').textContent = `${rows.length} clip${rows.length > 1 ? 's' : ''}`;
+  $('count').textContent = list.length ? `· ${list.length}` : '';
+  $('sort').textContent = newest ? 'Plus récents' : 'Plus anciens';
+  const it = $('items'); it.innerHTML = '';
+  for (const c of rows) {
+    const d = document.createElement('div'); d.className = 'item' + (c.id === cur ? ' cur' : '');
+    d.innerHTML = `<b>${labels(c.mechanic)}</b><span>${fmtDate(c.created_unix)} · ${c.seconds.toFixed(1)} s</span>`;
+    d.onclick = () => { location.hash = c.id; };
+    it.appendChild(d);
+  }
+}
+$('sort').onclick = () => { newest = !newest; renderList(); };
+$('btnlist').onclick = () => $('list').classList.add('open');
+$('close').onclick = () => $('list').classList.remove('open');
+
+async function select(id) {
+  cur = id; renderList();
+  if (matchMedia('(max-width:899px)').matches) $('list').classList.remove('open');
+  $('msg').style.display = 'flex'; $('msg').textContent = 'Rejeu en cours…';
+  playing = false; traj = null;
+  try {
+    const r = await fetch(`clips/${encodeURIComponent(id)}/trajectory?hz=30`);
+    if (!r.ok) throw new Error(r.status);
+    const t = await r.json(); if (cur !== id) return;
+    setTraj(t);
+  } catch (e) { $('msg').textContent = 'Clip introuvable ou indisponible (' + e.message + ').'; }
+}
+addEventListener('hashchange', () => { const id = location.hash.slice(1); if (id && id !== cur) select(id); });
+
+function setTraj(t) {
+  traj = t; $('msg').style.display = 'none';
+  for (const c of cars) scene.remove(c);
+  cars = t.cars.map((c, i) => makeCar(c.blue, i === t.agent));
+  if (ballPath) scene.remove(ballPath);
+  const pts = []; for (let i = 0; i < t.frames; i++) pts.push(P(t.ball[i * 9], t.ball[i * 9 + 1], t.ball[i * 9 + 2]));
+  ballPath = line(pts, 0xffffff, 0.35); scene.add(ballPath);
+  $('title').firstChild.textContent = labels(t.mechanic) + ' ';
+  $('hudl').textContent = `${fmtDate(t.created_unix)} · pas ${t.train_step}`;
+  const end = (t.frames - 1) * t.dt;
+  $('trig').style.left = `${(t.trigger_time / end) * 100}%`; $('trig').style.display = 'block';
+  time = 0; playing = true; $('play').textContent = '⏸';
+  if (camMode === 'free') { orbit.target.set(0, 300, 0); camera.position.set(0, 3800, 7600); }
+}
+
+/* ---------- Lecture ---------- */
+let playing = false, time = 0, speed = 1, loop = true, camMode = 'free', last = performance.now(), seeking = false;
+const speeds = [0.25, 0.5, 1, 1.5, 2];
+$('play').onclick = () => { if (!traj) return; if (!playing && time >= (traj.frames - 1) * traj.dt - 1e-3) time = 0; playing = !playing; $('play').textContent = playing ? '⏸' : '▶'; };
+$('speed').onclick = () => { speed = speeds[(speeds.indexOf(speed) + 1) % speeds.length]; $('speed').textContent = speed + '×'; };
+$('loop').onclick = () => { loop = !loop; $('loop').classList.toggle('on', loop); };
+$('seek').addEventListener('input', e => { if (!traj) return; seeking = true; time = e.target.value / 1000 * (traj.frames - 1) * traj.dt; });
+$('seek').addEventListener('change', () => { seeking = false; });
+for (const b of document.querySelectorAll('.cam')) b.onclick = () => {
+  camMode = b.dataset.cam; document.querySelectorAll('.cam').forEach(x => x.classList.toggle('on', x === b));
+  orbit.enabled = camMode !== 'agent';
+};
+$('share').onclick = async () => {
+  const url = location.href;
+  try { if (navigator.share) await navigator.share({ url }); else { await navigator.clipboard.writeText(url); $('share').textContent = '✓'; setTimeout(() => $('share').textContent = '🔗', 1200); } } catch (e) { prompt('Lien', url); }
+};
+
+const _bp = new THREE.Vector3(), _cp = new THREE.Vector3(), _want = new THREE.Vector3(), _look = new THREE.Vector3(), _cf = new THREE.Vector3();
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min((now - last) / 1000, 0.1); last = now;
+  const w = view.clientWidth, h = view.clientHeight;
+  if (renderer.domElement.width !== Math.floor(w * renderer.getPixelRatio()) || renderer.domElement.height !== Math.floor(h * renderer.getPixelRatio())) {
+    renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+  }
+  if (traj) {
+    const end = (traj.frames - 1) * traj.dt;
+    if (playing && !seeking) {
+      time += dt * speed;
+      if (time >= end) { if (loop) time = 0; else { time = end; playing = false; $('play').textContent = '▶'; } }
+    }
+    const x = Math.min(time / traj.dt, traj.frames - 1), i = Math.min(Math.floor(x), traj.frames - 2), k = x - i;
+    _bp.copy(place(ballMesh, traj.ball.slice(i * 9, i * 9 + 9), traj.ball.slice(i * 9 + 9, i * 9 + 18), k, 0));
+    ballMesh.matrixAutoUpdate = false; ballMesh.updateMatrixWorld(true);
+    traj.cars.forEach((c, n) => {
+      const p = place(cars[n], c.pose.slice(i * 9, i * 9 + 9), c.pose.slice(i * 9 + 9, i * 9 + 18), k, 0);
+      cars[n].userData.flame.visible = (c.flags[i] & 2) !== 0;
+      cars[n].updateMatrixWorld(true);
+      if (n === traj.agent) {
+        _cp.copy(p); _cf.setFromMatrixColumn(cars[n].matrix, 0);
+        $('hudr').innerHTML = `Agent · boost ${Math.round(c.boost[i])}<span id="boost"><i style="width:${c.boost[i]}%"></i></span>`;
+      }
+    });
+    if (!seeking) $('seek').value = Math.round(time / end * 1000);
+    $('time').textContent = `${time.toFixed(1)} / ${end.toFixed(1)} s`;
+    if (camMode === 'ball') { orbit.target.lerp(_bp, 0.2); }
+    else if (camMode === 'agent') {
+      _want.copy(_cp).addScaledVector(_cf, -420).add(_look.set(0, 170, 0));
+      camera.position.lerp(_want, 0.15);
+      camera.lookAt(_look.copy(_cp).lerp(_bp, 0.35).add(new THREE.Vector3(0, 60, 0)));
+    }
+  }
+  if (camMode !== 'agent') orbit.update();
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(frame);
+loadList();
+</script>
+</body>
+</html>

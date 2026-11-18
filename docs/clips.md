@@ -32,6 +32,22 @@ pas (suspension, contacts de Bullet). Mesuré (`crates/sim-core/tests/clip_repla
   20 s minimum entre deux clips de la même mécanique. `--no-clips` coupe tout.
 - Le serveur de `--metrics` sert en lecture seule `GET /clips` (liste JSON, du plus récent au plus ancien) et
   `GET /clips/<id>` (id restreint à `[A-Za-z0-9_-]`).
+- `GET /clips/<id>/trajectory[?hz=15|30|60]` (défaut 30) : le learner **rejoue le clip à la demande** avec RocketSim
+  (`Sim::trajectory` : même recalage sur les états clés que le client) et renvoie du JSON compact : métadonnées
+  (`mechanic`, `created_unix`, `train_step`, `tick_skip`, `steps`, `seconds`, `trigger_time`, `max_drift`),
+  `hz`/`dt`/`frames`, `agent` (index de la voiture de l'agent dans `cars` : toujours 0, bleue), `ball` et
+  `cars[].pose` en tableaux plats de 9 flottants par image (x y z en uu, axe avant, axe haut ; repère RocketSim,
+  z vers le haut ; la droite = avant × haut), `cars[].boost` (0–100), `cars[].flags` (1 sol, 2 boost, 4 a sauté,
+  8 flip, 16 démolie), `cars[].blue`. Ça pèse ≈ 25 Kio. Cache mémoire de 48 trajectoires ; coût CPU : quelques ms
+  par rejeu, rien en continu. 404 pour un id inconnu ou un `hz` non pris en charge, 503 tant que les meshes ne
+  sont pas chargés.
+- Page web : `GET /` (et `/index.html`), embarquée dans le binaire (`crates/learner/web/index.html`, `include_str!`).
+  Liste (filtre par mécanique avec compteurs, tri par date), lecteur three.js (v0.160.0 épinglée, jsdelivr) :
+  terrain soccar simplifié (sol, murs, buts, lignes ; pas de mesh), balle et son tracé, deux boîtes orientées
+  (agent bleu mis en évidence : contour, repère jaune, jauge de boost), caméras libre (OrbitControls, tactile) /
+  balle / agent, lecture/pause, vitesse 0,25×–2×, boucle, barre de temps (repère orange = détection), lien
+  partageable `/#<id>`. Les URL sont relatives : la page marche sous n'importe quel hôte. Exposée en lecture seule
+  par la HTTPRoute `rlclips` (flux-gitops) : `/`, `/index.html`, `/clips`, `/clips/…` seulement.
 - Métrique : `trainer_clips_saved_total{kind="known"|"novel"}` (`novel` reste à 0 jusqu'à la PR de nouveauté).
 
 ## Client

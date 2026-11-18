@@ -168,3 +168,33 @@ fn long_episode_keeps_a_bounded_clip_and_stays_close() {
     println!("dérive max aux états clés (recalage 1 s) : {d} uu");
     assert!(d <= DRIFT_BOUND, "{d}");
 }
+
+#[test]
+fn trajectory_samples_the_replay_at_requested_rate() {
+    let (clip, _) = record(60, 30, 11);
+    let steps = clip.steps.len();
+    let mut sim = Sim::new_soccar().unwrap();
+    let t30 = sim.trajectory(clip.clone(), 30).unwrap();
+    // 8 ticks par décision, une image tous les 4 ticks, plus l'image initiale.
+    assert_eq!(t30.frames, steps * 2 + 1);
+    assert_eq!(t30.ball.len(), t30.frames * 9);
+    assert_eq!(t30.cars.len(), 2);
+    assert_eq!((t30.cars[0].blue, t30.cars[1].blue), (true, false));
+    for c in &t30.cars {
+        assert_eq!(c.pose.len(), t30.frames * 9);
+        assert_eq!(c.boost.len(), t30.frames);
+        assert_eq!(c.flags.len(), t30.frames);
+        // Axes avant et haut : unitaires et orthogonaux.
+        for f in c.pose.chunks(9) {
+            let (fw, up) = (&f[3..6], &f[6..9]);
+            let dot: f32 = fw.iter().zip(up).map(|(a, b)| a * b).sum();
+            let n: f32 = fw.iter().map(|a| a * a).sum();
+            assert!(dot.abs() < 1e-2 && (n - 1.0).abs() < 1e-2);
+        }
+    }
+    assert!(t30.max_drift <= DRIFT_BOUND);
+    let mut sim = Sim::new_soccar().unwrap();
+    let t60 = sim.trajectory(clip, 60).unwrap();
+    assert_eq!(t60.frames, steps * 4 + 1);
+    assert!(t60.cars[0].pose.iter().all(|x| x.is_finite()));
+}

@@ -403,6 +403,111 @@ impl Replayer {
     }
 }
 
+/// Bits de [`CarTrack::flags`].
+pub const FLAG_GROUND: u8 = 1;
+pub const FLAG_BOOST: u8 = 2;
+pub const FLAG_JUMP: u8 = 4;
+pub const FLAG_FLIP: u8 = 8;
+pub const FLAG_DEMO: u8 = 16;
+
+/// Une voiture au fil du temps, tableaux plats : `pose` = 6 flottants par image (position x y z en uu, puis
+/// axes avant et haut ; la droite s'en déduit), `boost` (0–100) et `flags` une valeur par image.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CarTrack {
+    pub blue: bool,
+    pub pose: Vec<f32>,
+    pub boost: Vec<f32>,
+    pub flags: Vec<u8>,
+}
+
+/// Rejeu échantillonné d'un clip (repère RocketSim : z vers le haut, unités ≈ cm).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Trajectory {
+    pub hz: u32,
+    pub frames: usize,
+    /// Écart maximal aux états clés avant recalage (uu).
+    pub max_drift: f32,
+    /// Balle : même disposition que [`CarTrack::pose`].
+    pub ball: Vec<f32>,
+    /// Voitures dans l'ordre du clip ; la 0 est l'agent.
+    pub cars: Vec<CarTrack>,
+}
+
+fn r1(x: f32) -> f32 {
+    (x * 10.0).round() / 10.0
+}
+
+fn r4(x: f32) -> f32 {
+    (x * 10_000.0).round() / 10_000.0
+}
+
+fn push_pose(out: &mut Vec<f32>, p: Vec3, f: Vec3, u: Vec3) {
+    out.extend([r1(p.x), r1(p.y), r1(p.z)]);
+    out.extend([r4(f.x), r4(f.y), r4(f.z), r4(u.x), r4(u.y), r4(u.z)]);
+}
+
+impl Sim {
+    /// Rejoue `clip` sur cette simulation (sans voiture) et échantillonne à `hz` (1, 15, 30, 60 ou 120 : un
+    /// diviseur de [`crate::TICK_RATE`] et de `tick_skip`).
+    pub fn trajectory(&mut self, clip: Clip, hz: u32) -> Result<Trajectory, SimError> {
+        let every = (crate::TICK_RATE as u32 / hz.max(1)).max(1) as u64;
+        let mut rp = Replayer::start(self, clip)?;
+        let ids = rp.car_ids().to_vec();
+        let mut t = Trajectory {
+            hz,
+            frames: 0,
+            max_drift: 0.0,
+            ball: Vec::new(),
+            cars: rp
+                .clip()
+                .blue
+                .iter()
+                .map(|&blue| CarTrack {
+                    blue,
+                    pose: Vec::new(),
+                    boost: Vec::new(),
+                    flags: Vec::new(),
+                })
+                .collect(),
+        };
+        let mut sample = |sim: &mut Sim| {
+            let b = sim.arena.pin_mut().get_ball();
+            push_pose(&mut t.ball, b.pos, b.rot_mat.forward, b.rot_mat.up);
+            for (&id, track) in ids.iter().zip(&mut t.cars) {
+                let c = sim.arena.pin_mut().get_car(id);
+                push_pose(&mut track.pose, c.pos, c.rot_mat.forward, c.rot_mat.up);
+                track.boost.push(r1(c.boost));
+                let on = |cond: bool, bit: u8| if cond { bit } else { 0 };
+                track.flags.push(
+                    on(c.is_on_ground, FLAG_GROUND)
+                        + on(c.is_boosting, FLAG_BOOST)
+                        + on(c.has_jumped, FLAG_JUMP)
+                        + on(c.is_flipping, FLAG_FLIP)
+                        + on(c.is_demoed, FLAG_DEMO),
+                );
+            }
+            t.frames += 1;
+        };
+        sample(self);
+        let mut n = 0u64;
+        loop {
+            if rp.tick(self) {
+                // État final (déjà pris si la durée tombe juste sur une image).
+                if n % every != 0 {
+                    sample(self);
+                }
+                break;
+            }
+            n += 1;
+            if n % every == 0 {
+                sample(self);
+            }
+        }
+        t.max_drift = rp.max_drift;
+        Ok(t)
+    }
+}
+
 struct Pending {
     mechanic: &'static str,
     trigger: u32,
