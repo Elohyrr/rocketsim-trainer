@@ -12,23 +12,23 @@
 //! `--metrics` sert aussi en lecture seule `GET /policy.safetensors` et `GET /policy.json` (palier, taille, date).
 //! Reprise d'un checkpoint sans `opponent-obs-v2` (entraîné avant la correction de l'ordre des voitures) : les poids
 //! d'entrée du bloc adversaire sont remis à zéro une fois (voir `docs/curriculum.md`).
+//! Points de restauration (`best-stage-N/`, `last-start/`, fichier `restore-from`) : voir `best.rs` et
+//! `docs/exploration.md`.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use learner::best::{self, Best, OPPONENT_OBS_MARKER};
 use learner::clips::{ClipStore, DEFAULT_MAX_CLIPS};
 use learner::curriculum::{Curriculum, IterResult, Move};
-use learner::explore::Explore;
+use learner::explore::{Explore, Guard, GuardEvent};
 use learner::jellyfin::Jellyfin;
 use learner::metrics::{Metrics, serve_with_dir};
 use learner::pause::PauseGate;
 use learner::ppo::{PpoConfig, Trainer};
 use rl_env::EnvConfig;
-
-/// Marqueur : le checkpoint du dossier a été entraîné avec le bloc adversaire correct (voitures repérées par id).
-const OPPONENT_OBS_MARKER: &str = "opponent-obs-v2";
 
 fn arg(name: &str) -> Option<String> {
     let a: Vec<String> = std::env::args().collect();
@@ -149,6 +149,14 @@ fn main() {
     let out = PathBuf::from(arg("--out").unwrap_or_else(|| "runs/latest".into()));
     std::fs::create_dir_all(&out).expect("dossier de sortie");
     let resume = std::env::args().any(|a| a == "--resume");
+    match best::apply_restore(&out) {
+        Ok(Some(src)) => eprintln!("état restauré depuis {}", src.display()),
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    }
     let pinned: Option<u32> = arg("--stage").and_then(|s| s.parse().ok());
     let curriculum = Mutex::new(match pinned {
         Some(s) => Curriculum::new(s),
@@ -163,7 +171,6 @@ fn main() {
     }
     let metrics = Arc::new(Mutex::new(Metrics {
         curriculum_stage: stage,
-        entropy_target: learner::explore::ENT_TARGET,
         ..Metrics::default()
     }));
     if let Some(addr) = arg("--metrics") {
@@ -210,11 +217,13 @@ fn main() {
         eprintln!("{e}");
         std::process::exit(2);
     });
+    let mut loaded = false;
     if resume {
         let ckpt = out.join("checkpoint");
         match tr.load_checkpoint(&ckpt) {
             Ok(()) => {
                 eprintln!("reprise depuis {} (palier {stage})", ckpt.display());
+                loaded = true;
                 tr.explore = Explore::load(&out);
                 eprintln!(
                     "exploration : ent_coef {:.4}, {} pas cumulés, lr {:.2e}",
@@ -252,6 +261,20 @@ fn main() {
         }
     }
     eprintln!("palier de curriculum : {stage}");
+    // Points de restauration : l'état relu (avant toute itération) et, s'il n'y en a pas, le « meilleur » du palier.
+    let mut best_by_stage = Best::load(&out);
+    if loaded {
+        let ok = best::snapshot(&tr, &out, best::LAST_START, stage, -1.0).is_ok()
+            && (best::best_dir(&out, stage).exists()
+                || best::snapshot(&tr, &out, &format!("best-stage-{stage}"), stage, -1.0).is_ok());
+        if !ok {
+            eprintln!("point de restauration au démarrage en échec");
+        } else if best_by_stage.get(stage).is_none() {
+            best_by_stage.record(stage, -1.0, 0);
+        }
+    }
+    let mut guard = Guard::default();
+    let mut backoffs = 0u64;
 
     let t0 = Instant::now();
     let limit = (minutes > 0.0).then(|| Duration::from_secs_f64(minutes * 60.0));
@@ -348,6 +371,42 @@ fn main() {
                 Move::Down(n) => eprintln!("régression : palier {n} (taux de but effondré)"),
             }
             tr.set_env_config(&env_cfg(mv.stage()));
+            guard.reset();
+        }
+        // Garde-fou d'exploration et meilleur état du palier (paliers jugés sur le taux de but).
+        if cur_stage >= 2 && promoted.is_none() {
+            match guard.observe(s.goals, s.episodes, tr.explore.scale < 1.0) {
+                Some(GuardEvent::BackOff { recent, reference }) => {
+                    tr.explore.back_off();
+                    backoffs += 1;
+                    eprintln!(
+                        "garde-fou : taux de but {recent:.2} < moitié de la référence {reference:.2} ; cible d'entropie × {:.2}, ent_coef {:.4}",
+                        tr.explore.scale, tr.explore.ent_coef
+                    );
+                }
+                Some(GuardEvent::Recover) => {
+                    tr.explore.recover();
+                    eprintln!(
+                        "garde-fou : longue période saine, cible d'entropie × {:.2}",
+                        tr.explore.scale
+                    );
+                }
+                None => {}
+            }
+            if let Some(r) = guard.recent_rate()
+                && best_by_stage.wants(cur_stage, r, it)
+            {
+                let name = format!("best-stage-{cur_stage}");
+                match best::snapshot(&tr, &out, &name, cur_stage, r) {
+                    Ok(_) => {
+                        best_by_stage.record(cur_stage, r, it);
+                        eprintln!(
+                            "meilleur état du palier {cur_stage} : taux de but {r:.2} → {name}"
+                        );
+                    }
+                    Err(e) => eprintln!("{name} : {e}"),
+                }
+            }
         }
         println!(
             "{it} {cur_stage} {steps} {:.0} {:.3} {:.1} {:.2} {:.2} {} {} {:.3} {:.4} {:.2} {:.2} {} {} {} {:.2} {:.0} {:.4} {:.2e}",
@@ -380,7 +439,9 @@ fn main() {
             m.value_loss = s.value_loss;
             m.entropy = s.entropy;
             m.kl = s.kl;
-            m.entropy_target = learner::explore::ENT_TARGET;
+            m.entropy_target = tr.explore.target(tr.n_actions());
+            m.entropy_scale = tr.explore.scale;
+            m.entropy_backoffs = backoffs;
             m.ent_coef = s.ent_coef;
             m.learning_rate = s.lr;
             m.touch_total = touches;

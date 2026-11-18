@@ -31,7 +31,7 @@ fn iteration_reports_and_adapts_the_entropy_coefficient() {
     assert_eq!(tr.explore.steps, s.steps);
     // Politique initiale ≈ uniforme (H ≈ ln 78 ≈ 4,36 > cible) : le coefficient baisse.
     assert!(
-        s.entropy > explore::ENT_BAND.1,
+        s.entropy > tr.explore.target(tr.n_actions()),
         "entropie initiale {}",
         s.entropy
     );

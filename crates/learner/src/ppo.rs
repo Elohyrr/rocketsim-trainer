@@ -421,7 +421,7 @@ impl Trainer {
         st.kl = kl / cnt;
         st.ent_coef = f64::from(ent_coef);
         st.lr = lr;
-        self.explore.update(total as u64, st.entropy);
+        self.explore.update(total as u64, st.entropy, na);
         if st.episodes > 0 {
             st.reward_mean = ret_sum / st.episodes as f64;
             st.length_mean = len_sum / st.episodes as f64;
@@ -429,6 +429,11 @@ impl Trainer {
             st.goal_rate = st.goals as f64 / st.episodes as f64;
         }
         st
+    }
+
+    /// Nombre d'actions discrètes (table d'actions de l'env).
+    pub fn n_actions(&self) -> usize {
+        self.n_actions
     }
 
     /// Change la config de l'env (palier de curriculum) : tous les envs sont remis à zéro immédiatement.

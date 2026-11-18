@@ -29,6 +29,9 @@ pub struct Metrics {
     pub entropy_target: f64,
     pub ent_coef: f64,
     pub learning_rate: f64,
+    /// Réduction de la cible d'entropie par le garde-fou (1 = aucune) et nombre de déclenchements.
+    pub entropy_scale: f64,
+    pub entropy_backoffs: u64,
     pub iter_bucket_counts: [u64; BUCKETS.len()],
     pub iter_count: u64,
     pub iter_sum: f64,
@@ -96,6 +99,12 @@ impl Metrics {
         g("trainer_entropy_target", "gauge", self.entropy_target);
         g("trainer_entropy_coef", "gauge", self.ent_coef);
         g("trainer_learning_rate", "gauge", self.learning_rate);
+        g("trainer_entropy_guard_scale", "gauge", self.entropy_scale);
+        g(
+            "trainer_entropy_guard_backoffs_total",
+            "counter",
+            self.entropy_backoffs as f64,
+        );
         g(
             "trainer_checkpoint_age_seconds",
             "gauge",
