@@ -95,22 +95,21 @@ contact. Verdicts :
 ## Essai local et mesures
 
 Acteur de prod (`https://rocketsim.celri.dev/policy.safetensors`, palier 5), `--stage 5 --init-actor … --critic-warmup 20`,
-8 min par essai sur le nœud partagé (2 vCPU), sans clips :
+sur le nœud partagé (2 vCPU), sans clips.
 
-| Essai | Pas | Taux de but en match (itérations ≥ 20) | Entropie (match) |
-|---|---|---|---|
-| `--drill-prob 0` | 1,27 M | 0,928 | 0,366 |
-| `--drill-prob 0.3` (code final) | 1,47 M | 0,924 | 0,376 |
+**Détecteur v2 (strict, défaut) et drills.** Les bonus ne lisent que `Counts` : ils marchent avec v1 et v2 sans
+changement (`--detector-v1` garde les règles d'origine). Les règles v2 (dribble ≥ 0,5 s et 600 uu avec balle sur le
+toit, aérien avec décollage volontaire et balle > 500 uu) tiennent dans un épisode de drill (400 décisions = 26 s au
+palier 5 ; un dribble n'a besoin que de 0,5 s) : la durée n'a pas été changée. Le détecteur est remis à zéro à chaque
+drill en gardant sa version.
 
-Le taux de but en match ne bouge pas (les épisodes de drill n'y entrent pas) ; le débit est comparable. Au bout de
-7,5 min à 0,3 (≈ 1 930 épisodes de drill, répartis à peu près également entre les 7 drills) :
+Essai v2 de 9 min, `--drill-prob 0.3` (≈ 2 490 épisodes de drill, ≈ 355 par drill) : taux de but en match 0,920
+(0,928 sans drills avant la v2 : pas d'effondrement ; les drills n'entrent pas dans ce taux).
 
-- mécaniques vues **en drill** : touch 4 640, aerial_touch 200, wall_shot 56, dribble 32, flip_reset 5 ; en match :
-  touch 9 423, wall_shot 138, dribble 22 ;
-- bonus payés : aerial_touch 90, dribble 32, wall_shot 29, flip_reset 2 ; flick, air_dribble, double_touch : 0 ;
-- récupération : good 17, wheels 140, bad 121 (le reste n'avait pas fini au moment de la mesure) : l'acteur de prod ne
-  sait pas se rattraper en l'air (43 % de retombées sur le toit ou le côté), c'est précisément ce que le drill doit
-  lui apprendre.
-
-Un premier essai avec les 6 drills d'avant l'ajout du boost aléatoire et de `recovery` donnait aussi 0,905 de taux de
-but pour 0,928 sans drills (bruit d'un run de 8 min).
+- mécaniques vues **en drill** (v2) : touch 5 724, flip_reset 8, wall_shot 8, dribble 5 ; en match : touch 11 644,
+  wall_shot 35, dribble 4 ;
+- bonus payés : flip_reset 4, wall_shot 8, dribble 5 (aerial_touch, air_dribble, flick, double_touch : 0 : l'acteur de
+  prod ne décolle pas volontairement vers la balle, ce que la v2 exige ; avec la v1 du même acteur : aerial_touch 200 en
+  7,5 min) ;
+- récupération : good 27, wheels 159, bad 159 : l'acteur de prod retombe sur le toit ou le côté dans près de la moitié
+  des cas, c'est ce que le drill doit lui apprendre.
