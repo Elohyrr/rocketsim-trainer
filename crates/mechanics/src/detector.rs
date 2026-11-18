@@ -3,7 +3,7 @@
 use crate::ctx::{Base, Ctx, DodgeInfo, Hit};
 use crate::detail::{Details, Out};
 use crate::thresholds::*;
-use crate::{BallTick, CarTick, Counts, Detail, MECH_COUNT, Mechanic, Records, Support};
+use crate::{BallTick, CarTick, Counts, Detail, Mechanic, Support};
 
 /// Événements discrets d'un tick (masque de bits, spec §4.1). La direction d'un dodge est donnée à part par
 /// [`Detector::dodge_sector`].
@@ -138,7 +138,6 @@ pub struct Detector {
     bounce: Option<(u64, bool)>,
     hit_pending: Option<Hit>,
     details: Details,
-    records: Records,
     g_hit: crate::ext_hit::Group,
     g_carry: crate::ext_carry::Group,
     g_move: crate::ext_move::Group,
@@ -235,7 +234,6 @@ impl Detector {
             mode: self.mode,
             attack_neg: self.attack_neg,
             details: self.details,
-            records: std::mem::take(&mut self.records),
             ..Self::default()
         };
     }
@@ -244,16 +242,6 @@ impl Detector {
     #[inline]
     pub fn detail(&self, m: Mechanic) -> Detail {
         self.details.0[m.index()]
-    }
-
-    /// Records (meilleure valeur par mécanique) depuis le dernier [`Detector::take_records`].
-    pub fn records(&self) -> &Records {
-        &self.records
-    }
-
-    /// Records depuis le dernier appel (remis à zéro).
-    pub fn take_records(&mut self) -> Records {
-        std::mem::take(&mut self.records)
     }
 
     /// Vitesse de la balle vers le but adverse (+ = vers le but).
@@ -555,7 +543,7 @@ impl Detector {
         {
             counts.inc(Mechanic::CeilingShot);
             base.ceiling_shot = true;
-            self.note(Mechanic::CeilingShot, norm2(ball.vel).sqrt());
+            self.note(counts, Mechanic::CeilingShot, norm2(ball.vel).sqrt());
             self.ceil_last = None;
         }
 
@@ -569,7 +557,7 @@ impl Detector {
             if self.mode == Mode::V1 || self.wall_jumped {
                 counts.inc(Mechanic::WallShot);
                 base.wall_shot = true;
-                self.note(Mechanic::WallShot, norm2(ball.vel).sqrt());
+                self.note(counts, Mechanic::WallShot, norm2(ball.vel).sqrt());
             } else {
                 self.ws_pending = Some((n, self.toward_goal(p.ball_vel)));
             }
@@ -581,7 +569,7 @@ impl Detector {
             if after > WALL_SHOT_MIN_GOAL_SPEED && after - before >= WALL_SHOT_MIN_GAIN {
                 counts.inc(Mechanic::WallShot);
                 base.wall_shot = true;
-                self.note(Mechanic::WallShot, norm2(ball.vel).sqrt());
+                self.note(counts, Mechanic::WallShot, norm2(ball.vel).sqrt());
                 self.ws_pending = None;
             } else if n - t >= WALL_SHOT_JUDGE_TICKS {
                 self.ws_pending = None;
@@ -602,7 +590,7 @@ impl Detector {
                 counts.inc(Mechanic::DoubleTouch);
                 base.double_touch = true;
                 base.double_touch_back = self.dt_back;
-                self.note(Mechanic::DoubleTouch, norm2(ball.vel).sqrt());
+                self.note(counts, Mechanic::DoubleTouch, norm2(ball.vel).sqrt());
                 self.dt_first = None;
             } else {
                 self.dt_first = Some(n);
@@ -681,7 +669,7 @@ impl Detector {
                 if self.fl_hit && norm2(ball.vel) > FLICK_MIN_BALL_SPEED * FLICK_MIN_BALL_SPEED {
                     counts.inc(Mechanic::Flick);
                     base.flick = true;
-                    self.note(Mechanic::Flick, norm2(ball.vel).sqrt());
+                    self.note(counts, Mechanic::Flick, norm2(ball.vel).sqrt());
                     self.fl_dodge = None;
                 }
             }
@@ -786,7 +774,6 @@ impl Detector {
         let mut out = Out {
             counts,
             details: &mut self.details.0,
-            records: &mut self.records,
         };
         self.g_hit.tick(&cx, &mut out);
         self.g_carry.tick(&cx, &mut out);
@@ -798,12 +785,12 @@ impl Detector {
 
     /// Enregistre valeur et record d'une mécanique de base (compteur déjà incrémenté).
     #[inline]
-    fn note(&mut self, m: Mechanic, value: f32) {
+    fn note(&mut self, counts: &mut Counts, m: Mechanic, value: f32) {
         self.details.0[m.index()] = Detail {
             value,
             support: Support::None,
         };
-        self.records.observe(m, value);
+        counts.1.observe(m, value);
     }
 
     #[allow(clippy::too_many_arguments)]

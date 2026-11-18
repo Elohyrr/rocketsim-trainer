@@ -83,9 +83,9 @@ impl Records {
 
 /// Sortie des automates : compteurs, dernier détail et records. Passée aux automates du catalogue étendu.
 pub(crate) struct Out<'a> {
+    /// Compteurs et records.
     pub counts: &'a mut crate::Counts,
     pub details: &'a mut [Detail; MECH_COUNT],
-    pub records: &'a mut Records,
 }
 
 impl Out<'_> {
@@ -94,6 +94,6 @@ impl Out<'_> {
     pub fn emit(&mut self, m: Mechanic, value: f32, support: Support) {
         self.counts.inc(m);
         self.details[m.index()] = Detail { value, support };
-        self.records.observe(m, value);
+        self.counts.1.observe(m, value);
     }
 }

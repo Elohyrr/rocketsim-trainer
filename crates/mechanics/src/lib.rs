@@ -248,14 +248,24 @@ pub struct BallTick {
 }
 
 /// Compteurs par mécanique (index = [`Mechanic::index`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Counts(pub [u64; MECH_COUNT]);
+#[derive(Clone, Debug)]
+pub struct Counts(pub [u64; MECH_COUNT], pub Records);
 
 impl Default for Counts {
     fn default() -> Self {
-        Self([0; MECH_COUNT])
+        Self([0; MECH_COUNT], Records::default())
     }
 }
+
+/// Égalité des compteurs seulement : les records ([`Counts::records`]) accompagnent les compteurs mais ne
+/// font pas partie de l'attendu des séquences scriptées.
+impl PartialEq for Counts {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for Counts {}
 
 impl Counts {
     #[inline]
@@ -268,10 +278,18 @@ impl Counts {
         self.0[m.index()] += 1;
     }
 
+    /// Additionne les compteurs et garde le maximum des records.
     pub fn add(&mut self, other: &Counts) {
         for (a, b) in self.0.iter_mut().zip(other.0.iter()) {
             *a += *b;
         }
+        self.1.merge(&other.1);
+    }
+
+    /// Records (meilleure vitesse de balle par mécanique, [`Mechanic::has_record`]).
+    #[inline]
+    pub fn records(&self) -> &Records {
+        &self.1
     }
 
     pub fn total(&self) -> u64 {
