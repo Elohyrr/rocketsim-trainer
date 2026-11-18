@@ -22,7 +22,46 @@ Notions communes :
 - **Temps en l'air** : compté par le détecteur depuis le dernier contact roues-terrain (un flip reset ne le remet
   pas à zéro) ; `CarTick::air_time` ne sert qu'à l'initialiser après un `reset`.
 
-## Catalogue (seuils : `crates/mechanics/src/thresholds.rs`)
+## Détecteur v2 (strict) et v1
+
+Les clips de prod montraient surtout du bruit (aerial_touch = rouler sur le mur et suivre une balle qui monte, wall
+shot et dribble sans intention, dribble de 0,5 s). La **v2** (défaut) ne reconnaît que des actions intentionnelles ;
+la **v1** (règles d'origine, tableau ci-dessous) reste disponible : `Detector::with_mode(Mode::V1)`,
+`EnvConfig::detector_v1`, flag du learner `--detector-v1` ou `DETECTOR_V1=1`. Les compteurs
+`trainer_mechanic_total{mechanic}` gardent les mêmes noms (mêmes 12 séries) ; en v2 ils comptent les règles strictes.
+
+Règles v2 (seuils dans `thresholds.rs`, section « v2 ») :
+
+| Mécanique | Règle v2 |
+| --- | --- |
+| `aerial_touch` | toucher en l'air, voiture z > 300, balle z > 500, en l'air ≥ 0,5 s (60 ticks), **et** intention : saut pressé depuis le sol OU le mur (≤ 6 ticks du décollage), ou décollage au boost avec la balle portée (côté toit, < 250 uu), ou chaîne de touchers contrôlés au boost (air dribble). Exclu : rouler du mur puis suivre une balle qui monte, sans saut, sans boost, sans contrôle |
+| `air_dribble` | ≥ 2 touchers aériens (mêmes conditions de hauteur), < 1 s d'écart, boost actif entre les deux, sans retour au sol ; le décollage peut venir du sol, du mur (wall to air dribble) en saut ou en poussée au boost |
+| `wall_shot` | toucher sur le mur (ou ≤ 1 s après) qui envoie la balle vers le but adverse à > 1 000 uu/s avec un gain ≥ 300 uu/s imputable au toucher (jugé dans les 6 ticks), ou saut depuis le mur |
+| `dribble` | mêmes conditions géométriques qu'en v1 puis ≥ 5 touchers distincts (≥ 10 ticks d'écart ; le contact continu est fusionné à 4 ticks) ou (contrôle ≥ 2 s et ≥ 3 touchers), et ≥ 600 uu parcourus par la voiture pendant le contrôle |
+
+`flick` s'appuie sur le dribble validé (v2 : dribble strict). Flip reset, ceiling shot, double touch, speed flip,
+wave dash, half flip : inchangés (le ceiling shot et le double touch utilisent le toucher aérien « de base »,
+sans l'intention exigée).
+
+**Mesure sur de vraies trajectoires** : 200 clips v1 de prod (14 aerial_touch, 93 wall_shot, 93 dribble ; `GET
+https://rocketsim.celri.dev/clips/<id>`), rejoués tick par tick dans RocketSim
+(`cargo run --release -p sim-core --example audit_clips -- <dossier> [--verbose]`, meshes requis). Le rejeu
+re-détecte 200/200 en v1 (le rejeu est fidèle). Passent en v2 : **aerial_touch 0/14, dribble 18/93, wall_shot 23/93,
+soit 41/200**. Constats : `ball_hit_tick` change bien à chaque re-contact pendant un contrôle (2 à 53 changements
+bruts par séquence), donc on compte les touchers sans équivalent temporel ; aucun clip n'a plus de 183 ticks (1,5 s) de
+contrôle continu, la règle « ≥ 2 s » n'est donc jamais le critère décisif sur ces données. Le seuil de 1 000 uu/s du
+wall shot est le plus sensible : 23/93 à 1 000, 3/93 à 1 500, 0/93 à 2 000 (`WALL_SHOT_MIN_GOAL_SPEED`). Le gain ≥ 300
+uu/s est un ajout (sans lui une balle déjà lancée vers le but compterait).
+
+**Qualité** : chaque clip porte `quality` = `{ball_speed_to_goal, goal_3s, score}` (vitesse maximale de la balle vers le
+but adverse dans la seconde qui suit la mécanique ; but dans les 3 s ; score = 0,5·min(vitesse/3 000, 1) + 0,5·but),
+joint quand la fenêtre de 3 s est écoulée ou à la fin de l'épisode (valeur partielle). Un clip n'est enregistré que si
+la mécanique est validée par le détecteur actif (v2 par défaut). `GET /clips` expose `detector` (1 ou 2) et `quality` ;
+les anciennes entrées sans champ se lisent v1. Au premier démarrage v2, l'anneau est vidé une fois (marqueur
+`clips/detecteur-v2`, pas de vidage avec `--detector-v1`) ; la page web affiche la qualité et filtre « v2 seulement » si
+des clips v1 subsistent.
+
+## Catalogue v1 (seuils : `crates/mechanics/src/thresholds.rs`)
 
 | Mécanique | Signature retenue |
 | --- | --- |
@@ -54,8 +93,10 @@ double touch 3 s, half flip 1,5 s et cos < −0,8.
 
 ## Tests scriptés
 
-`mechanics::script` : générateur `Script` (intègre les positions, avance `tick`/`air_time`) et `cases()` = 31
-séquences (≥ 1 positive + ≥ 1 négative par mécanique, compteurs exacts attendus), rejouables depuis un autre crate
+`mechanics::script` : générateur `Script` (intègre les positions, avance `tick`/`air_time`) et `cases()` = 46
+séquences (≥ 1 positive + ≥ 1 négative par mécanique, compteurs exacts attendus ; v2 : positifs wall to air dribble, saut
+depuis le mur, dribble long ; négatifs roulé du mur, sans saut, trop court/bas, wall shot lent/vers son but/sans gain,
+dribble continu/à l'arrêt/peu de touchers) ; `script::replay_mode(frames, Mode::V1)` rejoue en v1, rejouables depuis un autre crate
 avec `script::replay`. Inclut les cas de §1.3 : flip reset roues sur la balle sans toucher enregistré, toit vers la
 balle (toucher sans reset), atterrissage au mur, speed flip annulé / non annulé / flip avant annulé.
 

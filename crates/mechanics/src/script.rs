@@ -23,9 +23,14 @@ pub struct Case {
     pub expected: Counts,
 }
 
-/// Rejoue une séquence dans un détecteur neuf et rend les compteurs.
+/// Rejoue une séquence dans un détecteur neuf (règles v2) et rend les compteurs.
 pub fn replay(frames: &[Frame]) -> Counts {
-    let mut det = Detector::new();
+    replay_mode(frames, crate::Mode::V2)
+}
+
+/// Comme [`replay`], avec les règles de la version `mode`.
+pub fn replay_mode(frames: &[Frame], mode: crate::Mode) -> Counts {
+    let mut det = Detector::with_mode(mode);
     let mut counts = Counts::default();
     for (car, ball) in frames {
         det.tick(car, ball, &mut counts);
@@ -192,17 +197,69 @@ pub fn touch_negative_sequence() -> Vec<Frame> {
     s.frames()
 }
 
-/// Saut, 0,4 s en l'air, toucher d'une balle à 400 uu.
+/// Saut volontaire depuis le sol, 0,58 s en l'air, toucher d'une balle à 530 uu (voiture à 470 uu).
 pub fn aerial_touch_sequence() -> Vec<Frame> {
+    aerial_touch_with(true, 68, 800.0, 60.0)
+}
+
+/// Décollage (saut pressé ou départ sans saut), `hold` ticks d'ascension à `vz`, puis toucher d'une balle à
+/// `ball_dz` au-dessus de la voiture.
+fn aerial_touch_with(jumped: bool, hold: usize, vz: f32, ball_dz: f32) -> Vec<Frame> {
     let mut s = Script::new(car_on_ground(), ball_far());
     s.hold(5).once(|c, _| {
-        jump(c);
-        c.vel = [0.0, 0.0, 800.0];
+        if jumped {
+            jump(c);
+        } else {
+            c.on_ground = false;
+            c.wheels_contact = 0;
+        }
+        c.vel = [0.0, 0.0, vz];
     });
-    s.hold(48).once(|c, b| {
+    s.hold(hold).once(|c, b| {
         hit(c);
-        b.pos = add(c.pos, [120.0, 0.0, 60.0]);
+        b.pos = add(c.pos, [120.0, 0.0, ball_dz]);
         b.vel = [1500.0, 0.0, 300.0];
+    });
+    s.hold(10);
+    s.frames()
+}
+
+/// v2 : en l'air 0,45 s seulement (voiture z ≈ 380, balle z ≈ 560) : pas un toucher aérien.
+pub fn aerial_touch_negative_short_sequence() -> Vec<Frame> {
+    aerial_touch_with(true, 52, 800.0, 180.0)
+}
+
+/// v2 : décollage sans saut (départ du sol sans appui), puis même ascension : pas volontaire.
+pub fn aerial_touch_negative_no_jump_sequence() -> Vec<Frame> {
+    aerial_touch_with(false, 68, 800.0, 60.0)
+}
+
+/// v2 : voiture trop basse au toucher (z ≈ 190) alors que la balle est haute.
+pub fn aerial_touch_negative_low_car_sequence() -> Vec<Frame> {
+    aerial_touch_with(true, 68, 300.0, 330.0)
+}
+
+/// v2 : balle trop basse (z ≈ 430) alors que la voiture est à 470 uu.
+pub fn aerial_touch_negative_low_ball_sequence() -> Vec<Frame> {
+    aerial_touch_with(true, 68, 800.0, -40.0)
+}
+
+/// v2 : la voiture roule du mur sans sauter, retombe en l'air et touche une balle qui monte tout droit.
+pub fn aerial_touch_negative_wall_roll_sequence() -> Vec<Frame> {
+    let mut s = Script::new(on_wall_car(), ball_far());
+    s.hold(20).once(|c, _| {
+        // Quitte le mur sans saut : plus de contact, pas de `has_jumped`.
+        c.on_ground = false;
+        c.wheels_contact = 0;
+        c.up = [0.0, 0.0, 1.0];
+        c.forward = [1.0, 0.0, 0.0];
+        c.right = [0.0, 1.0, 0.0];
+        c.vel = [0.0, 0.0, 400.0];
+    });
+    s.hold(70).once(|c, b| {
+        hit(c);
+        b.pos = add(c.pos, [0.0, 0.0, 120.0]);
+        b.vel = [0.0, 0.0, 900.0];
     });
     s.hold(10);
     s.frames()
@@ -224,7 +281,7 @@ pub fn aerial_touch_negative_sequence() -> Vec<Frame> {
     s.frames()
 }
 
-fn air_dribble(boost: bool) -> Vec<Frame> {
+fn air_dribble_with(boost: bool, jumped: bool) -> Vec<Frame> {
     let mut car = car_on_ground();
     car.boosting = boost;
     let mut s = Script::new(
@@ -235,11 +292,16 @@ fn air_dribble(boost: bool) -> Vec<Frame> {
         },
     );
     s.hold(5).once(|c, b| {
-        jump(c);
+        if jumped {
+            jump(c);
+        } else {
+            c.on_ground = false;
+            c.wheels_contact = 0;
+        }
         c.vel = [0.0, 0.0, 1000.0];
         b.vel = c.vel;
     });
-    s.hold(50).once(|c, _| hit(c));
+    s.hold(60).once(|c, _| hit(c));
     s.hold(30).once(|c, _| hit(c));
     s.hold(30).once(|c, _| hit(c));
     s.hold(10);
@@ -248,12 +310,62 @@ fn air_dribble(boost: bool) -> Vec<Frame> {
 
 /// Montée au boost avec la balle au-dessus, trois touchers aériens hauts à 0,25 s d'écart.
 pub fn air_dribble_sequence() -> Vec<Frame> {
-    air_dribble(true)
+    air_dribble_with(true, true)
 }
 
 /// Même séquence sans boost (rebond passif) : pas d'air dribble.
 pub fn air_dribble_negative_sequence() -> Vec<Frame> {
-    air_dribble(false)
+    air_dribble_with(false, true)
+}
+
+/// v2 : montée au boost avec la balle, mais sans saut volontaire au départ : pas d'air dribble ni de touchers
+/// aériens validés.
+pub fn air_dribble_negative_no_jump_sequence() -> Vec<Frame> {
+    air_dribble_with(false, false)
+}
+
+/// Wall to air dribble : montée du mur avec la balle sur le capot, décollage poussé au boost (sans saut), trois
+/// touchers aériens contrôlés au boost.
+pub fn wall_to_air_dribble_sequence() -> Vec<Frame> {
+    let mut car = on_wall_car();
+    car.boosting = true;
+    let mut s = Script::new(
+        car,
+        BallTick {
+            pos: [car.pos[0] - 140.0, 0.0, car.pos[2]],
+            vel: car.vel,
+        },
+    );
+    s.hold(20).once(|c, b| {
+        // La voiture quitte le mur au boost, la balle toujours sur le capot.
+        c.on_ground = false;
+        c.wheels_contact = 0;
+        c.vel = [-100.0, 0.0, 600.0];
+        b.vel = c.vel;
+        b.pos = [c.pos[0] - 140.0, c.pos[1], c.pos[2]];
+    });
+    s.hold(60).once(|c, _| hit(c));
+    s.hold(30).once(|c, _| hit(c));
+    s.hold(30).once(|c, _| hit(c));
+    s.hold(10);
+    s.frames()
+}
+
+/// Même départ du mur sans boost ni saut : la balle monte seule, la voiture la suit (cas passif).
+pub fn wall_roll_follow_negative_sequence() -> Vec<Frame> {
+    let mut s = Script::new(on_wall_car(), ball_far());
+    s.hold(20).once(|c, b| {
+        c.on_ground = false;
+        c.wheels_contact = 0;
+        c.vel = [-100.0, 0.0, 600.0];
+        b.pos = [c.pos[0] - 140.0, c.pos[1], c.pos[2]];
+        b.vel = c.vel;
+    });
+    s.hold(60).once(|c, _| hit(c));
+    s.hold(30).once(|c, _| hit(c));
+    s.hold(30).once(|c, _| hit(c));
+    s.hold(10);
+    s.frames()
 }
 
 /// Voiture en l'air, retournée, flip et double saut utilisés, qui monte vers une balle (spec §1.3 a).
@@ -429,16 +541,54 @@ fn on_wall_car() -> CarTick {
     }
 }
 
-/// Conduite sur le mur, toucher de la balle depuis le mur.
-pub fn wall_shot_sequence() -> Vec<Frame> {
+/// Toucher depuis le mur qui envoie la balle (au repos) vers le but adverse (+y) à `vy`, après `before` uu/s
+/// déjà vers le but.
+fn wall_hit(vy: f32, before: f32) -> Vec<Frame> {
     let mut s = Script::new(on_wall_car(), ball_far());
+    s.ball.vel = [0.0, before, 0.0];
     s.hold(20).once(|c, b| {
         hit(c);
         b.pos = add(c.pos, [-60.0, 0.0, 140.0]);
-        b.vel = [-1500.0, 0.0, 500.0];
+        b.vel = [-300.0, vy, 500.0];
     });
     s.hold(10);
     s.frames()
+}
+
+/// Conduite sur le mur, toucher qui envoie la balle vers le but adverse à 1 800 uu/s.
+pub fn wall_shot_sequence() -> Vec<Frame> {
+    wall_hit(1800.0, 0.0)
+}
+
+/// v2 : saut depuis le mur puis toucher (la balle part lentement) : saut volontaire depuis le mur.
+pub fn wall_shot_jump_sequence() -> Vec<Frame> {
+    let mut s = Script::new(on_wall_car(), ball_far());
+    s.hold(10).once(|c, _| {
+        jump(c);
+        c.vel = [-300.0, 0.0, 500.0];
+    });
+    s.hold(15).once(|c, b| {
+        hit(c);
+        b.pos = add(c.pos, [-60.0, 0.0, 140.0]);
+        b.vel = [-200.0, 300.0, 300.0];
+    });
+    s.hold(10);
+    s.frames()
+}
+
+/// v2 : toucher depuis le mur qui envoie la balle vers le but adverse à 700 uu/s seulement : trop mou.
+pub fn wall_shot_negative_slow_sequence() -> Vec<Frame> {
+    wall_hit(700.0, 0.0)
+}
+
+/// v2 : toucher depuis le mur qui envoie la balle vers SON propre but à 1 800 uu/s.
+pub fn wall_shot_negative_own_goal_sequence() -> Vec<Frame> {
+    wall_hit(-1800.0, 0.0)
+}
+
+/// v2 : la balle roulait déjà à 1 800 uu/s vers le but et le toucher n'y ajoute presque rien.
+pub fn wall_shot_negative_no_gain_sequence() -> Vec<Frame> {
+    wall_hit(1900.0, 1800.0)
 }
 
 /// Conduite sur le mur, retour au sol, puis toucher au sol : pas un wall shot.
@@ -454,7 +604,7 @@ pub fn wall_shot_negative_sequence() -> Vec<Frame> {
     s.hold(30).once(|c, b| {
         hit(c);
         b.pos = add(c.pos, [-140.0, 0.0, 76.0]);
-        b.vel = [-1500.0, 0.0, 0.0];
+        b.vel = [-300.0, 1800.0, 0.0];
     });
     s.hold(10);
     s.frames()
@@ -511,27 +661,62 @@ pub fn double_touch_negative_sequence() -> Vec<Frame> {
 }
 
 /// Voiture au sol qui roule avec la balle sur le toit pendant `ticks`, touchers répétés tous les 3 ticks.
-fn dribble_script(ticks: usize) -> Script {
+/// Balle sur le toit, voiture à 800 uu/s ; un toucher tous les `every` ticks (si `every` < 5 les contacts
+/// fusionnent en un seul toucher).
+fn dribble_script_with(ticks: usize, every: usize, speed: f32) -> Script {
     let mut car = car_on_ground();
-    car.vel = [800.0, 0.0, 0.0];
+    car.vel = [speed, 0.0, 0.0];
     let mut s = Script::new(
         car,
         BallTick {
             pos: [0.0, 0.0, 157.0],
-            vel: [800.0, 0.0, 0.0],
+            vel: [speed, 0.0, 0.0],
         },
     );
     s.run(ticks, |i, c, _| {
-        if i % 3 == 0 {
+        if i % every == 0 {
             hit(c);
         }
     });
     s
 }
 
-/// Balle sur le toit 0,67 s (contact continu = un seul toucher).
+/// 100 ticks (0,83 s), 7 touchers distincts à 0,125 s, 667 uu parcourus.
+fn dribble_script(ticks: usize) -> Script {
+    dribble_script_with(ticks, 15, 800.0)
+}
+
+/// Balle sur le toit 0,83 s avec 7 touchers distincts, la voiture avance de 667 uu.
 pub fn dribble_sequence() -> Vec<Frame> {
-    let mut s = dribble_script(80);
+    let mut s = dribble_script(100);
+    s.hold(5);
+    s.frames()
+}
+
+/// v2 (équivalent « contrôle ≥ 2 s ») : 2,1 s de contrôle à 800 uu/s, un re-contact tous les 0,67 s (4 touchers).
+pub fn dribble_long_sequence() -> Vec<Frame> {
+    let mut s = dribble_script_with(252, 80, 800.0);
+    s.hold(5);
+    s.frames()
+}
+
+/// 0,67 s de contact continu (= un seul toucher) : l'ancien dribble de 60 ticks, refusé en v2.
+pub fn dribble_negative_continuous_sequence() -> Vec<Frame> {
+    let mut s = dribble_script_with(80, 3, 800.0);
+    s.hold(5);
+    s.frames()
+}
+
+/// 6 touchers distincts mais la voiture est à l'arrêt (équilibre sur place, 0 uu parcouru) : refusé.
+pub fn dribble_negative_stationary_sequence() -> Vec<Frame> {
+    let mut s = dribble_script_with(100, 15, 0.0);
+    s.hold(5);
+    s.frames()
+}
+
+/// 4 touchers distincts seulement, contrôle de 0,8 s : refusé (il en faut 5, ou 2 s de contrôle).
+pub fn dribble_negative_few_touches_sequence() -> Vec<Frame> {
+    let mut s = dribble_script_with(100, 25, 800.0);
     s.hold(5);
     s.frames()
 }
@@ -568,12 +753,12 @@ pub fn dribble_negative_wall_sequence() -> Vec<Frame> {
             vel: [0.0; 3],
         },
     );
-    s.hold(80);
+    s.hold(100);
     s.frames()
 }
 
 fn flick(with_hit: bool) -> Vec<Frame> {
-    let mut s = dribble_script(80);
+    let mut s = dribble_script(100);
     s.once(|c, b| {
         jump(c);
         c.vel = [800.0, 0.0, 300.0];
@@ -795,6 +980,41 @@ pub fn cases() -> Vec<Case> {
             &[(Touch, 1)],
         ),
         c(
+            "aerial_touch_negative_short",
+            AerialTouch,
+            false,
+            aerial_touch_negative_short_sequence(),
+            &[(Touch, 1)],
+        ),
+        c(
+            "aerial_touch_negative_no_jump",
+            AerialTouch,
+            false,
+            aerial_touch_negative_no_jump_sequence(),
+            &[(Touch, 1)],
+        ),
+        c(
+            "aerial_touch_negative_low_car",
+            AerialTouch,
+            false,
+            aerial_touch_negative_low_car_sequence(),
+            &[(Touch, 1)],
+        ),
+        c(
+            "aerial_touch_negative_low_ball",
+            AerialTouch,
+            false,
+            aerial_touch_negative_low_ball_sequence(),
+            &[(Touch, 1)],
+        ),
+        c(
+            "aerial_touch_negative_wall_roll",
+            AerialTouch,
+            false,
+            aerial_touch_negative_wall_roll_sequence(),
+            &[(Touch, 1)],
+        ),
+        c(
             "air_dribble",
             AirDribble,
             true,
@@ -809,6 +1029,27 @@ pub fn cases() -> Vec<Case> {
             &[(Touch, 3), (AerialTouch, 3)],
         ),
         c(
+            "air_dribble_negative_no_jump",
+            AirDribble,
+            false,
+            air_dribble_negative_no_jump_sequence(),
+            &[(Touch, 3)],
+        ),
+        c(
+            "wall_to_air_dribble",
+            AirDribble,
+            true,
+            wall_to_air_dribble_sequence(),
+            &[(Touch, 3), (AerialTouch, 3), (AirDribble, 1)],
+        ),
+        c(
+            "wall_roll_follow_negative",
+            AerialTouch,
+            false,
+            wall_roll_follow_negative_sequence(),
+            &[(Touch, 3)],
+        ),
+        c(
             "flip_reset",
             FlipReset,
             true,
@@ -820,7 +1061,7 @@ pub fn cases() -> Vec<Case> {
             FlipReset,
             false,
             flip_reset_negative_roof_sequence(),
-            &[(Touch, 1), (AerialTouch, 1)],
+            &[(Touch, 1)],
         ),
         c(
             "flip_reset_negative_wall",
@@ -841,14 +1082,14 @@ pub fn cases() -> Vec<Case> {
             CeilingShot,
             true,
             ceiling_shot_sequence(),
-            &[(Touch, 1), (AerialTouch, 1), (CeilingShot, 1)],
+            &[(Touch, 1), (CeilingShot, 1)],
         ),
         c(
             "ceiling_shot_negative_late",
             CeilingShot,
             false,
             ceiling_shot_negative_late_sequence(),
-            &[(Touch, 1), (AerialTouch, 1)],
+            &[(Touch, 1)],
         ),
         c(
             "ceiling_shot_negative_no_flip",
@@ -865,6 +1106,13 @@ pub fn cases() -> Vec<Case> {
             &[(Touch, 1), (WallShot, 1)],
         ),
         c(
+            "wall_shot_jump",
+            WallShot,
+            true,
+            wall_shot_jump_sequence(),
+            &[(Touch, 1), (WallShot, 1)],
+        ),
+        c(
             "wall_shot_negative",
             WallShot,
             false,
@@ -872,25 +1120,53 @@ pub fn cases() -> Vec<Case> {
             &[(Touch, 1)],
         ),
         c(
+            "wall_shot_negative_slow",
+            WallShot,
+            false,
+            wall_shot_negative_slow_sequence(),
+            &[(Touch, 1)],
+        ),
+        c(
+            "wall_shot_negative_own_goal",
+            WallShot,
+            false,
+            wall_shot_negative_own_goal_sequence(),
+            &[(Touch, 1)],
+        ),
+        c(
+            "wall_shot_negative_no_gain",
+            WallShot,
+            false,
+            wall_shot_negative_no_gain_sequence(),
+            &[(Touch, 1)],
+        ),
+        c(
             "double_touch",
             DoubleTouch,
             true,
             double_touch_sequence(),
-            &[(Touch, 2), (AerialTouch, 2), (DoubleTouch, 1)],
+            &[(Touch, 2), (DoubleTouch, 1)],
         ),
         c(
             "double_touch_negative",
             DoubleTouch,
             false,
             double_touch_negative_sequence(),
-            &[(Touch, 2), (AerialTouch, 2)],
+            &[(Touch, 2)],
         ),
         c(
             "dribble",
             Dribble,
             true,
             dribble_sequence(),
-            &[(Touch, 1), (Dribble, 1)],
+            &[(Touch, 6), (Dribble, 1)],
+        ),
+        c(
+            "dribble_long",
+            Dribble,
+            true,
+            dribble_long_sequence(),
+            &[(Touch, 3), (Dribble, 1)],
         ),
         c(
             "dribble_negative_bounce",
@@ -907,18 +1183,39 @@ pub fn cases() -> Vec<Case> {
             &[],
         ),
         c(
+            "dribble_negative_continuous",
+            Dribble,
+            false,
+            dribble_negative_continuous_sequence(),
+            &[(Touch, 1)],
+        ),
+        c(
+            "dribble_negative_stationary",
+            Dribble,
+            false,
+            dribble_negative_stationary_sequence(),
+            &[(Touch, 6)],
+        ),
+        c(
+            "dribble_negative_few_touches",
+            Dribble,
+            false,
+            dribble_negative_few_touches_sequence(),
+            &[(Touch, 3)],
+        ),
+        c(
             "flick",
             Flick,
             true,
             flick_sequence(),
-            &[(Touch, 2), (Dribble, 1), (Flick, 1)],
+            &[(Touch, 7), (Dribble, 1), (Flick, 1)],
         ),
         c(
             "flick_negative",
             Flick,
             false,
             flick_negative_sequence(),
-            &[(Touch, 1), (Dribble, 1)],
+            &[(Touch, 6), (Dribble, 1)],
         ),
         c(
             "speed_flip",

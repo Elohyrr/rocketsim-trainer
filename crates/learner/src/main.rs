@@ -7,6 +7,8 @@
 //! `--minutes 0` = sans limite (mode cluster). `--stage S` fige le palier (pas de promotion automatique).
 //! Variables : `JELLYFIN_URL`, `JELLYFIN_API_KEY` (pause D6, désactivée sans clé), `JELLYFIN_RESUME_MINUTES`
 //! (défaut 10), `JELLYFIN_POLL_SECONDS` (défaut 30). SIGTERM/SIGINT : checkpoint final puis sortie.
+//! Détecteur de mécaniques : règles strictes v2 par défaut ; `--detector-v1` (ou `DETECTOR_V1=1`) garde les règles
+//! d'origine. Au premier démarrage v2, l'anneau de clips est vidé une fois (marqueur `clips/detecteur-v2`).
 //! Clips : une mécanique reconnue en match enregistre un clip rejouable dans `<out>/clips` (anneau borné :
 //! `--clips-max N` (200), `--clips-mb M` (200) ; `--no-clips` pour couper), servi par `GET /clips` et `GET /clips/<id>`.
 //! Le dossier `--out` reçoit `checkpoint.mpk`, `policy.safetensors`, `stage`, `opponent-obs-v2`, `explore.json`,
@@ -208,6 +210,9 @@ fn main() {
     // `--kickoff-prob P` : surcharge la part de coups d'envoi aux paliers 5/6 (0 = témoin sans kickoff).
     let kp: Option<f32> = arg("--kickoff-prob").and_then(|s| s.parse().ok());
     let want_clips = !std::env::args().any(|a| a == "--no-clips");
+    // `--detector-v1` ou `DETECTOR_V1=1` : règles d'origine du détecteur de mécaniques (sinon v2, strictes).
+    let detector_v1 = std::env::args().any(|a| a == "--detector-v1")
+        || std::env::var("DETECTOR_V1").is_ok_and(|v| v == "1");
     let mut clip_store = want_clips
         .then(|| {
             let max = arg("--clips-max")
@@ -216,7 +221,7 @@ fn main() {
             let mb: u64 = arg("--clips-mb")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(200);
-            ClipStore::open(&out, max, mb * 1024 * 1024)
+            ClipStore::open_for(&out, max, mb * 1024 * 1024, !detector_v1)
                 .inspect_err(|e| eprintln!("clips désactivés : {e}"))
                 .ok()
         })
@@ -226,6 +231,7 @@ fn main() {
         let c = EnvConfig::for_stage(st);
         EnvConfig {
             record_clips,
+            detector_v1,
             kickoff_prob: if c.kickoff_prob > 0.0 {
                 kp.unwrap_or(c.kickoff_prob)
             } else {

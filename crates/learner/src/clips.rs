@@ -12,10 +12,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rl_env::clip::{Clip, Trajectory};
 use serde::{Deserialize, Serialize};
+use sim_core::clip::ClipQuality;
 use sim_core::{Sim, SimError};
 
 pub const DIR: &str = "clips";
 pub const INDEX: &str = "index.json";
+/// Marqueur posé au premier démarrage avec le détecteur v2 : les clips d'avant (v1, surtout du bruit) sont alors
+/// supprimés une seule fois.
+pub const V2_MARKER: &str = "detecteur-v2";
 pub const DEFAULT_MAX_CLIPS: usize = 200;
 pub const DEFAULT_MAX_BYTES: u64 = 200 * 1024 * 1024;
 /// Délai minimal entre deux clips de la même mécanique.
@@ -33,6 +37,16 @@ pub struct Entry {
     pub steps: u32,
     pub seconds: f32,
     pub bytes: u64,
+    /// Version du détecteur qui a déclenché le clip (1 = règles d'origine, 2 = strictes) : la page web filtre.
+    #[serde(default = "v1")]
+    pub detector: u32,
+    /// Qualité mesurée après la mécanique (absente des clips v1).
+    #[serde(default)]
+    pub quality: Option<ClipQuality>,
+}
+
+fn v1() -> u32 {
+    1
 }
 
 pub struct ClipStore {
@@ -67,8 +81,27 @@ impl ClipStore {
     /// Ouvre (et crée) `<out>/clips`, reprend l'index existant (entrées sans fichier ignorées, fichiers hors
     /// index supprimés : restes d'un arrêt en cours d'écriture).
     pub fn open(out: &Path, max_clips: usize, max_bytes: u64) -> std::io::Result<Self> {
+        Self::open_for(out, max_clips, max_bytes, false)
+    }
+
+    /// Comme [`ClipStore::open`] ; avec `purge_v1`, vide l'anneau une seule fois (marqueur [`V2_MARKER`]) au
+    /// premier démarrage avec le détecteur v2.
+    pub fn open_for(
+        out: &Path,
+        max_clips: usize,
+        max_bytes: u64,
+        purge_v1: bool,
+    ) -> std::io::Result<Self> {
         let dir = out.join(DIR);
         std::fs::create_dir_all(&dir)?;
+        if purge_v1 && !dir.join(V2_MARKER).exists() {
+            for f in std::fs::read_dir(&dir)?.flatten() {
+                if f.path().extension().is_some_and(|e| e == "json") {
+                    let _ = std::fs::remove_file(f.path());
+                }
+            }
+            write_atomic(&dir.join(V2_MARKER), b"2\n")?;
+        }
         let mut entries: Vec<Entry> = std::fs::read(dir.join(INDEX))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
@@ -79,6 +112,7 @@ impl ClipStore {
             for f in rd.flatten() {
                 let name = f.file_name().to_string_lossy().into_owned();
                 let known = name == INDEX
+                    || name == V2_MARKER
                     || name
                         .strip_suffix(".json")
                         .is_some_and(|id| entries.iter().any(|e| e.id == id));
@@ -145,6 +179,8 @@ impl ClipStore {
             steps: clip.steps.len() as u32,
             seconds: clip.seconds(),
             bytes: data.len() as u64,
+            detector: clip.detector.max(1),
+            quality: clip.quality,
         };
         self.last.insert(clip.mechanic, now);
         self.entries.push(e.clone());
@@ -344,6 +380,8 @@ mod tests {
             trigger_step: 0,
             keyframes: vec![kf(0), kf(2)],
             steps: vec![vec![Ctl(0.0, 0.0, 0.0, 0.0, 0.0, 0)]; 2],
+            detector: 2,
+            quality: None,
         }
     }
 
@@ -393,6 +431,43 @@ mod tests {
         assert!(s.add(clip("flick"), 0).unwrap().is_some());
         assert!(s.add(clip("flick"), 0).unwrap().is_none());
         assert!(s.add(clip("dribble"), 0).unwrap().is_some());
+    }
+
+    #[test]
+    fn first_v2_start_purges_ring_once() {
+        let (d, mut s) = store(10);
+        s.add(clip("wall_shot"), 1).unwrap().unwrap();
+        // Mode v1 : rien n'est supprimé, pas de marqueur.
+        let s1 = ClipStore::open_for(d.path(), 10, u64::MAX, false).unwrap();
+        assert_eq!(s1.len(), 1);
+        assert!(!d.path().join(DIR).join(V2_MARKER).exists());
+        // Premier démarrage v2 : anneau vidé, marqueur posé.
+        let mut s2 = ClipStore::open_for(d.path(), 10, u64::MAX, true).unwrap();
+        assert!(s2.is_empty());
+        assert!(d.path().join(DIR).join(V2_MARKER).exists());
+        s2.min_gap = Duration::ZERO;
+        let mut c = clip("dribble");
+        c.quality = Some(ClipQuality {
+            ball_speed_to_goal: 2000.0,
+            goal_3s: true,
+            score: 0.83,
+        });
+        let e = s2.add(c, 2).unwrap().unwrap();
+        assert_eq!(e.detector, 2);
+        assert_eq!(e.quality.map(|q| q.goal_3s), Some(true));
+        // Démarrages suivants : les clips v2 survivent (le marqueur n'est pas pris pour un orphelin).
+        let s3 = ClipStore::open_for(d.path(), 10, u64::MAX, true).unwrap();
+        assert_eq!(s3.entries(), [e]);
+        assert!(d.path().join(DIR).join(V2_MARKER).exists());
+    }
+
+    #[test]
+    fn old_index_entries_read_as_v1() {
+        let e: Entry = serde_json::from_str(
+            r#"{"id":"1-wall_shot-1","mechanic":"wall_shot","created_unix":1,"train_step":2,"steps":3,"seconds":1.0,"bytes":10}"#,
+        )
+        .unwrap();
+        assert_eq!((e.detector, e.quality), (1, None));
     }
 
     #[test]

@@ -98,6 +98,7 @@ pub struct Detector {
     ad_last: Option<u64>,
     ad_boost: bool,
     ad_counted: bool,
+    ad_last_counted: bool,
     // Plafond, mur.
     ceil_last: Option<u64>,
     wall_last: Option<u64>,
@@ -113,6 +114,27 @@ pub struct Detector {
     fl_hit: bool,
     // Dodge.
     dodge: Option<Dodge>,
+    // v2 : mode strict, sens d'attaque, décollage volontaire, saut depuis le mur.
+    mode: Mode,
+    attack_neg: bool,
+    vol_takeoff: bool,
+    wall_jumped: bool,
+    /// Wall shot v2 en attente : tick du toucher et vitesse vers le but adverse juste avant.
+    ws_pending: Option<(u64, f32)>,
+    dr_touches: u32,
+    dr_last_touch: Option<u64>,
+    dr_dist: f32,
+    dr_valid: bool,
+}
+
+/// Version des règles de détection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    /// Règles de la v2 (strictes : actions intentionnelles seulement).
+    #[default]
+    V2,
+    /// Règles d'origine (PR #16), gardées pour comparer ou revenir en arrière.
+    V1,
 }
 
 #[inline]
@@ -166,9 +188,37 @@ impl Detector {
         Self::default()
     }
 
-    /// Oublie tout l'état (nouvel épisode, téléportation). Le tick suivant sert seulement à initialiser.
+    /// Détecteur d'une version donnée des règles.
+    pub fn with_mode(mode: Mode) -> Self {
+        Self {
+            mode,
+            ..Self::default()
+        }
+    }
+
+    /// Sens d'attaque : l'équipe bleue (défaut) marque en y > 0, l'orange en y < 0. Sert au wall shot v2.
+    pub fn set_blue(&mut self, blue: bool) {
+        self.attack_neg = !blue;
+    }
+
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// Oublie tout l'état (nouvel épisode, téléportation) ; garde la version et le sens d'attaque.
+    /// Le tick suivant sert seulement à initialiser.
     pub fn reset(&mut self) {
-        *self = Self::default();
+        *self = Self {
+            mode: self.mode,
+            attack_neg: self.attack_neg,
+            ..Self::default()
+        };
+    }
+
+    /// Vitesse de la balle vers le but adverse (+ = vers le but).
+    #[inline]
+    fn toward_goal(&self, vel: [f32; 3]) -> f32 {
+        if self.attack_neg { -vel[1] } else { vel[1] }
     }
 
     /// Événements du dernier tick traité.
@@ -274,6 +324,29 @@ impl Detector {
             self.air_ticks = self.air_ticks.saturating_add(1);
         }
 
+        // Décollage volontaire (v2) : un saut pressé depuis le sol ou le mur (ou ≤ 6 ticks après l'avoir quitté),
+        // pas un simple départ en roulant. Le mur sert au wall shot : saut depuis le mur.
+        if on_terrain && !car.has_jumped {
+            self.vol_takeoff = false;
+            self.wall_jumped = false;
+        }
+        if ev & Events::JUMP != 0 && (p.on_terrain || self.air_ticks <= VOLUNTARY_JUMP_TICKS) {
+            self.vol_takeoff = true;
+            if p.on_wall || on_wall || within(self.wall_last, n, VOLUNTARY_JUMP_TICKS as u64) {
+                self.wall_jumped = true;
+            }
+        }
+
+        // Décollage poussé au boost en gardant la balle sur le capot (wall to air dribble) : intentionnel aussi.
+        if !on_terrain
+            && self.air_ticks <= VOLUNTARY_JUMP_TICKS
+            && car.boosting
+            && rel_up > 0.0
+            && dist2 < CARRIED_BALL_DIST * CARRIED_BALL_DIST
+        {
+            self.vol_takeoff = true;
+        }
+
         // --- Dodge et annulation.
         let dodge = (car.has_flipped && !p.has_flipped)
             || (car.is_flipping && !p.is_flipping && !car.has_flipped);
@@ -361,31 +434,52 @@ impl Detector {
 
         // --- Toucher aérien.
         let air_touch = touch && !car.on_ground && ball.pos[2] > AERIAL_BALL_MIN_Z;
-        let aerial = air_touch && self.air_ticks >= AERIAL_MIN_AIR_TICKS;
-        if aerial {
-            counts.inc(Mechanic::AerialTouch);
-        }
+        // Toucher aérien « de base » ; en v2 il faut en plus une intention (décollage volontaire, ou chaîne de
+        // touchers contrôlés au boost : air dribble).
+        let (core, intent) = match self.mode {
+            Mode::V1 => (air_touch && self.air_ticks >= AERIAL_MIN_AIR_TICKS, true),
+            Mode::V2 => (
+                air_touch
+                    && car.pos[2] > AERIAL_CAR_MIN_Z
+                    && ball.pos[2] > AERIAL_V2_BALL_MIN_Z
+                    && self.air_ticks >= AERIAL_V2_MIN_AIR_TICKS,
+                self.vol_takeoff,
+            ),
+        };
 
         // --- Air dribble : ≥ 2 touchers aériens hauts, < 1 s d'écart, boost entre les deux, sans sol.
         if on_terrain {
             self.ad_last = None;
             self.ad_counted = false;
             self.ad_boost = false;
+            self.ad_last_counted = false;
         }
         if car.boosting {
             self.ad_boost = true;
         }
-        if aerial && ball.pos[2] > AIR_DRIBBLE_BALL_MIN_Z {
+        let mut aerial = core && intent;
+        if core && ball.pos[2] > AIR_DRIBBLE_BALL_MIN_Z {
             if within(self.ad_last, n, AIR_DRIBBLE_MAX_GAP_TICKS) {
-                if self.ad_boost && !self.ad_counted {
-                    counts.inc(Mechanic::AirDribble);
-                    self.ad_counted = true;
+                if self.ad_boost {
+                    // Chaîne contrôlée : ce toucher compte, et le précédent aussi s'il ne l'était pas encore.
+                    aerial = true;
+                    if !self.ad_last_counted {
+                        counts.inc(Mechanic::AerialTouch);
+                    }
+                    if !self.ad_counted {
+                        counts.inc(Mechanic::AirDribble);
+                        self.ad_counted = true;
+                    }
                 }
             } else {
                 self.ad_counted = false;
             }
             self.ad_last = Some(n);
+            self.ad_last_counted = aerial;
             self.ad_boost = false;
+        }
+        if aerial {
+            counts.inc(Mechanic::AerialTouch);
         }
 
         // --- Ceiling shot : roues au plafond puis toucher en l'air avec le flip disponible dans les 3 s.
@@ -407,8 +501,22 @@ impl Detector {
             self.wall_last = None;
         }
         if touch && within(self.wall_last, n, WALL_SHOT_WINDOW_TICKS) {
-            counts.inc(Mechanic::WallShot);
+            if self.mode == Mode::V1 || self.wall_jumped {
+                counts.inc(Mechanic::WallShot);
+            } else {
+                self.ws_pending = Some((n, self.toward_goal(p.ball_vel)));
+            }
             self.wall_last = None;
+        }
+        // v2 : le toucher doit envoyer la balle vers le but adverse à plus de 1 000 uu/s (gain imputable au toucher).
+        if let Some((t, before)) = self.ws_pending {
+            let after = self.toward_goal(ball.vel);
+            if after > WALL_SHOT_MIN_GOAL_SPEED && after - before >= WALL_SHOT_MIN_GAIN {
+                counts.inc(Mechanic::WallShot);
+                self.ws_pending = None;
+            } else if n - t >= WALL_SHOT_JUDGE_TICKS {
+                self.ws_pending = None;
+            }
         }
 
         // --- Double touch : toucher en l'air, rebond mur de la balle, second toucher en l'air.
@@ -442,11 +550,33 @@ impl Detector {
         if dribble_ok {
             self.dr_run += 1;
             self.dr_gap = 0;
-            if self.dr_run >= DRIBBLE_MIN_TICKS {
-                self.dr_last_ok = Some(n);
-                if !self.dr_counted {
-                    counts.inc(Mechanic::Dribble);
-                    self.dr_counted = true;
+            if self.mode == Mode::V1 {
+                if self.dr_run >= DRIBBLE_MIN_TICKS {
+                    self.dr_last_ok = Some(n);
+                    if !self.dr_counted {
+                        counts.inc(Mechanic::Dribble);
+                        self.dr_counted = true;
+                    }
+                }
+            } else {
+                // v2 : touchers distincts (≥ 10 ticks d'écart) et distance parcourue pendant le contrôle.
+                self.dr_dist += hspeed / crate::TICK_HZ;
+                if touch && !within(self.dr_last_touch, n, DRIBBLE_TOUCH_SEP_TICKS) {
+                    self.dr_touches += 1;
+                    self.dr_last_touch = Some(n);
+                }
+                let by_touches = self.dr_touches >= DRIBBLE_V2_MIN_TOUCHES;
+                let by_time = self.dr_run >= DRIBBLE_V2_LONG_TICKS
+                    && self.dr_touches >= DRIBBLE_V2_LONG_MIN_TOUCHES;
+                if (by_touches || by_time) && self.dr_dist >= DRIBBLE_V2_MIN_DIST {
+                    self.dr_valid = true;
+                }
+                if self.dr_valid {
+                    self.dr_last_ok = Some(n);
+                    if !self.dr_counted {
+                        counts.inc(Mechanic::Dribble);
+                        self.dr_counted = true;
+                    }
                 }
             }
         } else {
@@ -454,6 +584,10 @@ impl Detector {
             if self.dr_gap > DRIBBLE_GAP_TICKS {
                 self.dr_run = 0;
                 self.dr_counted = false;
+                self.dr_touches = 0;
+                self.dr_last_touch = None;
+                self.dr_dist = 0.0;
+                self.dr_valid = false;
             }
         }
 

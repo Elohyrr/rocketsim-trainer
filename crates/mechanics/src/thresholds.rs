@@ -89,3 +89,38 @@ pub const HALF_FLIP_MAX_HEADING_COS: f32 = -0.8;
 
 /// Durée de vie maximale de l'état « dodge en cours » (au-delà, oublié).
 pub const DODGE_MEMORY_TICKS: u64 = 180;
+
+// ---------------------------------------------------------------- v2 (détecteur strict)
+
+/// Saut volontaire : le saut est pressé depuis le sol/mur, ou au plus 6 ticks après avoir quitté le terrain.
+pub const VOLUNTARY_JUMP_TICKS: u32 = 6;
+
+/// Toucher aérien v2 : voiture z > 300, balle z > 500, en l'air depuis ≥ 0,5 s après un saut volontaire.
+pub const AERIAL_CAR_MIN_Z: f32 = 300.0;
+pub const AERIAL_V2_BALL_MIN_Z: f32 = 500.0;
+pub const AERIAL_V2_MIN_AIR_TICKS: u32 = 60;
+
+/// Wall shot v2 : balle envoyée vers le but adverse à plus de 1 000 uu/s (jugé dans les 6 ticks du toucher),
+/// ou saut depuis le mur.
+pub const WALL_SHOT_MIN_GOAL_SPEED: f32 = 1000.0;
+pub const WALL_SHOT_JUDGE_TICKS: u64 = 6;
+/// … et le toucher doit y ajouter au moins 300 uu/s (une balle déjà lancée vers le but ne compte pas).
+pub const WALL_SHOT_MIN_GAIN: f32 = 300.0;
+
+/// Dribble v2 : touchers distincts ≥ 10 ticks d'écart ; 5 touchers distincts, ou (contrôle ≥ 2 s et ≥ 3
+/// touchers) ; dans les deux cas la voiture avance d'au moins `DRIBBLE_V2_MIN_DIST` uu pendant le contrôle.
+pub const DRIBBLE_TOUCH_SEP_TICKS: u64 = 10;
+pub const DRIBBLE_V2_MIN_TOUCHES: u32 = 5;
+pub const DRIBBLE_V2_LONG_TICKS: u32 = 240;
+pub const DRIBBLE_V2_LONG_MIN_TOUCHES: u32 = 3;
+pub const DRIBBLE_V2_MIN_DIST: f32 = 600.0;
+
+/// Qualité : vitesse max de la balle vers le but adverse dans la seconde qui suit, but dans les 3 s.
+pub const QUALITY_SPEED_TICKS: u32 = 120;
+pub const QUALITY_GOAL_TICKS: u32 = 360;
+pub const QUALITY_SPEED_REF: f32 = 3000.0;
+/// |y| du centre de la balle au-delà duquel le but est marqué (RocketSim).
+pub const GOAL_LINE_Y: f32 = 5124.25;
+
+/// Décollage au boost sans saut : intentionnel si la balle est portée (côté toit, à moins de 250 uu du centre).
+pub const CARRIED_BALL_DIST: f32 = 250.0;

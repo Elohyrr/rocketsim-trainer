@@ -181,6 +181,8 @@ pub struct EnvConfig {
     /// Enregistre un clip rejouable quand une mécanique (hors simple toucher) est reconnue ; demande
     /// `detect_mechanics`. Voir [`Env::take_clips`].
     pub record_clips: bool,
+    /// Garde les règles d'origine (v1) du détecteur de mécaniques au lieu des règles strictes (v2).
+    pub detector_v1: bool,
 }
 
 /// Tirage des positions de départ.
@@ -224,6 +226,7 @@ impl Default for EnvConfig {
             kickoff_idle_opponent: false,
             detect_mechanics: true,
             record_clips: false,
+            detector_v1: false,
         }
     }
 }
@@ -420,6 +423,9 @@ pub struct Env {
     rec: ClipRecorder,
     clips: Vec<Clip>,
     opp_ctl: Controls,
+    /// Clip construit qui attend sa qualité (mesurée 3 s après la mécanique) et le suivi correspondant.
+    clip_wait: Option<Clip>,
+    quality: Option<mechanics::QualityTracker>,
 }
 
 impl Env {
@@ -427,6 +433,7 @@ impl Env {
     pub fn new(cfg: EnvConfig, seed: u64) -> Result<Self, SimError> {
         let (sim, car, opp) = Self::build_sim(&cfg)?;
         let cfg_skip = cfg.tick_skip;
+        let detector = mechanics::Detector::with_mode(Self::mode(&cfg));
         let mut e = Self {
             sim,
             car,
@@ -439,11 +446,13 @@ impl Env {
             kickoff: None,
             kickoff_t0: 0,
             kickoff_first_s: None,
-            detector: mechanics::Detector::new(),
+            detector,
             mech: mechanics::Counts::default(),
             rec: ClipRecorder::new(cfg_skip),
             clips: Vec::new(),
             opp_ctl: Controls::default(),
+            clip_wait: None,
+            quality: None,
         };
         e.reset();
         Ok(e)
@@ -465,6 +474,29 @@ impl Env {
         std::mem::take(&mut self.mech)
     }
 
+    fn mode(cfg: &EnvConfig) -> mechanics::Mode {
+        if cfg.detector_v1 {
+            mechanics::Mode::V1
+        } else {
+            mechanics::Mode::V2
+        }
+    }
+
+    /// Termine le clip en attente : y joint la qualité mesurée (partielle si l'épisode s'arrête avant 3 s).
+    fn flush_clip(&mut self) {
+        let q = self.quality.take();
+        if let (Some(mut c), Some(t)) = (self.clip_wait.take(), q) {
+            let q = t.quality();
+            c.detector = if self.cfg.detector_v1 { 1 } else { 2 };
+            c.quality = Some(clip::ClipQuality {
+                ball_speed_to_goal: q.speed,
+                goal_3s: q.goal,
+                score: q.score(),
+            });
+            self.clips.push(c);
+        }
+    }
+
     /// Clips finis depuis le dernier appel (vide sans `record_clips`).
     pub fn take_clips(&mut self) -> Vec<Clip> {
         std::mem::take(&mut self.clips)
@@ -475,8 +507,11 @@ impl Env {
         if self.cfg.record_clips
             && let Some(c) = self.rec.finish(&mut self.sim)
         {
-            self.clips.push(c);
+            self.clip_wait = Some(c);
         }
+        self.flush_clip();
+        self.clip_wait = None;
+        self.quality = None;
         self.rec.reset();
         self.opp_ctl = Controls::default();
     }
@@ -487,6 +522,9 @@ impl Env {
         let had = self.opp.is_some();
         let wants = cfg.opponent != Opponent::None;
         self.rec = ClipRecorder::new(cfg.tick_skip);
+        self.detector = mechanics::Detector::with_mode(Self::mode(&cfg));
+        self.clip_wait = None;
+        self.quality = None;
         self.cfg = cfg;
         if had != wants
             && let Ok((sim, car, opp)) = Self::build_sim(&self.cfg)
@@ -715,6 +753,9 @@ impl Env {
                 self.sim.step(1);
                 let (c, b) = (self.sim.car_tick(self.car), self.sim.ball_tick());
                 self.detector.tick(&c, &b, &mut self.mech);
+                if let Some(t) = self.quality.as_mut() {
+                    t.observe(&b);
+                }
             }
             if recording {
                 // Tout sauf le simple toucher (trop fréquent) ; la plus rare des mécaniques vues ce pas.
@@ -724,11 +765,16 @@ impl Env {
                         m != mechanics::Mechanic::Touch && self.mech.get(m) > before.get(m)
                     })
                     .max_by_key(|m| m.index());
-                if let Some(m) = rarest {
-                    self.rec.trigger(m.label());
+                if let Some(m) = rarest
+                    && self.rec.trigger(m.label())
+                {
+                    self.quality = Some(mechanics::QualityTracker::start(true));
                 }
                 if let Some(c) = self.rec.end_step(&mut self.sim) {
-                    self.clips.push(c);
+                    self.clip_wait = Some(c);
+                }
+                if self.clip_wait.is_some() && self.quality.is_some_and(|t| t.done()) {
+                    self.flush_clip();
                 }
             }
         } else {

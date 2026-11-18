@@ -20,6 +20,13 @@ fn check(clip: &Clip) {
         "agent bleu puis adversaire orange"
     );
     assert!(clip.steps.len() >= 2 && clip.trigger_step < clip.steps.len() as u32);
+    // Détecteur v2 par défaut, qualité jointe au clip (vitesse de balle vers le but adverse, but dans les 3 s).
+    assert_eq!(clip.detector, 2);
+    let q = clip.quality.expect("qualité jointe au clip");
+    assert!(
+        q.ball_speed_to_goal >= 0.0 && (0.0..=1.0).contains(&q.score),
+        "{q:?}"
+    );
     let clip = Clip::from_json(&clip.to_json()).expect("aller-retour JSON");
     let mut sim = Sim::new_soccar().unwrap();
     let mut rp = Replayer::start(&mut sim, clip).unwrap();
