@@ -191,7 +191,7 @@ function place(obj, a, b, k, f) { // a, b : images voisines ; k : fraction ; f :
 }
 
 /* ---------- Données ---------- */
-let list = [], filter = '', newest = true, cur = null, traj = null;
+let list = [], filter = '', v2only = false, newest = true, cur = null, traj = null;
 const labels = m => m.replace(/_/g, ' ');
 const fmtDate = u => new Date(u * 1000).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 
@@ -209,14 +209,15 @@ function renderList() {
   const mk = (key, text) => { const b = document.createElement('button'); b.textContent = text; if (filter === key) b.className = 'on'; b.onclick = () => { filter = key; renderList(); }; f.appendChild(b); };
   mk('', `Tout ${list.length}`);
   for (const m of Object.keys(counts).sort((a, b) => counts[b] - counts[a])) mk(m, `${labels(m)} ${counts[m]}`);
-  let rows = list.filter(c => !filter || c.mechanic === filter).sort((a, b) => (newest ? b.created_unix - a.created_unix : a.created_unix - b.created_unix));
+  if (list.some(c => (c.detector || 1) < 2)) { const b = document.createElement('button'); b.textContent = 'v2 seulement'; if (v2only) b.className = 'on'; b.onclick = () => { v2only = !v2only; renderList(); }; f.appendChild(b); }
+  let rows = list.filter(c => !v2only || (c.detector || 1) >= 2).filter(c => !filter || c.mechanic === filter).sort((a, b) => (newest ? b.created_unix - a.created_unix : a.created_unix - b.created_unix));
   $('n').textContent = `${rows.length} clip${rows.length > 1 ? 's' : ''}`;
   $('count').textContent = list.length ? `· ${list.length}` : '';
   $('sort').textContent = newest ? 'Plus récents' : 'Plus anciens';
   const it = $('items'); it.innerHTML = '';
   for (const c of rows) {
     const d = document.createElement('div'); d.className = 'item' + (c.id === cur ? ' cur' : '');
-    d.innerHTML = `<b>${labels(c.mechanic)}</b><span>${fmtDate(c.created_unix)} · ${c.seconds.toFixed(1)} s</span>`;
+    d.innerHTML = `<b>${labels(c.mechanic)}</b><span>${fmtDate(c.created_unix)} · ${c.seconds.toFixed(1)} s${(c.detector || 1) < 2 ? ' · v1' : c.quality ? ` · qualité ${Math.round(c.quality.score * 100)} %${c.quality.goal_3s ? ' · but' : ''}` : ''}</span>`;
     d.onclick = () => { location.hash = c.id; };
     it.appendChild(d);
   }

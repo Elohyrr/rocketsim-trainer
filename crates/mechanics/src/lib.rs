@@ -10,10 +10,12 @@
 //! autres crates) : module [`script`]. Documentation : `docs/mechanics.md`.
 
 mod detector;
+mod quality;
 pub mod script;
 pub mod thresholds;
 
-pub use detector::{Detector, Events};
+pub use detector::{Detector, Events, Mode};
+pub use quality::{Quality, QualityTracker};
 
 /// Fréquence de la physique (ticks par seconde).
 pub const TICK_HZ: f32 = 120.0;

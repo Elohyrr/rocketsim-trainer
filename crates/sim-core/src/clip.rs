@@ -206,6 +206,24 @@ pub struct Clip {
     pub keyframes: Vec<Keyframe>,
     /// `steps[s][voiture]` : contrôles tenus pendant `tick_skip` ticks.
     pub steps: Vec<Vec<Ctl>>,
+    /// Version du détecteur de mécaniques qui a déclenché le clip (1 = règles d'origine, 2 = strictes ; 0 =
+    /// absent des anciens fichiers, à lire comme 1).
+    #[serde(default)]
+    pub detector: u32,
+    /// Qualité mesurée après la mécanique (vitesse de balle vers le but adverse, but dans les 3 s).
+    #[serde(default)]
+    pub quality: Option<ClipQuality>,
+}
+
+/// Qualité d'une mécanique (métadonnées d'un clip).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ClipQuality {
+    /// Vitesse maximale de la balle vers le but adverse (uu/s) dans la seconde qui suit.
+    pub ball_speed_to_goal: f32,
+    /// But de l'équipe dans les 3 s.
+    pub goal_3s: bool,
+    /// Score 0..1 (moitié vitesse, moitié but).
+    pub score: f32,
 }
 
 impl Clip {
@@ -574,8 +592,8 @@ impl ClipRecorder {
     }
 
     /// Une mécanique vient d'être reconnue pendant la décision en cours (ignoré pendant un clip en cours ou le
-    /// silence qui suit un clip).
-    pub fn trigger(&mut self, mechanic: &'static str) {
+    /// silence qui suit un clip). Vrai si le déclenchement est retenu.
+    pub fn trigger(&mut self, mechanic: &'static str) -> bool {
         if self.pending.is_none() && self.step >= self.quiet_until {
             let start = self.keys.front().map_or(self.step, |k| k.0);
             self.pending = Some(Pending {
@@ -583,6 +601,9 @@ impl ClipRecorder {
                 trigger: self.step,
                 start,
             });
+            true
+        } else {
+            false
         }
     }
 
@@ -675,6 +696,8 @@ impl ClipRecorder {
             trigger_step: p.trigger - start,
             keyframes,
             steps,
+            detector: 0,
+            quality: None,
         })
     }
 }

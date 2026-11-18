@@ -31,6 +31,52 @@ fn tous_les_cas_scriptes() {
 }
 
 #[test]
+fn mode_v1_garde_l_ancien_comportement() {
+    use mechanics::Mode::V1;
+    let v1 = |f: Vec<Frame>| script::replay_mode(&f, V1);
+    // Décollage sans saut, touchers à 0,5 s : v1 les compte, v2 non.
+    assert_eq!(
+        v1(script::aerial_touch_negative_no_jump_sequence()).get(Mechanic::AerialTouch),
+        1
+    );
+    assert_eq!(
+        v1(script::wall_roll_follow_negative_sequence()).get(Mechanic::AerialTouch),
+        3
+    );
+    // Wall shot lent ou vers son propre but : v1 le compte.
+    assert_eq!(
+        v1(script::wall_shot_negative_slow_sequence()).get(Mechanic::WallShot),
+        1
+    );
+    assert_eq!(
+        v1(script::wall_shot_negative_own_goal_sequence()).get(Mechanic::WallShot),
+        1
+    );
+    // Dribble de 0,67 s en contact continu, ou voiture à l'arrêt : v1 le compte (60 ticks).
+    assert_eq!(
+        v1(script::dribble_negative_continuous_sequence()).get(Mechanic::Dribble),
+        1
+    );
+    assert_eq!(
+        v1(script::dribble_negative_stationary_sequence()).get(Mechanic::Dribble),
+        1
+    );
+    // Et la v2 les refuse.
+    for f in [
+        script::aerial_touch_negative_no_jump_sequence(),
+        script::wall_roll_follow_negative_sequence(),
+        script::wall_shot_negative_slow_sequence(),
+        script::dribble_negative_continuous_sequence(),
+    ] {
+        let c = script::replay(&f);
+        assert_eq!(
+            c.get(Mechanic::AerialTouch) + c.get(Mechanic::WallShot) + c.get(Mechanic::Dribble),
+            0
+        );
+    }
+}
+
+#[test]
 fn chaque_mecanique_a_un_positif_et_un_negatif() {
     let cases = script::cases();
     for m in Mechanic::ALL {
