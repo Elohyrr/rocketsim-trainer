@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use policy_runtime::Policy;
-use rl_env::{ActionTable, EnvConfig, OBS_DIM, build_obs};
+use rl_env::{ActionTable, EnvConfig, N_ACTIONS_V1, OBS_DIM, OBS_DIM_V2, build_obs};
 use rst_core::bot::{META, PolicyMeta, WEIGHTS};
 use sim_core::{Controls, Snapshot};
 
@@ -39,7 +39,11 @@ impl Brain {
     pub fn load(weights: &Path) -> Result<Self, String> {
         let policy = Policy::load(weights).map_err(|e| format!("{} : {e}", weights.display()))?;
         let table = ActionTable::rlgym();
-        if (policy.obs_dim(), policy.action_count()) != (OBS_DIM, table.len()) {
+        // Politique d'avant la v3 acceptée : 43 entrées (l'observation est tronquée) et 78 actions (les 12
+        // actions de frein à main, en fin de table, ne sont jamais choisies).
+        let obs_ok = [OBS_DIM_V2, OBS_DIM].contains(&policy.obs_dim());
+        let acts_ok = [N_ACTIONS_V1, table.len()].contains(&policy.action_count());
+        if !obs_ok || !acts_ok {
             return Err(format!(
                 "politique incompatible : {} entrées / {} actions, le client attend {OBS_DIM} / {}",
                 policy.obs_dim(),
@@ -93,7 +97,9 @@ impl Brain {
     ) -> Controls {
         if snap.tick >= self.next_decision {
             let obs = build_obs(snap, me, other, mirror);
-            self.held = self.table.get(self.policy.act(&obs));
+            self.held = self
+                .table
+                .get(self.policy.act(&obs[..self.policy.obs_dim()]));
             self.next_decision = snap.tick + self.tick_skip;
         }
         self.held

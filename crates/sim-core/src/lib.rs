@@ -98,6 +98,18 @@ pub struct CarSnapshot {
     pub boost: f32,
     pub on_ground: bool,
     pub has_flip_or_jump: bool,
+    /// Dodge en cours.
+    #[serde(default)]
+    pub is_flipping: bool,
+    /// Secondes en l'air depuis le saut (0 au sol).
+    #[serde(default)]
+    pub air_time_since_jump: f32,
+    /// Nombre de roues en contact avec une surface (0–4).
+    #[serde(default)]
+    pub wheels_contact: u8,
+    /// Derniers contrôles appliqués : accélérateur, direction, tangage, lacet, roulis, saut, boost, frein à main.
+    #[serde(default)]
+    pub last_controls: [f32; 8],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -105,6 +117,9 @@ pub struct PadSnapshot {
     pub pos: V3,
     pub big: bool,
     pub active: bool,
+    /// Secondes restantes avant la réapparition (0 si active).
+    #[serde(default)]
+    pub cooldown: f32,
 }
 
 /// État complet observable de la simulation (JSON/bincode-friendly).
@@ -113,6 +128,9 @@ pub struct Snapshot {
     pub tick: u64,
     pub ball: BallSnapshot,
     pub cars: Vec<CarSnapshot>,
+    /// Boosts au sol, dans l'ordre fixe de l'arène (34 en soccar).
+    #[serde(default)]
+    pub pads: Vec<PadSnapshot>,
 }
 
 fn v(x: rocketsim_rs::math::Vec3) -> V3 {
@@ -309,6 +327,7 @@ impl Sim {
                     pos: v(c.position),
                     big: c.is_big,
                     active: self.arena.get_pad_state(i).is_active,
+                    cooldown: self.arena.get_pad_state(i).cooldown,
                 }
             })
             .collect()
@@ -387,6 +406,19 @@ impl Sim {
                 boost: c.boost,
                 on_ground: c.is_on_ground,
                 has_flip_or_jump: c.has_flip_or_jump(),
+                is_flipping: c.is_flipping,
+                air_time_since_jump: c.air_time_since_jump,
+                wheels_contact: c.wheels_with_contact.iter().filter(|w| **w).count() as u8,
+                last_controls: [
+                    c.last_controls.throttle,
+                    c.last_controls.steer,
+                    c.last_controls.pitch,
+                    c.last_controls.yaw,
+                    c.last_controls.roll,
+                    f32::from(u8::from(c.last_controls.jump)),
+                    f32::from(u8::from(c.last_controls.boost)),
+                    f32::from(u8::from(c.last_controls.handbrake)),
+                ],
             });
         }
         Snapshot {
@@ -397,6 +429,7 @@ impl Sim {
                 ang_vel: v(b.ang_vel),
             },
             cars,
+            pads: self.pads(),
         }
     }
 }
@@ -438,6 +471,7 @@ mod tests {
                 ang_vel: [0.; 3],
             },
             cars: vec![],
+            pads: vec![],
         };
         let j = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<Snapshot>(&j).unwrap(), s);

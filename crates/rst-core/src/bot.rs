@@ -90,18 +90,22 @@ pub struct Pulled {
     pub bytes: usize,
 }
 
-/// Vérifie qu'un contenu safetensors est une politique utilisable avec `obs_dim` entrées et `actions` sorties.
-fn validate(dir: &Path, data: &[u8], obs_dim: usize, actions: usize) -> Result<(), String> {
+/// Vérifie qu'un contenu safetensors est une politique utilisable : nombre d'entrées dans `obs_dims` et nombre de
+/// sorties dans `actions` (le dernier de chaque liste est le format courant, les autres sont des formats plus
+/// anciens que le client sait encore lire).
+fn validate(dir: &Path, data: &[u8], obs_dims: &[usize], actions: &[usize]) -> Result<(), String> {
     let tmp = dir.join(format!(".{WEIGHTS}.check.{}", std::process::id()));
     std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
     let r = Policy::load(&tmp).map_err(|e| format!("politique invalide : {e}"));
     let _ = std::fs::remove_file(&tmp);
     let p = r?;
-    if (p.obs_dim(), p.action_count()) != (obs_dim, actions) {
+    if !obs_dims.contains(&p.obs_dim()) || !actions.contains(&p.action_count()) {
         return Err(format!(
-            "politique incompatible : {} entrées / {} actions, le client attend {obs_dim} / {actions} (rst update ?)",
+            "politique incompatible : {} entrées / {} actions, le client attend {} / {} (rst update ?)",
             p.obs_dim(),
-            p.action_count()
+            p.action_count(),
+            obs_dims.last().copied().unwrap_or(0),
+            actions.last().copied().unwrap_or(0)
         ));
     }
     Ok(())
@@ -129,8 +133,8 @@ pub fn pull(
     http: &dyn Http,
     base_url: &str,
     dir: &Path,
-    obs_dim: usize,
-    actions: usize,
+    obs_dims: &[usize],
+    actions: &[usize],
 ) -> Result<Pulled, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{} : {e}", dir.display()))?;
     let get = |name: &str| {
@@ -143,7 +147,7 @@ pub fn pull(
     let meta_raw = get(META)?;
     let meta = PolicyMeta::parse(&meta_raw)?;
     let weights = get(WEIGHTS)?;
-    validate(dir, &weights, obs_dim, actions)?;
+    validate(dir, &weights, obs_dims, actions)?;
     install(dir, &weights, Some(&meta_raw))?;
     Ok(Pulled {
         dir: dir.to_path_buf(),
@@ -156,12 +160,12 @@ pub fn pull(
 pub fn pull_file(
     file: &Path,
     dir: &Path,
-    obs_dim: usize,
-    actions: usize,
+    obs_dims: &[usize],
+    actions: &[usize],
 ) -> Result<Pulled, String> {
     let weights = std::fs::read(file).map_err(|e| format!("{} : {e}", file.display()))?;
     std::fs::create_dir_all(dir).map_err(|e| format!("{} : {e}", dir.display()))?;
-    validate(dir, &weights, obs_dim, actions)?;
+    validate(dir, &weights, obs_dims, actions)?;
     let meta_raw = std::fs::read(file.with_file_name(META)).ok();
     let meta = meta_raw.as_deref().and_then(|m| PolicyMeta::parse(m).ok());
     install(
@@ -239,13 +243,13 @@ mod tests {
             ]))
         };
         let dir = tmp.path().join("bot");
-        let r = pull(&ok(), &format!("{base}/"), &dir, 4, 3).unwrap();
+        let r = pull(&ok(), &format!("{base}/"), &dir, &[4], &[3]).unwrap();
         assert_eq!(r.meta.as_ref().unwrap().stage, 4);
         assert_eq!(std::fs::read(dir.join(WEIGHTS)).unwrap(), w);
         assert_eq!(PolicyMeta::load(&dir).unwrap().stage, 4);
 
         // Dimensions incompatibles : refus, ancienne politique intacte.
-        let e = pull(&ok(), base, &dir, 43, 78).unwrap_err();
+        let e = pull(&ok(), base, &dir, &[43], &[78]).unwrap_err();
         assert!(e.contains("incompatible"), "{e}");
         assert_eq!(std::fs::read(dir.join(WEIGHTS)).unwrap(), w);
 
@@ -255,7 +259,7 @@ mod tests {
             Err(NetError::Offline("dns".into())),
         )]));
         assert!(
-            pull(&off, base, &dir, 4, 3)
+            pull(&off, base, &dir, &[4], &[3])
                 .unwrap_err()
                 .contains("injoignable")
         );
@@ -269,10 +273,10 @@ mod tests {
         tiny_file(&src);
         std::fs::write(src.with_file_name(META), br#"{"stage":2}"#).unwrap();
         let dir = tmp.path().join("bot");
-        let r = pull_file(&src, &dir, 4, 3).unwrap();
+        let r = pull_file(&src, &dir, &[4], &[3]).unwrap();
         assert_eq!(r.meta.unwrap().stage, 2);
-        assert!(pull_file(&tmp.path().join("absent"), &dir, 4, 3).is_err());
+        assert!(pull_file(&tmp.path().join("absent"), &dir, &[4], &[3]).is_err());
         std::fs::write(&src, b"garbage").unwrap();
-        assert!(pull_file(&src, &dir, 4, 3).is_err());
+        assert!(pull_file(&src, &dir, &[4], &[3]).is_err());
     }
 }

@@ -11,7 +11,10 @@ use burn::optim::{AdamConfig, GradientsParams, ModuleOptimizer};
 use burn::tensor::activation::log_softmax;
 use burn::tensor::{Device, Tensor, TensorData};
 use policy_runtime::{Tensor as StTensor, write_safetensors};
-use rl_env::{EnvConfig, KickoffResult, OBS_DIM_V1, Opponent, Outcome, Rng, VecEnv};
+use rl_env::{
+    EnvConfig, KickoffResult, N_ACTIONS_V1, NEW_ACTION_BIAS, OBS_DIM_V1, OBS_DIM_V2, Opponent,
+    Outcome, Rng, VecEnv,
+};
 
 #[derive(Module, Debug)]
 pub struct Mlp {
@@ -46,16 +49,45 @@ impl Mlp {
         }
     }
 
-    /// Met à zéro les poids des entrées `from..` de la couche d'entrée (biais et autres couches inchangés).
-    pub fn zero_inputs_from(self, from: usize) -> Self {
-        let w = self.l0.weight.val();
-        let [rows, hidden] = w.dims();
-        if from >= rows {
+    /// Agrandit la couche de sortie à `n_out` sorties ; les poids des sorties ajoutées sont nuls et leur biais
+    /// vaut `bias` (actions ajoutées peu probables au départ, les autres logits sont inchangés).
+    pub fn widen_output(self, n_out: usize, bias: f32) -> Self {
+        let w = self.out.weight.val();
+        let [hidden, cols] = w.dims();
+        if cols >= n_out {
             return self;
         }
-        let keep = w.clone().slice([0..from, 0..hidden]);
-        let pad = Tensor::zeros([rows - from, hidden], &w.device());
-        let weight = Param::from_tensor(Tensor::cat(vec![keep, pad], 0).detach());
+        let dev = w.device();
+        let weight = Tensor::cat(vec![w, Tensor::zeros([hidden, n_out - cols], &dev)], 1);
+        let b = self.out.bias.as_ref().expect("biais").val();
+        let bias = Tensor::cat(vec![b, Tensor::full([n_out - cols], bias, &dev)], 0);
+        Self {
+            out: Linear {
+                weight: Param::from_tensor(weight.detach()),
+                bias: Some(Param::from_tensor(bias.detach())),
+            },
+            ..self
+        }
+    }
+
+    /// Met à zéro les poids des entrées `from..to` de la couche d'entrée (biais et autres couches inchangés).
+    pub fn zero_inputs(self, from: usize, to: usize) -> Self {
+        let w = self.l0.weight.val();
+        let [rows, hidden] = w.dims();
+        let to = to.min(rows);
+        if from >= to {
+            return self;
+        }
+        let dev = w.device();
+        let mut parts = Vec::new();
+        if from > 0 {
+            parts.push(w.clone().slice([0..from, 0..hidden]));
+        }
+        parts.push(Tensor::zeros([to - from, hidden], &dev));
+        if to < rows {
+            parts.push(w.slice([to..rows, 0..hidden]));
+        }
+        let weight = Param::from_tensor(Tensor::cat(parts, 0).detach());
         Self {
             l0: Linear {
                 weight,
@@ -101,31 +133,47 @@ impl Mlp {
         t: &BTreeMap<String, StTensor>,
         device: &Device,
     ) -> Result<Mlp, String> {
-        let layer = |name: &str, l: &Linear| -> Result<Linear, String> {
-            let w = t
-                .get(&format!("{name}.weight"))
-                .ok_or(format!("{name}.weight absent"))?;
-            let b = t
-                .get(&format!("{name}.bias"))
-                .ok_or(format!("{name}.bias absent"))?;
-            let [r, c] = l.weight.dims();
-            if w.shape != [r, c] || b.shape != [c] {
-                return Err(format!(
-                    "{name} : dimensions {:?} au lieu de [{r}, {c}]",
-                    w.shape
-                ));
-            }
-            Ok(Linear {
-                weight: Param::from_tensor(tensor2(w.data.clone(), r, c, device).detach()),
-                bias: Some(Param::from_tensor(
-                    Tensor::<1>::from_data(TensorData::new(b.data.clone(), [c]), device).detach(),
-                )),
-            })
-        };
+        // `grow_in` : une couche d'entrée plus étroite (réseau d'avant une observation élargie) est complétée de
+        // poids nuls ; `grow_out` : une sortie plus étroite (table d'actions élargie) l'est de poids nuls et de
+        // biais `NEW_ACTION_BIAS` (politique seulement : une sortie unique de critique ne grandit pas).
+        let layer =
+            |name: &str, l: &Linear, grow_in: bool, grow_out: bool| -> Result<Linear, String> {
+                let w = t
+                    .get(&format!("{name}.weight"))
+                    .ok_or(format!("{name}.weight absent"))?;
+                let b = t
+                    .get(&format!("{name}.bias"))
+                    .ok_or(format!("{name}.bias absent"))?;
+                let [r, c] = l.weight.dims();
+                let [fr, fc] = match w.shape[..] {
+                    [a, b] => [a, b],
+                    _ => return Err(format!("{name} : dimensions {:?} inattendues", w.shape)),
+                };
+                let ok_in = fr == r || (grow_in && fr < r);
+                let ok_out = fc == c || (grow_out && c > 1 && fc < c && fc > 1);
+                if !ok_in || !ok_out || b.shape != [fc] || w.data.len() != fr * fc {
+                    return Err(format!(
+                        "{name} : dimensions {:?} au lieu de [{r}, {c}]",
+                        w.shape
+                    ));
+                }
+                let mut wd = vec![0.0f32; r * c];
+                for i in 0..fr {
+                    wd[i * c..i * c + fc].copy_from_slice(&w.data[i * fc..(i + 1) * fc]);
+                }
+                let mut bd = vec![NEW_ACTION_BIAS; c];
+                bd[..fc].copy_from_slice(&b.data);
+                Ok(Linear {
+                    weight: Param::from_tensor(tensor2(wd, r, c, device).detach()),
+                    bias: Some(Param::from_tensor(
+                        Tensor::<1>::from_data(TensorData::new(bd, [c]), device).detach(),
+                    )),
+                })
+            };
         Ok(Mlp {
-            l0: layer("policy.0", &self.l0)?,
-            l1: layer("policy.1", &self.l1)?,
-            out: layer("policy.2", &self.out)?,
+            l0: layer("policy.0", &self.l0, true, false)?,
+            l1: layer("policy.1", &self.l1, false, false)?,
+            out: layer("policy.2", &self.out, false, true)?,
         })
     }
 
@@ -211,6 +259,8 @@ pub struct IterStats {
     pub mechanics: mechanics::Counts,
     /// Drills : épisodes par drill, mécaniques vues en drill, bonus payés (voir `docs/drills.md`).
     pub drill: rl_env::DrillReport,
+    /// Boost de l'agent en match : ramassages, niveau moyen, part du temps à 0.
+    pub boost: rl_env::BoostReport,
     /// Clips rejouables finis pendant l'itération (vide sans `EnvConfig::record_clips`).
     pub clips: Vec<rl_env::clip::Clip>,
     /// Coefficient d'entropie et lr utilisés, époques PPO effectivement faites (plafond de KL).
@@ -424,6 +474,7 @@ impl Trainer {
             let step = self.env.step_vs(&acts, opp_acts.as_deref());
             st.mechanics.add(&step.mechanics);
             st.drill.add(&step.drill_report);
+            st.boost.add(&step.boost_report);
             drill_buf.extend(step.in_drill.iter().copied());
             st.clips.extend(step.clips);
             for e in 0..n {
@@ -644,7 +695,7 @@ impl Trainer {
         let t = self.model.policy.to_tensors();
         write_safetensors(path, &t).map_err(|e| std::io::Error::other(e.to_string()))?;
         let meta = format!(
-            "{{\"obs_dim\":{},\"actions\":{},\"hidden\":{},\"activation\":\"tanh\",\"action_table\":\"rlgym-78\"}}\n",
+            "{{\"obs_dim\":{},\"actions\":{},\"hidden\":{},\"activation\":\"tanh\",\"action_table\":\"rlgym-90\"}}\n",
             self.obs_dim, self.n_actions, self.cfg.hidden
         );
         std::fs::write(path.with_extension("json"), meta)
@@ -691,8 +742,8 @@ impl Trainer {
     pub fn reset_opponent_inputs(&mut self) {
         let m = self.model.clone();
         self.model = ActorCritic {
-            policy: m.policy.zero_inputs_from(OBS_DIM_V1),
-            value: m.value.zero_inputs_from(OBS_DIM_V1),
+            policy: m.policy.zero_inputs(OBS_DIM_V1, OBS_DIM_V2),
+            value: m.value.zero_inputs(OBS_DIM_V1, OBS_DIM_V2),
         };
     }
 
@@ -705,21 +756,30 @@ impl Trainer {
             self.model = m;
             return Ok(());
         }
-        let legacy = ActorCritic {
-            policy: Mlp::new(OBS_DIM_V1, self.cfg.hidden, self.n_actions, &self.device),
-            value: Mlp::new(OBS_DIM_V1, self.cfg.hidden, 1, &self.device),
-        };
-        let legacy = legacy
-            .try_load_file(path)
-            .map_err(|e| format!("checkpoint illisible (formats actuel et historique) : {e}"))?;
-        self.model = ActorCritic {
-            policy: legacy.policy.widen_input(self.obs_dim),
-            value: legacy.value.widen_input(self.obs_dim),
-        };
-        eprintln!(
-            "checkpoint au format historique ({OBS_DIM_V1} entrées) : couche d'entrée agrandie à {}",
-            self.obs_dim
-        );
-        Ok(())
+        // Formats historiques : (entrées, actions) d'avant la v3 (43 / 78) et d'avant l'adversaire (33 / 78).
+        for (n_in, n_out) in [(OBS_DIM_V2, N_ACTIONS_V1), (OBS_DIM_V1, N_ACTIONS_V1)] {
+            let legacy = ActorCritic {
+                policy: Mlp::new(n_in, self.cfg.hidden, n_out, &self.device),
+                value: Mlp::new(n_in, self.cfg.hidden, 1, &self.device),
+            };
+            let loaded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                legacy.try_load_file(path).map_err(|e| e.to_string())
+            }));
+            if let Ok(Ok(m)) = loaded {
+                self.model = ActorCritic {
+                    policy: m
+                        .policy
+                        .widen_input(self.obs_dim)
+                        .widen_output(self.n_actions, NEW_ACTION_BIAS),
+                    value: m.value.widen_input(self.obs_dim),
+                };
+                eprintln!(
+                    "checkpoint au format historique ({n_in} entrées, {n_out} actions) : réseau agrandi à {} / {}",
+                    self.obs_dim, self.n_actions
+                );
+                return Ok(());
+            }
+        }
+        Err("checkpoint illisible (formats actuel et historiques)".to_string())
     }
 }

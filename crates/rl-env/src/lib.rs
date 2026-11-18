@@ -22,10 +22,24 @@ pub use sim_core::clip;
 
 /// Dimension de l'observation d'avant l'adversaire (checkpoints historiques, voir `docs/curriculum.md`).
 pub const OBS_DIM_V1: usize = 33;
-/// Dimension du vecteur d'observation : [`OBS_DIM_V1`] + bloc adversaire (position, vitesse, cap, présence).
+/// Dimension de l'observation d'avant la v2 : [`OBS_DIM_V1`] + bloc adversaire (position, vitesse, cap, présence).
 /// Le bloc adversaire est nul sans adversaire : un réseau dont les poids d'entrée de ce bloc sont nuls (checkpoint
 /// historique agrandi, voir `docs/curriculum.md`) se comporte exactement comme avant.
-pub const OBS_DIM: usize = OBS_DIM_V1 + 10;
+pub const OBS_DIM_V2: usize = OBS_DIM_V1 + 10;
+/// Nombre de boosts au sol en soccar (observés dans l'ordre fixe de l'arène).
+pub const N_PADS: usize = 34;
+/// Dimension du vecteur d'observation (v3) : [`OBS_DIM_V2`] + 34 boosts + boost adverse + dernière action (8) + état du flip (3).
+/// Les entrées ajoutées ont des poids nuls au chargement d'un réseau plus ancien (voir `docs/observation.md`).
+pub const OBS_DIM: usize = OBS_DIM_V2 + N_PADS + 1 + 8 + 3;
+/// Nombre d'actions de la table avant le frein à main au sol (checkpoints d'avant la v3).
+pub const N_ACTIONS_V1: usize = 78;
+/// Biais de sortie des actions ajoutées au chargement d'un réseau plus ancien : peu probables au départ.
+pub const NEW_ACTION_BIAS: f32 = -4.0;
+/// Récupération d'un boost : durée avant réapparition (s) d'une petite et d'une grosse.
+const PAD_COOLDOWN_SMALL: f32 = 4.0;
+const PAD_COOLDOWN_BIG: f32 = 10.0;
+/// Temps depuis le saut au-delà duquel l'observation sature (s).
+const JUMP_TIME_SCALE: f32 = 1.5;
 /// Fréquence de simulation (ticks par seconde).
 pub const TICKS_PER_SECOND: f32 = 120.0;
 
@@ -132,6 +146,13 @@ impl ActionTable {
                 }
             }
         }
+        // Frein à main au sol (virages glissés) : les 12 actions du sol, en fin de table pour ne pas décaler
+        // les indices des politiques existantes.
+        for i in 0..12 {
+            let mut c = controls[i];
+            c.handbrake = true;
+            controls.push(c);
+        }
         Self { controls }
     }
 
@@ -166,6 +187,12 @@ pub struct EnvConfig {
     pub min_spawn_dist: f32,
     /// Boost initial (0–100).
     pub start_boost: f32,
+    /// Boost initial tiré uniformément dans 0–100 (voiture et adversaire) à la place de `start_boost`, sauf
+    /// coups d'envoi (33, comme le vrai jeu) et drills.
+    pub random_start_boost: bool,
+    /// Poids `c` de la récompense de ramassage `c × (√boost_t − √boost_t−1)` (boost dans 0–1), sur les gains
+    /// seulement : aucune pénalité de dépense. 0 = désactivée. Hors drills.
+    pub boost_reward: f32,
     /// Récompense d'un but marqué dans le but adverse (la balle franchit le fond du terrain côté +Y).
     pub goal_reward: f32,
     /// Pénalité (valeur positive, soustraite) quand la balle entre dans le but de la voiture (+Y est le but visé).
@@ -226,6 +253,8 @@ impl Default for EnvConfig {
             approach_weight: 0.1,
             min_spawn_dist: 1000.0,
             start_boost: 33.0,
+            random_start_boost: false,
+            boost_reward: 0.0,
             goal_reward: 0.0,
             own_goal_penalty: 0.0,
             ball_speed_max: 0.0,
@@ -281,6 +310,8 @@ impl EnvConfig {
                 max_steps: 400,
                 opponent: Opponent::Static,
                 kickoff_prob: KICKOFF_PROB,
+                random_start_boost: true,
+                boost_reward: BOOST_REWARD,
                 ..scoring
             },
             _ => Self {
@@ -289,6 +320,8 @@ impl EnvConfig {
                 max_steps: 400,
                 opponent: Opponent::SelfPlay,
                 kickoff_prob: KICKOFF_PROB,
+                random_start_boost: true,
+                boost_reward: BOOST_REWARD,
                 // Somme nulle : but marqué +10, but encaissé −10 ; plus de prime au toucher (un comportement,
                 // pas un résultat) et seulement l'approche, faible.
                 own_goal_penalty: scoring.goal_reward,
@@ -321,6 +354,9 @@ impl EnvConfig {
 /// Part des épisodes de coup d'envoi aux paliers 5 et 6 (un kickoff dure ~55 décisions contre ~200 pour un épisode
 /// normal : 40 % des épisodes font ~15 % des pas).
 pub const KICKOFF_PROB: f32 = 0.4;
+/// Poids de la récompense de ramassage de boost aux paliers 5 et 6 : une grosse prise à vide vaut 0,2 (un
+/// toucher vaut 1 au palier 5), une petite prise à vide ≈ 0,07, une petite prise à 33 de boost ≈ 0,02.
+pub const BOOST_REWARD: f32 = 0.2;
 /// Durée maximale d'un kickoff (décisions, 6 s).
 pub const KICKOFF_MAX_STEPS: u32 = 90;
 /// Décisions jouées après le premier toucher (2 s) avant de juger le kickoff.
@@ -413,6 +449,29 @@ pub struct StepInfo {
     pub kickoff: Option<KickoffStats>,
 }
 
+/// Statistiques de boost de la voiture de l'agent (épisodes de match, hors drills), depuis la dernière reprise.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BoostReport {
+    /// Boosts ramassés (le ramassage a fait monter le boost de l'agent).
+    pub pickups_small: u64,
+    pub pickups_big: u64,
+    /// Somme des niveaux de boost (0–100) sur les décisions, et nombre de décisions.
+    pub boost_sum: f64,
+    pub steps: u64,
+    /// Décisions prises sans aucun boost.
+    pub empty_steps: u64,
+}
+
+impl BoostReport {
+    pub fn add(&mut self, o: &BoostReport) {
+        self.pickups_small += o.pickups_small;
+        self.pickups_big += o.pickups_big;
+        self.boost_sum += o.boost_sum;
+        self.steps += o.steps;
+        self.empty_steps += o.empty_steps;
+    }
+}
+
 /// Un environnement : une voiture bleue, une balle, un seul agent (et un adversaire orange selon le palier).
 pub struct Env {
     sim: Sim,
@@ -442,6 +501,10 @@ pub struct Env {
     /// Drill en cours (None en match) et son bonus ; compteurs de drill depuis la dernière reprise.
     drill: Option<(Drill, drill::EpisodeBonus)>,
     drill_report: DrillReport,
+    /// Boost de l'agent et état des pads à la décision précédente ; compteurs de boost depuis la dernière reprise.
+    prev_boost: f32,
+    prev_pads: Vec<bool>,
+    boost_report: BoostReport,
 }
 
 impl Env {
@@ -472,6 +535,9 @@ impl Env {
             clip_detail: None,
             drill: None,
             drill_report: DrillReport::default(),
+            prev_boost: 0.0,
+            prev_pads: Vec::new(),
+            boost_report: BoostReport::default(),
         };
         e.reset();
         Ok(e)
@@ -518,6 +584,11 @@ impl Env {
     }
 
     /// Compteurs de drill depuis le dernier appel (remis à zéro).
+    /// Reprend (et remet à zéro) les statistiques de boost.
+    pub fn take_boost_report(&mut self) -> BoostReport {
+        std::mem::take(&mut self.boost_report)
+    }
+
     pub fn take_drill_report(&mut self) -> DrillReport {
         std::mem::take(&mut self.drill_report)
     }
@@ -643,8 +714,9 @@ impl Env {
             }
         };
         let yaw = self.rng.range(-std::f32::consts::PI, std::f32::consts::PI);
+        let boost = self.start_boost();
         self.sim
-            .reset_car(self.car, car_pos, yaw, [0.0; 3], self.cfg.start_boost)
+            .reset_car(self.car, car_pos, yaw, [0.0; 3], boost)
             .expect("voiture connue");
         self.sim.reset_ball(ball_pos, ball_vel);
         self.sim.set_controls(self.car, Controls::default()).ok();
@@ -664,14 +736,34 @@ impl Env {
                     self.rng.range(-std::f32::consts::PI, std::f32::consts::PI),
                 ),
             };
+            let boost = self.start_boost();
             self.sim
-                .reset_car(opp, pos, yaw, [0.0; 3], self.cfg.start_boost)
+                .reset_car(opp, pos, yaw, [0.0; 3], boost)
                 .expect("voiture adverse connue");
             self.sim.set_controls(opp, Controls::default()).ok();
         }
         self.steps = 0;
         self.last_touch = self.sim.last_ball_touch_tick(self.car);
-        self.observe()
+        self.observe_synced()
+    }
+
+    /// Boost de départ d'un épisode de match : `start_boost`, ou tiré dans 0–100 si `random_start_boost`.
+    fn start_boost(&mut self) -> f32 {
+        if self.cfg.random_start_boost {
+            self.rng.range(0.0, 100.0)
+        } else {
+            self.cfg.start_boost
+        }
+    }
+
+    /// Observation de fin de reset : mémorise aussi le boost et les pads (référence de la récompense de ramassage).
+    fn observe_synced(&mut self) -> [f32; OBS_DIM] {
+        let s = self.sim.snapshot();
+        let me = car_index(&s, self.car);
+        self.prev_boost = s.cars[me].boost;
+        self.prev_pads = s.pads.iter().map(|p| p.active).collect();
+        let other = self.opp.map(|o| car_index(&s, o));
+        build_obs(&s, me, other, false)
     }
 
     /// Reset en drill : état de départ tiré par `scenarios` (drill uniforme parmi [`Drill::ALL`]). L'adversaire,
@@ -733,7 +825,7 @@ impl Env {
             ));
         }
         self.drill = Some((d, bonus));
-        self.observe()
+        self.observe_synced()
     }
 
     /// Reset en coup d'envoi : une des 5 positions officielles (tirée si `spawn` est `None`), l'adversaire en
@@ -803,7 +895,7 @@ impl Env {
             first_any: None,
             last_opp_touch: self.opp.and_then(|o| self.sim.last_ball_touch_tick(o)),
         });
-        self.observe()
+        self.observe_synced()
     }
 
     /// Action du fonceur scripté orange : cap vers la balle, gaz et boost à fond (les flips et le speed flip lui
@@ -923,6 +1015,9 @@ impl Env {
         let mut reward = self.cfg.approach_weight * toward.clamp(-1.0, 1.0);
         if touched {
             reward += self.cfg.touch_reward;
+        }
+        if !in_drill {
+            reward += self.boost_step(&snap, car_index(&snap, self.car));
         }
         let scored = self.sim.is_ball_scored();
         // But pour nous : la balle est au fond du terrain côté +Y (but orange) ; côté -Y, c'est contre son camp.
@@ -1066,6 +1161,41 @@ impl Env {
         }
     }
 
+    /// Récompense et statistiques de boost de cette décision (match seulement) : `c × (√b_t − √b_t−1)` sur les
+    /// gains, rien sur les pertes ; le ramassage est attribué à la pad inactive la plus proche (≤ 500 uu).
+    fn boost_step(&mut self, snap: &sim_core::Snapshot, me: usize) -> f32 {
+        let car = &snap.cars[me];
+        let (now, prev) = (car.boost, self.prev_boost);
+        let rep = &mut self.boost_report;
+        rep.steps += 1;
+        rep.boost_sum += f64::from(now);
+        rep.empty_steps += u64::from(now < 0.5);
+        let mut r = 0.0;
+        if now > prev + 0.01 {
+            r = self.cfg.boost_reward * ((now / 100.0).sqrt() - (prev / 100.0).sqrt());
+            let taken = snap
+                .pads
+                .iter()
+                .enumerate()
+                .filter(|(i, p)| !p.active && self.prev_pads.get(*i).copied().unwrap_or(false))
+                .map(|(_, p)| {
+                    let d = (p.pos[0] - car.pos[0]).hypot(p.pos[1] - car.pos[1]);
+                    (d, p.big)
+                })
+                .filter(|(d, _)| *d <= 500.0)
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            match taken {
+                Some((_, true)) => rep.pickups_big += 1,
+                Some((_, false)) => rep.pickups_small += 1,
+                None => {}
+            }
+        }
+        self.prev_boost = now;
+        self.prev_pads.clear();
+        self.prev_pads.extend(snap.pads.iter().map(|p| p.active));
+        r
+    }
+
     /// Action de la table qui roule vers l'avant avec boost et direction `steer` (-1 ou 1) ; sert aux tests
     /// et au benchmark (politique de référence).
     pub fn expert_action(&self, steer: f32) -> usize {
@@ -1129,6 +1259,42 @@ fn car_index(s: &sim_core::Snapshot, id: u32) -> usize {
         .expect("voiture connue")
 }
 
+/// État des 34 pads : 1 si active, sinon la part du temps de réapparition déjà écoulée (0 = vient d'être prise).
+/// Orange (`mirror`) : le pad `j` est celui qui occupe la place symétrique (x → -x, y → -y) de la pad `j` bleue.
+fn push_pads(v: &mut Vec<f32>, pads: &[sim_core::PadSnapshot], mirror: bool) {
+    if pads.len() != N_PADS {
+        v.extend([0.0; N_PADS]);
+        return;
+    }
+    let value = |p: &sim_core::PadSnapshot| {
+        if p.active {
+            1.0
+        } else {
+            let cd = if p.big {
+                PAD_COOLDOWN_BIG
+            } else {
+                PAD_COOLDOWN_SMALL
+            };
+            (1.0 - p.cooldown / cd).clamp(0.0, 1.0)
+        }
+    };
+    for (j, p) in pads.iter().enumerate() {
+        let src = if mirror {
+            pads.iter()
+                .min_by(|a, b| {
+                    let d = |q: &sim_core::PadSnapshot| {
+                        (q.pos[0] + p.pos[0]).powi(2) + (q.pos[1] + p.pos[1]).powi(2)
+                    };
+                    d(a).total_cmp(&d(b))
+                })
+                .unwrap_or(&pads[j])
+        } else {
+            p
+        };
+        v.push(value(src));
+    }
+}
+
 fn push3(v: &mut Vec<f32>, x: [f32; 3], sc: [f32; 3]) {
     v.extend((0..3).map(|k| x[k] / sc[k]));
 }
@@ -1180,6 +1346,16 @@ pub fn build_obs(
         push3(&mut v, m(d.forward), [1.0; 3]);
         v.push(1.0);
     }
+    v.resize(OBS_DIM_V2, 0.0);
+    push_pads(&mut v, &s.pads, mirror);
+    v.push(other.map_or(0.0, |j| s.cars[j].boost / 100.0));
+    v.extend(c.last_controls);
+    v.extend([
+        f32::from(u8::from(c.is_flipping)),
+        (c.air_time_since_jump / JUMP_TIME_SCALE).clamp(0.0, 1.0),
+        f32::from(c.wheels_contact) / 4.0,
+    ]);
+    debug_assert_eq!(v.len(), OBS_DIM);
     let mut o = [0.0f32; OBS_DIM];
     o[..v.len()].copy_from_slice(&v);
     o
@@ -1221,6 +1397,8 @@ pub struct VecStep {
     pub in_drill: Vec<bool>,
     /// Compteurs de drill (épisodes, mécaniques vues, bonus payés) de ce pas.
     pub drill_report: DrillReport,
+    /// Statistiques de boost (match) de ce pas.
+    pub boost_report: BoostReport,
 }
 
 struct Reply {
@@ -1235,6 +1413,7 @@ struct Reply {
     clips: Vec<Clip>,
     in_drill: Vec<bool>,
     drill_report: DrillReport,
+    boost_report: BoostReport,
 }
 
 enum Cmd {
@@ -1328,6 +1507,7 @@ impl VecEnv {
             out.clips.extend(r.clips);
             out.in_drill.extend(r.in_drill);
             out.drill_report.add(&r.drill_report);
+            out.boost_report.add(&r.boost_report);
         }
         out
     }
@@ -1437,6 +1617,7 @@ fn worker_loop(
             clips: Vec::new(),
             in_drill: Vec::new(),
             drill_report: DrillReport::default(),
+            boost_report: BoostReport::default(),
         };
         match cmd {
             Cmd::Stop => return,
@@ -1490,6 +1671,7 @@ fn worker_loop(
                     }
                     reply.mechanics.add(&e.take_mechanics());
                     reply.drill_report.add(&e.take_drill_report());
+                    reply.boost_report.add(&e.take_boost_report());
                     reply.clips.extend(e.take_clips());
                 }
             }
@@ -1515,8 +1697,10 @@ mod tests {
                 assert!((-1.0..=1.0).contains(&v));
             }
         }
-        // 12 actions au sol + 66 aériennes
-        assert_eq!(t.len(), 78);
+        // 12 actions au sol + 66 aériennes + 12 actions au sol avec frein à main
+        assert_eq!(t.len(), 90);
+        assert!((0..N_ACTIONS_V1).all(|i| (12..78).contains(&i) || !t.get(i).handbrake));
+        assert!((78..90).all(|i| t.get(i).handbrake && !t.get(i).jump));
     }
 
     #[test]
@@ -1780,7 +1964,7 @@ mod tests {
                 assert!(o.iter().all(|x| x.is_finite()), "palier {stage}");
             }
             let o = e.observe();
-            let present = o[OBS_DIM - 1];
+            let present = o[OBS_DIM_V2 - 1];
             assert_eq!(present, f32::from(u8::from(stage >= 5)), "palier {stage}");
             for _ in 0..40 {
                 let r = e.step_vs(40, Some(40));
@@ -1794,7 +1978,7 @@ mod tests {
     fn opponent_block_is_zero_without_opponent_and_view_is_mirrored() {
         assert!(setup());
         let mut e = Env::new(EnvConfig::for_stage(2), 4).unwrap();
-        assert!(e.observe()[OBS_DIM_V1..].iter().all(|x| *x == 0.0));
+        assert!(e.observe()[OBS_DIM_V1..OBS_DIM_V2].iter().all(|x| *x == 0.0));
         e.set_config(EnvConfig::for_stage(6));
         e.reset();
         let (a, b) = (e.observe(), e.observe_opponent());
@@ -2016,5 +2200,133 @@ mod tests {
                 .collect();
             println!("spawn {spawn}: {}", ts.join(" "));
         }
+    }
+
+    fn boost_cfg() -> EnvConfig {
+        EnvConfig {
+            end_on_touch: false,
+            approach_weight: 0.0,
+            touch_reward: 0.0,
+            boost_reward: BOOST_REWARD,
+            ..EnvConfig::default()
+        }
+    }
+
+    #[test]
+    fn observation_v3_layout_pads_previous_action_and_flip_state() {
+        assert!(setup());
+        let mut e = Env::new(boost_cfg(), 4).unwrap();
+        e.reset();
+        let a = e.expert_action(1.0);
+        e.step(a);
+        let o = e.observe();
+        assert_eq!(o.len(), OBS_DIM);
+        let pads = &o[OBS_DIM_V2..OBS_DIM_V2 + N_PADS];
+        assert!(pads.iter().all(|p| (0.0..=1.0).contains(p)));
+        // Pas d'adversaire : boost adverse nul ; dernière action = contrôles de l'action jouée.
+        assert_eq!(o[OBS_DIM_V2 + N_PADS], 0.0);
+        let c = ActionTable::rlgym().get(a);
+        let prev = &o[OBS_DIM_V2 + N_PADS + 1..OBS_DIM_V2 + N_PADS + 9];
+        assert_eq!(prev[0], c.throttle);
+        assert_eq!(prev[1], c.steer);
+        assert_eq!((prev[5], prev[6], prev[7]), (0.0, 1.0, 0.0));
+        // Au sol : 4 roues, pas de dodge.
+        let flip = &o[OBS_DIM - 3..];
+        assert_eq!((flip[0], flip[2]), (0.0, 1.0));
+    }
+
+    #[test]
+    fn orange_view_of_pads_is_mirrored() {
+        assert!(setup());
+        let mut e = Env::new(EnvConfig::for_stage(5), 5).unwrap();
+        e.reset_kickoff(Some(0));
+        // Vide le premier pad côté bleu : la vue orange le voit à la place symétrique.
+        let s = e.sim.snapshot();
+        let k = (0..N_PADS).find(|&i| s.pads[i].pos[1] < -3000.0).unwrap();
+        let mut st = s.clone();
+        st.pads[k].active = false;
+        st.pads[k].cooldown = 2.0;
+        let blue = build_obs(&st, 0, Some(1), false);
+        let orange = build_obs(&st, 1, Some(0), true);
+        let m = (0..N_PADS)
+            .find(|&j| {
+                (st.pads[j].pos[0] + st.pads[k].pos[0]).abs() < 1.0
+                    && (st.pads[j].pos[1] + st.pads[k].pos[1]).abs() < 1.0
+            })
+            .unwrap();
+        assert!(blue[OBS_DIM_V2 + k] < 1.0);
+        assert!(orange[OBS_DIM_V2 + m] < 1.0);
+        assert_eq!(
+            orange
+                .iter()
+                .skip(OBS_DIM_V2)
+                .take(N_PADS)
+                .filter(|v| **v < 1.0)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn pickup_pays_on_gains_only_and_counts_the_pad_size() {
+        assert!(setup());
+        let mut e = Env::new(boost_cfg(), 6).unwrap();
+        e.reset();
+        e.take_boost_report();
+        let pads = e.sim.pads();
+        let small = pads.iter().find(|p| !p.big).unwrap().pos;
+        e.sim
+            .place_car(e.car, [small[0], small[1], 17.0], 0.0, 0.0)
+            .unwrap();
+        e.sim.set_controls(e.car, Controls::default()).ok();
+        e.observe_synced();
+        // Une décision à l'arrêt sur la pad vide : gain de 12 (√0,12 × c).
+        let idle = (0..e.actions.len())
+            .find(|&i| {
+                let c = e.actions.get(i);
+                c.throttle == 0.0
+                    && c.steer == 0.0
+                    && !c.boost
+                    && !c.jump
+                    && c.pitch == 0.0
+                    && c.roll == 0.0
+            })
+            .unwrap();
+        let r = e.step(idle).reward;
+        let rep = e.take_boost_report();
+        assert!((r - BOOST_REWARD * 0.12f32.sqrt()).abs() < 1e-3, "{r}");
+        assert_eq!((rep.pickups_small, rep.pickups_big), (1, 0), "{rep:?}");
+        // Dépenser du boost ne coûte rien.
+        e.sim
+            .place_car(e.car, [0.0, -2000.0, 17.0], 0.0, 80.0)
+            .unwrap();
+        e.observe_synced();
+        let a = e.expert_action(0.0);
+        for _ in 0..5 {
+            assert!(e.step(a).reward >= 0.0);
+        }
+        let rep = e.take_boost_report();
+        assert_eq!(rep.empty_steps, 0);
+        assert!(rep.boost_sum / (rep.steps as f64) < 80.0);
+    }
+
+    #[test]
+    fn random_start_boost_applies_to_matches_but_not_kickoffs() {
+        assert!(setup());
+        let cfg = EnvConfig {
+            random_start_boost: true,
+            ..EnvConfig::for_stage(2)
+        };
+        let mut e = Env::new(cfg, 8).unwrap();
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..30 {
+            e.reset();
+            let b = e.sim.snapshot().cars[0].boost;
+            assert!((0.0..=100.0).contains(&b));
+            seen.insert(b as i32);
+        }
+        assert!(seen.len() > 10, "boost de départ non varié : {seen:?}");
+        e.reset_kickoff(Some(0));
+        assert!((e.sim.snapshot().cars[0].boost - 33.0).abs() < 0.5);
     }
 }

@@ -52,6 +52,12 @@ pub struct Metrics {
     pub drill_episodes: [u64; scenarios::DRILL_COUNT],
     /// Verdicts du drill de récupération (ordre de `rl_env::drill::RecoveryOutcome::ALL`).
     pub drill_recovery: [u64; 4],
+    /// Boosts ramassés par l'agent (petits / gros) depuis le démarrage ; niveau moyen (0–100) et part du temps
+    /// à 0 de boost, sur la dernière itération avec des décisions de match.
+    pub boost_pickups_small: u64,
+    pub boost_pickups_big: u64,
+    pub boost_mean: f64,
+    pub boost_empty_fraction: f64,
     /// Clips enregistrés depuis le démarrage (`kind="known"` : mécanique du catalogue ; `novel` : à venir).
     pub clips_saved_known: u64,
     pub goals_scored_total: u64,
@@ -277,6 +283,21 @@ impl Metrics {
                 self.drill_recovery[o.index()]
             );
         }
+        let _ = writeln!(s, "# TYPE trainer_boost_pickups_total counter");
+        for (size, n) in [
+            ("small", self.boost_pickups_small),
+            ("big", self.boost_pickups_big),
+        ] {
+            let _ = writeln!(s, "trainer_boost_pickups_total{{size=\"{size}\"}} {n}");
+        }
+        let _ = writeln!(s, "# TYPE trainer_boost_mean gauge");
+        let _ = writeln!(s, "trainer_boost_mean {}", self.boost_mean);
+        let _ = writeln!(s, "# TYPE trainer_boost_empty_fraction gauge");
+        let _ = writeln!(
+            s,
+            "trainer_boost_empty_fraction {}",
+            self.boost_empty_fraction
+        );
         let _ = writeln!(s, "# TYPE trainer_clips_saved_total counter");
         for (kind, n) in [("known", self.clips_saved_known), ("novel", 0)] {
             let _ = writeln!(s, "trainer_clips_saved_total{{kind=\"{kind}\"}} {n}");
@@ -525,6 +546,8 @@ mod tests {
                 "opponent=\"pool\"",
                 "direction=\"up\"",
                 "direction=\"down\"",
+                "size=\"small\"",
+                "size=\"big\"",
                 "le=\"",
             ];
             assert!(ok.iter().any(|k| l.contains(k)), "{l}");
