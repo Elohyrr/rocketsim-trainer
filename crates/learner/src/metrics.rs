@@ -266,6 +266,17 @@ pub fn count_series(text: &str) -> usize {
         .count()
 }
 
+/// Page web des clips (lecteur three.js), servie sur `/` et `/index.html`.
+const INDEX_HTML: &str = include_str!("../web/index.html");
+
+/// `GET /` ou `GET /index.html` (avec ou sans paramètres).
+fn is_page(req: &str) -> bool {
+    let path = req
+        .strip_prefix("GET ")
+        .and_then(|r| r.split([' ', '?', '\r', '\n']).next());
+    matches!(path, Some("/" | "/index.html"))
+}
+
 /// Sert `/metrics` sur `addr` dans un thread d'arrière-plan. Retourne l'adresse réellement liée.
 pub fn serve(addr: &str, m: Arc<Mutex<Metrics>>) -> std::io::Result<std::net::SocketAddr> {
     serve_with_dir(addr, m, None)
@@ -273,7 +284,8 @@ pub fn serve(addr: &str, m: Arc<Mutex<Metrics>>) -> std::io::Result<std::net::So
 
 /// Comme [`serve`], et sert en lecture seule la dernière politique du dossier `dir` :
 /// `GET /policy.safetensors` et `GET /policy.json` (palier, taille, date ; calculé à la volée), puis les clips
-/// rejouables de `dir/clips` : `GET /clips` (liste JSON) et `GET /clips/<id>` (voir `clips.rs`).
+/// rejouables de `dir/clips` : `GET /clips` (liste JSON), `GET /clips/<id>` et `GET /clips/<id>/trajectory`
+/// (voir `clips.rs`), et la page web des clips sur `/`.
 pub fn serve_with_dir(
     addr: &str,
     m: Arc<Mutex<Metrics>>,
@@ -302,6 +314,8 @@ pub fn serve_with_dir(
                 let mut body = m.lock().map(|m| m.render()).unwrap_or_default();
                 let _ = writeln!(body, "# TYPE process_uptime_seconds gauge\nprocess_uptime_seconds {}", started.elapsed().as_secs_f64());
                 ("200 OK", "text/plain; version=0.0.4", body.into_bytes())
+            } else if is_page(&req) {
+                ("200 OK", "text/html; charset=utf-8", INDEX_HTML.as_bytes().to_vec())
             } else if req.starts_with("GET /healthz") {
                 ("200 OK", "text/plain", b"ok\n".to_vec())
             } else if req.starts_with("GET /policy.safetensors") {
@@ -506,6 +520,14 @@ mod tests {
             "{j}"
         );
         assert!(get(addr, "/etc/passwd").starts_with(b"HTTP/1.1 404"));
+        for p in ["/", "/index.html", "/?x=1"] {
+            let b = String::from_utf8(get(addr, p)).unwrap();
+            assert!(
+                b.starts_with("HTTP/1.1 200") && b.contains("text/html"),
+                "{p}"
+            );
+            assert!(b.contains("three@0.160.0") && b.contains("clips/"), "{p}");
+        }
         assert!(get(addr, "/metrics").starts_with(b"HTTP/1.1 200"));
         std::fs::remove_dir_all(&dir).ok();
     }
