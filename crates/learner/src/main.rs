@@ -3,12 +3,14 @@
 //! learner --eval-kickoff N --policy policy.safetensors [--idle] : évalue les coups d'envoi (voir `eval.rs`).
 //! learner [--minutes M] [--envs N] [--threads T] [--out DIR] [--metrics ADDR] [--resume]
 //!         [--checkpoint-minutes N] [--stage S] [--init-actor policy.safetensors [--critic-warmup N]]
+//!         [--elo-minutes N] [--pool-every N]
 //! `--minutes 0` = sans limite (mode cluster). `--stage S` fige le palier (pas de promotion automatique).
 //! Variables : `JELLYFIN_URL`, `JELLYFIN_API_KEY` (pause D6, désactivée sans clé), `JELLYFIN_RESUME_MINUTES`
 //! (défaut 10), `JELLYFIN_POLL_SECONDS` (défaut 30). SIGTERM/SIGINT : checkpoint final puis sortie.
 //! Clips : une mécanique reconnue en match enregistre un clip rejouable dans `<out>/clips` (anneau borné :
 //! `--clips-max N` (200), `--clips-mb M` (200) ; `--no-clips` pour couper), servi par `GET /clips` et `GET /clips/<id>`.
-//! Le dossier `--out` reçoit `checkpoint.mpk`, `policy.safetensors`, `stage` et `opponent-obs-v2`. Le serveur
+//! Le dossier `--out` reçoit `checkpoint.mpk`, `policy.safetensors`, `stage`, `opponent-obs-v2`, `explore.json`,
+//! `elo.json`, `pool/` (anciennes politiques du self-play) et `refs/` (références d'Elo : `docs/self-play.md`). Le serveur
 //! `--metrics` sert aussi en lecture seule `GET /policy.safetensors` et `GET /policy.json` (palier, taille, date).
 //! Reprise d'un checkpoint sans `opponent-obs-v2` (entraîné avant la correction de l'ordre des voitures) : les poids
 //! d'entrée du bloc adversaire sont remis à zéro une fois (voir `docs/curriculum.md`).
@@ -23,10 +25,12 @@ use std::time::{Duration, Instant};
 use learner::best::{self, Best, OPPONENT_OBS_MARKER};
 use learner::clips::{ClipStore, DEFAULT_MAX_CLIPS};
 use learner::curriculum::{Curriculum, IterResult, Move};
+use learner::elo;
 use learner::explore::{Explore, Guard, GuardEvent};
 use learner::jellyfin::Jellyfin;
 use learner::metrics::{Metrics, serve_with_dir};
 use learner::pause::PauseGate;
+use learner::pool::Pool;
 use learner::ppo::{PpoConfig, Trainer};
 use rl_env::EnvConfig;
 
@@ -84,6 +88,17 @@ fn spawn_watcher() -> Option<Arc<AtomicBool>> {
         every.as_secs()
     );
     Some(playing)
+}
+
+fn fmt_ref(r: Option<(f64, f64)>) -> String {
+    r.map_or("—".into(), |(p, e)| {
+        format!("{:.0} % → {e:.0}", 100.0 * p)
+    })
+}
+
+/// Palier courant du curriculum (peut avoir changé après la mesure d'Elo).
+fn tr_stage_now(c: &Mutex<Curriculum>, fallback: u32) -> u32 {
+    c.lock().map_or(fallback, |c| c.stage())
 }
 
 struct Saver<'a> {
@@ -159,7 +174,13 @@ fn main() {
     }
     let pinned: Option<u32> = arg("--stage").and_then(|s| s.parse().ok());
     let curriculum = Mutex::new(match pinned {
-        Some(s) => Curriculum::new(s),
+        Some(s) => {
+            let mut c = Curriculum::new(s);
+            if resume {
+                c.elo = learner::elo::EloState::load(&out);
+            }
+            c
+        }
         None if resume => Curriculum::load(&out),
         None => Curriculum::new(0),
     });
@@ -260,7 +281,6 @@ fn main() {
             }
         }
     }
-    eprintln!("palier de curriculum : {stage}");
     // Points de restauration : l'état relu (avant toute itération) et, s'il n'y en a pas, le « meilleur » du palier.
     let mut best_by_stage = Best::load(&out);
     if loaded {
@@ -275,6 +295,25 @@ fn main() {
     }
     let mut guard = Guard::default();
     let mut backoffs = 0u64;
+    // Pool d'anciennes politiques : rechargé du disque (il survit aux redémarrages, comme le checkpoint).
+    tr.pool = Pool::load(&out.join("pool"), &tr.policy_snapshot(), &tr.plain_device());
+    if let Some(n) = arg("--pool-every").and_then(|s| s.parse::<usize>().ok()) {
+        tr.pool.every = n.max(1);
+    }
+    eprintln!(
+        "palier de curriculum : {stage}, pool : {} anciens",
+        tr.pool.len()
+    );
+    // Elo : première mesure dès qu'on est au palier 5 ou 6, puis toutes les `--elo-minutes` (30 par défaut).
+    let elo_every = Duration::from_secs_f64(
+        arg("--elo-minutes")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30.0f64)
+            * 60.0,
+    );
+    let mut elo_last: Option<Instant> = None;
+    let (mut stage_up, mut stage_down) = (0u64, 0u64);
+    let mut sp_goals = [[0u64; 2]; 2];
 
     let t0 = Instant::now();
     let limit = (minutes > 0.0).then(|| Duration::from_secs_f64(minutes * 60.0));
@@ -365,16 +404,37 @@ fn main() {
             };
             (c.stage(), p, c.goal_rate())
         };
+        let mut promoted = promoted;
         if let Some(mv) = promoted {
             match mv {
-                Move::Up(n) => eprintln!("promotion : palier {n}"),
-                Move::Down(n) => eprintln!("régression : palier {n} (taux de but effondré)"),
+                Move::Up(n) => {
+                    stage_up += 1;
+                    eprintln!("promotion : palier {n}");
+                    if n == 6 {
+                        // Référence figée « palier 5 » : la politique qui vient de le réussir.
+                        let dir = elo::refs_dir(&out);
+                        let ok = std::fs::create_dir_all(&dir).is_ok()
+                            && Pool::write_net(
+                                &tr.policy_snapshot(),
+                                &dir.join("stage5.safetensors"),
+                            )
+                            .is_ok();
+                        if ok && let Ok(mut c) = curriculum.lock() {
+                            c.elo.rating_stage5 = None;
+                        }
+                    }
+                }
+                Move::Down(n) => {
+                    stage_down += 1;
+                    eprintln!("régression : palier {n} (taux de but effondré)");
+                }
             }
             tr.set_env_config(&env_cfg(mv.stage()));
             guard.reset();
         }
-        // Garde-fou d'exploration et meilleur état du palier (paliers jugés sur le taux de but).
-        if cur_stage >= 2 && promoted.is_none() {
+        // Garde-fou d'exploration et meilleur état du palier (paliers 2 à 5, jugés sur le taux de but ; le palier 6
+        // est jugé sur l'Elo, voir plus bas : son taux de but est symétrique).
+        if (2..elo::SELFPLAY_STAGE).contains(&cur_stage) && promoted.is_none() {
             match guard.observe(s.goals, s.episodes, tr.explore.scale < 1.0) {
                 Some(GuardEvent::BackOff { recent, reference }) => {
                     tr.explore.back_off();
@@ -407,6 +467,66 @@ fn main() {
                     Err(e) => eprintln!("{name} : {e}"),
                 }
             }
+        }
+        if cur_stage >= 5 && elo_last.is_none_or(|t| t.elapsed() >= elo_every) {
+            let mut st = curriculum.lock().expect("curriculum").elo.clone();
+            let best_before = st.best;
+            let te = Instant::now();
+            match elo::measure(&tr.policy_snapshot(), &mut st, &out, &tr.plain_device()) {
+                Ok(rep) => {
+                    let mv = {
+                        let mut c = curriculum.lock().expect("curriculum");
+                        c.elo = st.clone();
+                        if pinned.is_none() {
+                            c.after_elo()
+                        } else {
+                            None
+                        }
+                    };
+                    eprintln!(
+                        "elo {:.0} (lissé {:.0}, record {:.0}) : fonceur {}, palier 5 {}, ancien {} ; {:.0} s",
+                        rep.elo,
+                        st.ema.unwrap_or(rep.elo),
+                        st.best,
+                        fmt_ref(rep.per_ref[0]),
+                        fmt_ref(rep.per_ref[1]),
+                        fmt_ref(rep.per_ref[2]),
+                        te.elapsed().as_secs_f64()
+                    );
+                    if let Ok(mut m) = metrics.lock() {
+                        m.elo = st.ema.unwrap_or(rep.elo);
+                        m.elo_best = st.best;
+                        for (i, r) in rep.per_ref.iter().enumerate() {
+                            (m.elo_winrate[i], m.elo_vs[i]) = r.unwrap_or((0.0, 0.0));
+                        }
+                        m.elo_matches_total += u64::from(rep.matches);
+                    }
+                    // Palier 6 : le « meilleur état » est celui du record d'Elo (taux de but inconnu : −1).
+                    if cur_stage == elo::SELFPLAY_STAGE && st.best > best_before {
+                        let name = format!("best-stage-{cur_stage}");
+                        match best::snapshot(&tr, &out, &name, cur_stage, -1.0) {
+                            Ok(_) => eprintln!(
+                                "meilleur état du palier {cur_stage} : Elo {:.0} → {name}",
+                                st.best
+                            ),
+                            Err(e) => eprintln!("{name} : {e}"),
+                        }
+                    }
+                    if let Some(mv) = mv {
+                        stage_down += 1;
+                        guard.reset();
+                        eprintln!(
+                            "régression : palier {} (Elo en baisse sur {} mesures)",
+                            mv.stage(),
+                            elo::LOW_STREAK
+                        );
+                        tr.set_env_config(&env_cfg(mv.stage()));
+                        promoted = Some(mv);
+                    }
+                }
+                Err(e) => eprintln!("mesure d'Elo en échec : {e}"),
+            }
+            elo_last = Some(Instant::now());
         }
         println!(
             "{it} {cur_stage} {steps} {:.0} {:.3} {:.1} {:.2} {:.2} {} {} {:.3} {:.4} {:.2} {:.2} {} {} {} {:.2} {:.0} {:.4} {:.2e}",
@@ -458,7 +578,17 @@ fn main() {
                 m.kickoff_first_touch_seconds = s.kick_touch_s_sum / s.kick_touched as f64;
                 m.kickoff_touch_speed = s.kick_speed_sum / s.kick_touched as f64;
             }
-            m.curriculum_stage = cur_stage;
+            m.curriculum_stage = tr_stage_now(&curriculum, cur_stage);
+            m.pool_size = tr.pool.len() as u64;
+            m.pool_snapshots_total = tr.pool.snapshots_taken;
+            sp_goals[0][0] += s.cur_goals;
+            sp_goals[0][1] += s.cur_conceded;
+            sp_goals[1][0] += s.pool_goals;
+            sp_goals[1][1] += s.pool_conceded;
+            m.selfplay_goals = sp_goals;
+            m.stage_up_total = stage_up;
+            m.stage_down_total = stage_down;
+            m.elo_age_seconds = elo_last.map_or(0.0, |t| t.elapsed().as_secs_f64());
             m.observe_iteration(dt);
             m.checkpoint_age_seconds = saver_last.elapsed().as_secs_f64();
         }

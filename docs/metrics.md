@@ -27,9 +27,16 @@ Règles : labels à valeurs bornées (énumérations fixes), jamais d'identifian
 | `trainer_kickoff_touch_speed` | gauge (vitesse moyenne au contact, uu/s) | — | 1 |
 | `trainer_mechanic_total` | counter | `mechanic` ∈ catalogue fermé (12), `context` = match\|drill | 24 |
 | `trainer_unrecognized_sequences_total` | counter | — | 1 |
+| `trainer_elo`, `trainer_elo_best`, `trainer_elo_age_seconds` (self-play, `docs/self-play.md`) | gauge | — | 3 |
+| `trainer_elo_matches_total` | counter | — | 1 |
+| `trainer_elo_vs`, `trainer_elo_winrate` | gauge | `ref` = charger\|stage5\|best | 6 |
+| `trainer_pool_size` | gauge | — | 1 |
+| `trainer_pool_snapshots_total` | counter | — | 1 |
+| `trainer_selfplay_goals_total` | counter | `opponent` = current\|pool, `side` = scored\|conceded | 4 |
+| `trainer_stage_changes_total` | counter | `direction` = up\|down | 2 |
 | `process_*` (RSS, CPU) | gauge/counter | — | ≈ 6 |
 
-Total estimé : ≈ 87 séries. Taux de kickoffs gagnés : `rate(trainer_kickoffs_total{outcome="won"}[15m]) / sum(rate(trainer_kickoffs_total[15m]))`. Catalogue `mechanic` (détecteur par tick, `docs/mechanics.md`) : `touch`, `aerial_touch`, `air_dribble`, `flip_reset`,
+Total estimé : ≈ 107 séries. Taux de kickoffs gagnés : `rate(trainer_kickoffs_total{outcome="won"}[15m]) / sum(rate(trainer_kickoffs_total[15m]))`. Catalogue `mechanic` (détecteur par tick, `docs/mechanics.md`) : `touch`, `aerial_touch`, `air_dribble`, `flip_reset`,
 `ceiling_shot`, `wall_shot`, `double_touch`, `flick`, `dribble`, `speed_flip`, `wave_dash`, `half_flip`. La série `drill`
 reste à 0 tant qu'il n'y a pas de drills.
 

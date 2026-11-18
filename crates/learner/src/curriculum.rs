@@ -5,9 +5,17 @@
 //! (≥ 80 %) sur les `WINDOW` dernières itérations ; régression d'un palier si le taux de but s'effondre
 //! (< 10 %) après une période de grâce passée au palier (`grace`, plus longue avec adversaire) ; après une
 //! régression, pas de promotion avant `COOLDOWN` itérations. Le palier est persisté dans `<out>/stage`.
+//!
+//! Palier 6 (self-play) : le taux de but y est symétrique par construction (contre un adversaire qui défend, il
+//! s'effondre sans que le niveau baisse : 13 allers-retours 5 ↔ 6 en 5 h 30). Il n'y est plus un critère de
+//! régression : le maintien se juge sur l'Elo (`elo.rs`), régression seulement après `LOW_STREAK` mesures de suite
+//! sous le record − `DROP` (hystérésis), puis `COOLDOWN_SELFPLAY` itérations sans promotion. La promotion 5 → 6
+//! exige en plus un Elo sans effondrement.
 
 use std::collections::VecDeque;
 use std::path::Path;
+
+use crate::elo::EloState;
 
 pub const LAST_STAGE: u32 = 6;
 const WINDOW: usize = 10;
@@ -24,6 +32,8 @@ const FIRST_OPPONENT_STAGE: u32 = 5;
 /// Itérations sans promotion après une régression : le palier inférieur est réentraîné avant de retenter
 /// (sinon promu en 10 itérations puis rétrogradé, en boucle).
 const COOLDOWN: usize = 200;
+/// Délai après une régression du palier 6 (Elo) : le palier 5 est réentraîné ~1 h avant de retenter.
+const COOLDOWN_SELFPLAY: usize = 1000;
 /// Premier palier jugé sur le taux de but.
 const FIRST_GOAL_STAGE: u32 = 2;
 /// Premier palier où une régression est possible (on ne redescend jamais sous le palier 2).
@@ -59,6 +69,8 @@ pub struct Curriculum {
     iters_at_stage: usize,
     /// Itérations restantes sans promotion possible (après une régression).
     cooldown: usize,
+    /// Elo suivi (mesuré toutes les 30 min aux paliers 5 et 6), persisté dans `<out>/elo.json`.
+    pub elo: EloState,
 }
 
 /// Période de grâce avant régression au palier `stage`.
@@ -77,6 +89,7 @@ impl Curriculum {
             recent: VecDeque::new(),
             iters_at_stage: 0,
             cooldown: 0,
+            elo: EloState::default(),
         }
     }
 
@@ -119,13 +132,17 @@ impl Curriculum {
             }
             return None;
         }
-        if full && self.cooldown == 0 && self.stage < LAST_STAGE && self.goal_rate() >= PROMOTE_GOAL
+        if full
+            && self.cooldown == 0
+            && self.stage < LAST_STAGE
+            && self.goal_rate() >= PROMOTE_GOAL
+            && (self.stage + 1 < LAST_STAGE || self.elo.healthy())
         {
             self.switch(self.stage + 1);
             return Some(Move::Up(self.stage));
         }
         if full
-            && self.stage >= FIRST_REGRESS_STAGE
+            && (FIRST_REGRESS_STAGE..LAST_STAGE).contains(&self.stage)
             && self.iters_at_stage >= grace(self.stage)
             && self.goal_rate() < REGRESS_GOAL
         {
@@ -136,15 +153,30 @@ impl Curriculum {
         None
     }
 
+    /// Fin d'une mesure d'Elo (déjà enregistrée dans `self.elo`) : au palier 6, régression vers le palier 5 si
+    /// le niveau a chuté de façon répétée.
+    pub fn after_elo(&mut self) -> Option<Move> {
+        if self.stage == LAST_STAGE && self.elo.regressed() {
+            self.switch(FIRST_OPPONENT_STAGE);
+            self.cooldown = COOLDOWN_SELFPLAY;
+            self.elo.reset_streak();
+            return Some(Move::Down(self.stage));
+        }
+        None
+    }
+
     pub fn load(dir: &Path) -> Self {
         let stage = std::fs::read_to_string(dir.join("stage"))
             .ok()
             .and_then(|s| s.trim().parse().ok())
             .unwrap_or(0);
-        Self::new(stage)
+        let mut c = Self::new(stage);
+        c.elo = EloState::load(dir);
+        c
     }
 
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
+        self.elo.save(dir)?;
         std::fs::write(dir.join("stage"), format!("{}\n", self.stage))
     }
 }
@@ -233,6 +265,44 @@ mod tests {
             assert_eq!(d.observe(goals(100)), None);
         }
         assert_eq!(d.observe(goals(100)), Some(Move::Up(5)));
+    }
+
+    #[test]
+    fn selfplay_stage_ignores_goal_rate_and_regresses_on_repeated_elo_drops() {
+        let mut c = Curriculum::new(LAST_STAGE);
+        for _ in 0..GRACE_OPPONENT * 3 {
+            assert_eq!(
+                c.observe(goals(0)),
+                None,
+                "le taux de but ne rétrograde plus"
+            );
+        }
+        c.elo.observe(1000.0);
+        c.elo.observe(600.0);
+        assert_eq!(c.after_elo(), None, "une mesure basse ne suffit pas");
+        c.elo.observe(600.0);
+        assert_eq!(c.after_elo(), Some(Move::Down(5)));
+        assert_eq!(c.stage(), 5);
+        // Délai long avant de retenter le palier 6, même avec un taux de but parfait.
+        for _ in 0..COOLDOWN_SELFPLAY - 1 {
+            assert_eq!(c.observe(goals(100)), None);
+        }
+    }
+
+    #[test]
+    fn promotion_to_selfplay_needs_a_healthy_elo() {
+        let mut c = Curriculum::new(5);
+        c.elo.observe(1000.0);
+        c.elo.observe(600.0);
+        assert!(!c.elo.healthy());
+        for _ in 0..50 {
+            assert_eq!(c.observe(goals(100)), None);
+        }
+        let mut ok = Curriculum::new(5);
+        for _ in 0..WINDOW - 1 {
+            ok.observe(goals(100));
+        }
+        assert_eq!(ok.observe(goals(100)), Some(Move::Up(6)));
     }
 
     #[test]

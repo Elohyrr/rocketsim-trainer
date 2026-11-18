@@ -60,6 +60,23 @@ pub struct Metrics {
     /// au moins un kickoff touché (0 tant qu'il n'y en a pas eu).
     pub kickoff_first_touch_seconds: f64,
     pub kickoff_touch_speed: f64,
+    /// Self-play solide (`docs/self-play.md`) : Elo lissé suivi par le curriculum et son record ; Elo estimé et taux
+    /// de victoire contre chaque référence (`elo::REFS`, 0 tant que non mesuré) ; matchs d'évaluation joués ;
+    /// secondes depuis la dernière mesure (0 tant qu'il n'y en a pas eu).
+    pub elo: f64,
+    pub elo_best: f64,
+    pub elo_vs: [f64; 3],
+    pub elo_winrate: [f64; 3],
+    pub elo_matches_total: u64,
+    pub elo_age_seconds: f64,
+    /// Pool d'anciennes politiques : taille, instantanés pris depuis le démarrage.
+    pub pool_size: u64,
+    pub pool_snapshots_total: u64,
+    /// Buts du self-play contre la copie gelée (`[0]`) et contre le pool (`[1]`) : `[marqués, encaissés]`.
+    pub selfplay_goals: [[u64; 2]; 2],
+    /// Changements de palier depuis le démarrage : promotions, régressions.
+    pub stage_up_total: u64,
+    pub stage_down_total: u64,
 }
 
 impl Metrics {
@@ -131,6 +148,48 @@ impl Metrics {
             "trainer_kickoff_touch_speed",
             "gauge",
             self.kickoff_touch_speed,
+        );
+        g("trainer_elo", "gauge", self.elo);
+        g("trainer_elo_best", "gauge", self.elo_best);
+        g(
+            "trainer_elo_matches_total",
+            "counter",
+            self.elo_matches_total as f64,
+        );
+        g("trainer_elo_age_seconds", "gauge", self.elo_age_seconds);
+        g("trainer_pool_size", "gauge", self.pool_size as f64);
+        g(
+            "trainer_pool_snapshots_total",
+            "counter",
+            self.pool_snapshots_total as f64,
+        );
+        let _ = writeln!(s, "# TYPE trainer_elo_vs gauge");
+        for (r, v) in crate::elo::REFS.iter().zip(self.elo_vs) {
+            let _ = writeln!(s, "trainer_elo_vs{{ref=\"{r}\"}} {v}");
+        }
+        let _ = writeln!(s, "# TYPE trainer_elo_winrate gauge");
+        for (r, v) in crate::elo::REFS.iter().zip(self.elo_winrate) {
+            let _ = writeln!(s, "trainer_elo_winrate{{ref=\"{r}\"}} {v}");
+        }
+        let _ = writeln!(s, "# TYPE trainer_selfplay_goals_total counter");
+        for (o, g) in ["current", "pool"].iter().zip(self.selfplay_goals) {
+            for (side, v) in ["scored", "conceded"].iter().zip(g) {
+                let _ = writeln!(
+                    s,
+                    "trainer_selfplay_goals_total{{opponent=\"{o}\",side=\"{side}\"}} {v}"
+                );
+            }
+        }
+        let _ = writeln!(s, "# TYPE trainer_stage_changes_total counter");
+        let _ = writeln!(
+            s,
+            "trainer_stage_changes_total{{direction=\"up\"}} {}",
+            self.stage_up_total
+        );
+        let _ = writeln!(
+            s,
+            "trainer_stage_changes_total{{direction=\"down\"}} {}",
+            self.stage_down_total
         );
         let _ = writeln!(s, "# TYPE trainer_checkpoints_total counter");
         let _ = writeln!(
@@ -333,6 +392,23 @@ mod tests {
     }
 
     #[test]
+    fn selfplay_series_are_exposed() {
+        let m = Metrics {
+            elo: 1042.5,
+            pool_size: 7,
+            elo_vs: [1100.0, 1000.0, 1040.0],
+            selfplay_goals: [[5, 4], [3, 2]],
+            ..Default::default()
+        };
+        let t = m.render();
+        assert!(t.contains("trainer_elo 1042.5"));
+        assert!(t.contains("trainer_pool_size 7"));
+        assert!(t.contains("trainer_elo_vs{ref=\"stage5\"} 1000"));
+        assert!(t.contains("trainer_selfplay_goals_total{opponent=\"pool\",side=\"conceded\"} 2"));
+        assert!(t.contains("trainer_stage_changes_total{direction=\"down\"} 0"));
+    }
+
+    #[test]
     fn labels_are_from_closed_enums() {
         let t = Metrics::default().render();
         for l in t.lines().filter(|l| l.contains('{')) {
@@ -350,6 +426,13 @@ mod tests {
                 "outcome=\"neutral\"",
                 "kind=\"known\"",
                 "kind=\"novel\"",
+                "ref=\"charger\"",
+                "ref=\"stage5\"",
+                "ref=\"best\"",
+                "opponent=\"current\"",
+                "opponent=\"pool\"",
+                "direction=\"up\"",
+                "direction=\"down\"",
                 "le=\"",
             ];
             assert!(ok.iter().any(|k| l.contains(k)), "{l}");

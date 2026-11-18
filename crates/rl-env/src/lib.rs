@@ -275,6 +275,10 @@ impl EnvConfig {
                 max_steps: 400,
                 opponent: Opponent::SelfPlay,
                 kickoff_prob: KICKOFF_PROB,
+                // Somme nulle : but marqué +10, but encaissé −10 ; plus de prime au toucher (un comportement,
+                // pas un résultat) et seulement l'approche, faible.
+                own_goal_penalty: scoring.goal_reward,
+                touch_reward: 0.0,
                 ..scoring
             },
         }
@@ -985,6 +989,8 @@ pub fn build_obs(
 /// Épisode terminé, remonté par [`VecEnv::step`].
 #[derive(Clone, Debug)]
 pub struct EpisodeStats {
+    /// Indice de l'env qui a fini l'épisode.
+    pub env: usize,
     pub ret: f32,
     pub length: u32,
     pub touched: bool,
@@ -1251,6 +1257,7 @@ fn worker_loop(
                     reply.truncated.push(r.truncated);
                     if r.terminated || r.truncated {
                         reply.finished.push(EpisodeStats {
+                            env: first + i,
                             ret: ret[i],
                             length: len[i],
                             touched: touched[i],
