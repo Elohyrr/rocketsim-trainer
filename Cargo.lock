@@ -4168,6 +4168,7 @@ dependencies = [
  "policy-runtime",
  "rl-env",
  "rocketsim_rs",
+ "scenarios",
  "serde",
  "serde_json",
  "signal-hook",
@@ -6106,6 +6107,7 @@ name = "rl-env"
 version = "0.0.1"
 dependencies = [
  "mechanics",
+ "scenarios",
  "sim-core",
 ]
 

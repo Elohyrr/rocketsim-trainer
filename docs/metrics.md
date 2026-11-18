@@ -2,7 +2,7 @@
 
 Liste **fermée** : toute nouvelle métrique passe par une PR qui met à jour ce fichier **et** le test de plafond.
 Règles : labels à valeurs bornées (énumérations fixes), jamais d'identifiant d'épisode / de run, histogrammes
-à ≤ 8 buckets. Objectif : < 100 séries, plafond dur 500 (un test du crate `learner` échoue au-delà).
+à ≤ 8 buckets. Objectif : ≲ 100 séries (104 avec les drills ; le test exige < 110), plafond dur 500 (un test du crate `learner` échoue au-delà).
 
 | Métrique | Type | Labels (valeurs) | Séries |
 | --- | --- | --- | --- |
@@ -26,6 +26,9 @@ Règles : labels à valeurs bornées (énumérations fixes), jamais d'identifian
 | `trainer_kickoff_first_touch_seconds` | gauge (temps moyen jusqu'au premier toucher de l'agent, dernière itération avec toucher) | — | 1 |
 | `trainer_kickoff_touch_speed` | gauge (vitesse moyenne au contact, uu/s) | — | 1 |
 | `trainer_mechanic_total` | counter | `mechanic` ∈ catalogue fermé (12), `context` = match\|drill | 24 |
+| `trainer_drill_episodes_total` | counter | `drill` ∈ {roof_still, roof_moving, aerial_touch, air_dribble, wall_ball, flip_reset, recovery} | 7 |
+| `trainer_drill_recovery_total` | counter | `outcome` ∈ {good, wheels, bad, none} | 4 |
+| `trainer_drill_bonus_total` | counter | `mechanic` (les 8 qui peuvent recevoir un bonus) | 8 |
 | `trainer_unrecognized_sequences_total` | counter | — | 1 |
 | `trainer_elo`, `trainer_elo_best`, `trainer_elo_age_seconds` (self-play, `docs/self-play.md`) | gauge | — | 3 |
 | `trainer_elo_matches_total` | counter | — | 1 |
@@ -37,8 +40,8 @@ Règles : labels à valeurs bornées (énumérations fixes), jamais d'identifian
 | `process_*` (RSS, CPU) | gauge/counter | — | ≈ 6 |
 
 Total estimé : ≈ 107 séries. Taux de kickoffs gagnés : `rate(trainer_kickoffs_total{outcome="won"}[15m]) / sum(rate(trainer_kickoffs_total[15m]))`. Catalogue `mechanic` (détecteur par tick, `docs/mechanics.md`) : `touch`, `aerial_touch`, `air_dribble`, `flip_reset`,
-`ceiling_shot`, `wall_shot`, `double_touch`, `flick`, `dribble`, `speed_flip`, `wave_dash`, `half_flip`. La série `drill`
-reste à 0 tant qu'il n'y a pas de drills.
+`ceiling_shot`, `wall_shot`, `double_touch`, `flick`, `dribble`, `speed_flip`, `wave_dash`, `half_flip`. La série `drill` compte les mécaniques vues
+pendant les épisodes de drill (`docs/drills.md`) ; elle reste à 0 tant que `--drill-prob` vaut 0.
 
 ## Envoi vers Grafana Cloud
 

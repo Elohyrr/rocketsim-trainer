@@ -95,5 +95,5 @@ checkpoint). Le reste du réseau (paliers 0 à 4) est conservé.
 
 Les moments où l'env est reconfiguré (changement de palier) remettent tous les envs à zéro.
 
-**Non fait** : drills de mécaniques issus de `scenarios` (aérien, flick, wall shot…), gardien scripté mobile,
+**Non fait** (drills de mécaniques : fait, voir `docs/drills.md`) : gardien scripté mobile,
 métrique `trainer_episode_outcome_total` et temps moyen jusqu'au but.

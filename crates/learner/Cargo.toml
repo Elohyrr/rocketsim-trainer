@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 mechanics = { path = "../mechanics" }
 rl-env = { path = "../rl-env" }
+scenarios = { path = "../scenarios" }
 sim-core = { path = "../sim-core" }
 policy-runtime = { path = "../policy-runtime" }
 burn = { version = "=0.22.1", features = ["flex", "autodiff"] }
