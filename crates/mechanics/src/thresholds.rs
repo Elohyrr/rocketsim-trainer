@@ -129,3 +129,65 @@ pub const CARRIED_BALL_DIST: f32 = 250.0;
 
 /// Jugement d'un toucher : vitesse de balle maximale dans les 4 ticks qui suivent (inclus le tick du toucher).
 pub const HIT_JUDGE_TICKS: u64 = 4;
+
+// ---- groupe hit
+
+/// Power shot : vitesse de balle après le toucher (jugée, uu/s) au-delà de ce seuil…
+pub const POWER_SHOT_MIN_SPEED: f32 = 3000.0;
+/// … avec un gain d'au moins ce montant (uu/s) : une balle déjà rapide à peine déviée n'est pas un tir.
+pub const POWER_SHOT_MIN_GAIN: f32 = 500.0;
+
+/// Pinch : gain de vitesse de balle (après − avant, uu/s) et vitesse après (uu/s).
+pub const PINCH_MIN_GAIN: f32 = 2500.0;
+pub const PINCH_MIN_SPEED: f32 = 3500.0;
+/// Pinch : centre de la balle à moins de `BALL_RADIUS` + cette marge (uu) d'une surface au toucher.
+pub const PINCH_SURFACE_MARGIN: f32 = 60.0;
+/// Pinch : balle entre la voiture et la surface : (balle − voiture)·normale sortante > ce ratio × |balle − voiture|.
+pub const PINCH_INSIDE_RATIO: f32 = 0.2;
+/// Hauteur du plafond (uu).
+pub const ARENA_CEILING_Z: f32 = 2044.0;
+/// Pan de coin diagonal (approximation) : plan |x| + |y| = cette somme (uu).
+pub const ARENA_CORNER_SUM: f32 = 8000.0;
+/// Ouverture du but (demi-largeur et hauteur, uu) : pas de mur du fond devant le but.
+pub const GOAL_HALF_WIDTH: f32 = 892.755;
+pub const GOAL_HEIGHT: f32 = 642.775;
+
+/// Kuxir pinch : dodge au plus 0,35 s avant le toucher (ticks), balle envoyée vers le but adverse à plus de
+/// cette vitesse (uu/s).
+pub const KUXIR_MAX_DODGE_TICKS: u64 = 42;
+pub const KUXIR_MIN_GOAL_SPEED: f32 = 1500.0;
+
+/// Cushion : balle arrivant à plus de cette vitesse (uu/s)…
+pub const CUSHION_MIN_SPEED_BEFORE: f32 = 1000.0;
+/// … qui repart avec la voiture : |v_balle − v_voiture| après le toucher sous ce seuil (uu/s)…
+pub const CUSHION_MAX_REL_SPEED: f32 = 400.0;
+/// … et vitesse après < ce ratio × vitesse avant.
+pub const CUSHION_MAX_RATIO: f32 = 0.5;
+
+/// Redirect : voiture en l'air au-dessus de cette hauteur (uu)…
+pub const REDIRECT_MIN_CAR_Z: f32 = 300.0;
+/// … balle à plus de cette vitesse avant et après (uu/s)…
+pub const REDIRECT_MIN_SPEED: f32 = 1500.0;
+/// … et déviée de plus de 45° (cosinus de l'angle avant/après sous ce seuil).
+pub const REDIRECT_MAX_COS: f32 = core::f32::consts::FRAC_1_SQRT_2;
+
+/// Air roll shot : rotation autour de l'axe avant (rad/s) ou commande de roulis (|roll| ≥) au toucher…
+pub const AIR_ROLL_MIN_RATE: f32 = 3.0;
+pub const AIR_ROLL_MIN_INPUT: f32 = 0.5;
+/// … balle envoyée à plus de cette vitesse (uu/s)…
+pub const AIR_ROLL_MIN_SPEED: f32 = 1500.0;
+/// … sans dodge dans les 0,65 s (durée du couple d'un flip, ticks) : un dodge latéral tourne aussi autour de l'axe avant.
+pub const AIR_ROLL_NO_DODGE_TICKS: u64 = 78;
+
+/// Backboard read : toucher au plus 2 s (ticks) après un rebond de la balle sur le mur du fond, balle z > (uu).
+pub const BACKBOARD_READ_MAX_TICKS: u64 = 240;
+pub const BACKBOARD_READ_MIN_Z: f32 = 300.0;
+
+/// Half volley : rebond de la balle au sol (centre sous cette hauteur, uu ; vitesse verticale < −ce seuil puis
+/// > 0, uu/s)…
+pub const HALF_VOLLEY_BOUNCE_MAX_Z: f32 = 170.0;
+pub const HALF_VOLLEY_BOUNCE_MIN_VZ: f32 = 100.0;
+/// … toucher au plus ce nombre de ticks après, balle sous cette hauteur (uu), envoyée à plus de cette vitesse (uu/s).
+pub const HALF_VOLLEY_MAX_TICKS: u64 = 8;
+pub const HALF_VOLLEY_MAX_BALL_Z: f32 = 300.0;
+pub const HALF_VOLLEY_MIN_SPEED: f32 = 1800.0;
