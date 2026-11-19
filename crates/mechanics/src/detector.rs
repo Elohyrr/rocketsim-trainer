@@ -1,7 +1,9 @@
 //! Événements par tick et automates du catalogue.
 
+use crate::ctx::{Base, Ctx, DodgeInfo, Hit};
+use crate::detail::{Details, Out};
 use crate::thresholds::*;
-use crate::{BallTick, CarTick, Counts, Mechanic};
+use crate::{BallTick, CarTick, Counts, Detail, Mechanic, Support};
 
 /// Événements discrets d'un tick (masque de bits, spec §4.1). La direction d'un dodge est donnée à part par
 /// [`Detector::dodge_sector`].
@@ -105,6 +107,7 @@ pub struct Detector {
     // Double touch.
     dt_first: Option<u64>,
     dt_bounced: bool,
+    dt_back: bool,
     // Dribble, flick.
     dr_run: u32,
     dr_gap: u32,
@@ -125,6 +128,19 @@ pub struct Detector {
     dr_last_touch: Option<u64>,
     dr_dist: f32,
     dr_valid: bool,
+    // Catalogue étendu : contexte commun (dernier dodge, âges mur/plafond, rebond de balle), jugement des
+    // touchers, détails, records et groupes d'automates.
+    prev_car: CarTick,
+    prev_ball: BallTick,
+    last_dodge: Option<DodgeInfo>,
+    wall_seen: Option<u64>,
+    ceil_seen: Option<u64>,
+    bounce: Option<(u64, bool)>,
+    hit_pending: Option<Hit>,
+    details: Details,
+    g_hit: crate::ext_hit::Group,
+    g_carry: crate::ext_carry::Group,
+    g_move: crate::ext_move::Group,
 }
 
 /// Version des règles de détection.
@@ -169,7 +185,7 @@ fn within(since: Option<u64>, now: u64, window: u64) -> bool {
 
 /// Rebond de la balle sur un mur latéral ou du fond : vitesse normale qui change de signe près du mur.
 #[inline]
-fn ball_wall_bounce(prev_vel: [f32; 3], ball: &BallTick) -> bool {
+fn ball_wall_bounce(prev_vel: [f32; 3], ball: &BallTick) -> Option<bool> {
     let near_x = ARENA_SIDE_X - BALL_RADIUS - WALL_BOUNCE_MARGIN;
     let near_y = ARENA_BACK_Y - BALL_RADIUS - WALL_BOUNCE_MARGIN;
     let bx = ball.pos[0].abs() > near_x
@@ -180,7 +196,13 @@ fn ball_wall_bounce(prev_vel: [f32; 3], ball: &BallTick) -> bool {
         && prev_vel[1].abs() > WALL_BOUNCE_MIN_SPEED
         && prev_vel[1].signum() == ball.pos[1].signum()
         && prev_vel[1] * ball.vel[1] < 0.0;
-    bx || by
+    if by {
+        Some(true)
+    } else if bx {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 impl Detector {
@@ -211,8 +233,15 @@ impl Detector {
         *self = Self {
             mode: self.mode,
             attack_neg: self.attack_neg,
+            details: self.details,
             ..Self::default()
         };
+    }
+
+    /// Dernier détail (valeur, support) de la mécanique `m` ; nul tant qu'elle n'a pas été vue.
+    #[inline]
+    pub fn detail(&self, m: Mechanic) -> Detail {
+        self.details.0[m.index()]
     }
 
     /// Vitesse de la balle vers le but adverse (+ = vers le but).
@@ -312,9 +341,11 @@ impl Detector {
         if on_ceiling && !p.on_ceiling {
             ev |= Events::CEILING;
         }
-        if ball_wall_bounce(p.ball_vel, ball) {
+        if let Some(back) = ball_wall_bounce(p.ball_vel, ball) {
             ev |= Events::BALL_WALL_BOUNCE;
+            self.bounce = Some((n, back));
         }
+        let mut base = Base::default();
 
         // Temps en l'air depuis le dernier contact roues-terrain (un flip reset ne le remet pas à zéro).
         let landed = on_terrain && !p.on_terrain;
@@ -322,6 +353,17 @@ impl Detector {
             self.air_ticks = 0;
         } else {
             self.air_ticks = self.air_ticks.saturating_add(1);
+        }
+
+        if on_wall {
+            self.wall_seen = Some(n);
+        } else if on_terrain {
+            self.wall_seen = None;
+        }
+        if on_ceiling {
+            self.ceil_seen = Some(n);
+        } else if on_terrain {
+            self.ceil_seen = None;
         }
 
         // Décollage volontaire (v2) : un saut pressé depuis le sol ou le mur (ou ≤ 6 ticks après l'avoir quitté),
@@ -368,6 +410,12 @@ impl Detector {
                 (((a / core::f32::consts::FRAC_PI_4).round() as i32).rem_euclid(8)) as u8
             };
             self.dodge_sector = Some(sector);
+            self.last_dodge = Some(DodgeInfo {
+                tick: n,
+                fwd: f,
+                lat: l,
+                sector,
+            });
             self.dodge = Some(Dodge {
                 tick: n,
                 fwd: f,
@@ -426,6 +474,7 @@ impl Detector {
             } else if !car.has_jumped && !car.has_double_jumped && !car.has_flipped {
                 ev |= Events::RESET;
                 counts.inc(Mechanic::FlipReset);
+                base.flip_reset = true;
                 self.reset_pending = 0;
             } else {
                 self.reset_pending -= 1;
@@ -468,6 +517,7 @@ impl Detector {
                     }
                     if !self.ad_counted {
                         counts.inc(Mechanic::AirDribble);
+                        base.air_dribble = true;
                         self.ad_counted = true;
                     }
                 }
@@ -479,6 +529,7 @@ impl Detector {
             self.ad_boost = false;
         }
         if aerial {
+            base.aerial_touch = true;
             counts.inc(Mechanic::AerialTouch);
         }
 
@@ -491,6 +542,8 @@ impl Detector {
         if air_touch && car.has_flip_or_jump && within(self.ceil_last, n, CEILING_SHOT_WINDOW_TICKS)
         {
             counts.inc(Mechanic::CeilingShot);
+            base.ceiling_shot = true;
+            self.note(counts, Mechanic::CeilingShot, norm2(ball.vel).sqrt());
             self.ceil_last = None;
         }
 
@@ -503,6 +556,8 @@ impl Detector {
         if touch && within(self.wall_last, n, WALL_SHOT_WINDOW_TICKS) {
             if self.mode == Mode::V1 || self.wall_jumped {
                 counts.inc(Mechanic::WallShot);
+                base.wall_shot = true;
+                self.note(counts, Mechanic::WallShot, norm2(ball.vel).sqrt());
             } else {
                 self.ws_pending = Some((n, self.toward_goal(p.ball_vel)));
             }
@@ -513,6 +568,8 @@ impl Detector {
             let after = self.toward_goal(ball.vel);
             if after > WALL_SHOT_MIN_GOAL_SPEED && after - before >= WALL_SHOT_MIN_GAIN {
                 counts.inc(Mechanic::WallShot);
+                base.wall_shot = true;
+                self.note(counts, Mechanic::WallShot, norm2(ball.vel).sqrt());
                 self.ws_pending = None;
             } else if n - t >= WALL_SHOT_JUDGE_TICKS {
                 self.ws_pending = None;
@@ -526,10 +583,14 @@ impl Detector {
         }
         if ev & Events::BALL_WALL_BOUNCE != 0 && self.dt_first.is_some() {
             self.dt_bounced = true;
+            self.dt_back = self.bounce.is_some_and(|(_, b)| b);
         }
         if air_touch {
             if self.dt_bounced && within(self.dt_first, n, DOUBLE_TOUCH_WINDOW_TICKS) {
                 counts.inc(Mechanic::DoubleTouch);
+                base.double_touch = true;
+                base.double_touch_back = self.dt_back;
+                self.note(counts, Mechanic::DoubleTouch, norm2(ball.vel).sqrt());
                 self.dt_first = None;
             } else {
                 self.dt_first = Some(n);
@@ -555,6 +616,7 @@ impl Detector {
                     self.dr_last_ok = Some(n);
                     if !self.dr_counted {
                         counts.inc(Mechanic::Dribble);
+                        base.dribble = true;
                         self.dr_counted = true;
                     }
                 }
@@ -575,6 +637,7 @@ impl Detector {
                     self.dr_last_ok = Some(n);
                     if !self.dr_counted {
                         counts.inc(Mechanic::Dribble);
+                        base.dribble = true;
                         self.dr_counted = true;
                     }
                 }
@@ -605,6 +668,8 @@ impl Detector {
                 }
                 if self.fl_hit && norm2(ball.vel) > FLICK_MIN_BALL_SPEED * FLICK_MIN_BALL_SPEED {
                     counts.inc(Mechanic::Flick);
+                    base.flick = true;
+                    self.note(counts, Mechanic::Flick, norm2(ball.vel).sqrt());
                     self.fl_dodge = None;
                 }
             }
@@ -616,6 +681,7 @@ impl Detector {
             if landed && dt >= 1 {
                 if dt <= WAVE_DASH_MAX_LAND_TICKS && hspeed - d.speed_before > WAVE_DASH_MIN_GAIN {
                     counts.inc(Mechanic::WaveDash);
+                    base.wave_dash = true;
                 }
                 let diagonal =
                     d.fwd > DIAGONAL_MIN_COMPONENT && d.lat.abs() > DIAGONAL_MIN_COMPONENT;
@@ -641,8 +707,90 @@ impl Detector {
             }
         }
 
+        base.dribble_active = within(self.dr_last_ok, n, FLICK_DODGE_WINDOW_TICKS);
+        base.dribble_last_ok = self.dr_last_ok;
+
+        // --- Jugement des touchers : vitesse de balle maximale dans les ticks qui suivent.
+        if touch {
+            self.hit_pending = Some(Hit {
+                tick: n,
+                car: *car,
+                ball: *ball,
+                v_before: p.ball_vel,
+                v_after: ball.vel,
+                speed_before: norm2(p.ball_vel).sqrt(),
+                speed_after: norm2(ball.vel).sqrt(),
+                air_ticks: self.air_ticks,
+                dodge: self.last_dodge,
+                dodge_age: self.last_dodge.map(|d| n - d.tick),
+                wall_age: self.wall_seen.map(|t| n - t),
+                ceiling_age: self.ceil_seen.map(|t| n - t),
+                ball_bounce_back: self.bounce.is_some_and(|(_, b)| b),
+                ball_bounce_age: self.bounce.map(|(t, _)| n - t),
+            });
+        } else if let Some(h) = self.hit_pending.as_mut() {
+            let sp = norm2(ball.vel).sqrt();
+            if sp > h.speed_after {
+                h.speed_after = sp;
+                h.v_after = ball.vel;
+            }
+        }
+        let judged = match self.hit_pending {
+            Some(h) if n - h.tick >= HIT_JUDGE_TICKS => {
+                self.hit_pending = None;
+                Some(h)
+            }
+            _ => None,
+        };
+
+        // --- Catalogue étendu.
+        let cx = Ctx {
+            n,
+            car,
+            ball,
+            prev_car: &self.prev_car,
+            prev_ball: &self.prev_ball,
+            ev: Events(ev),
+            touch,
+            hit: judged.as_ref(),
+            on_terrain,
+            on_wall,
+            on_ceiling,
+            landed,
+            air_ticks: self.air_ticks,
+            rel,
+            rel_up,
+            rel_fwd: dot(rel, car.forward),
+            rel_side: dot(rel, car.right),
+            dist: dist2.sqrt(),
+            hspeed,
+            ball_speed: norm2(ball.vel).sqrt(),
+            dodge: self.last_dodge,
+            dodge_age: self.last_dodge.map(|d| n - d.tick),
+            dodge_now: dodge,
+            base,
+            attack_neg: self.attack_neg,
+        };
+        let mut out = Out {
+            counts,
+            details: &mut self.details.0,
+        };
+        self.g_hit.tick(&cx, &mut out);
+        self.g_carry.tick(&cx, &mut out);
+        self.g_move.tick(&cx, &mut out);
+
         self.events = Events(ev);
         self.save_prev(car, ball, on_terrain, on_wall, on_ceiling, hspeed, head);
+    }
+
+    /// Enregistre valeur et record d'une mécanique de base (compteur déjà incrémenté).
+    #[inline]
+    fn note(&mut self, counts: &mut Counts, m: Mechanic, value: f32) {
+        self.details.0[m.index()] = Detail {
+            value,
+            support: Support::None,
+        };
+        counts.1.observe(m, value);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -657,6 +805,8 @@ impl Detector {
         hspeed: f32,
         head: [f32; 2],
     ) {
+        self.prev_car = *car;
+        self.prev_ball = *ball;
         self.prev = Prev {
             on_ground: car.on_ground,
             on_terrain,

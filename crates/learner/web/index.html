@@ -273,7 +273,7 @@ function renderList() {
   const it = $('items'); it.innerHTML = '';
   for (const c of rows) {
     const d = document.createElement('div'); d.className = 'item' + (c.id === cur ? ' cur' : '');
-    d.innerHTML = `<b>${labels(c.mechanic)}</b><span>${fmtDate(c.created_unix)} · ${c.seconds.toFixed(1)} s${(c.detector || 1) < 2 ? ' · v1' : c.quality ? ` · qualité ${Math.round(c.quality.score * 100)} %${c.quality.goal_3s ? ' · but' : ''}` : ''}</span>`;
+    d.innerHTML = `<b>${labels(c.mechanic)}</b><span>${fmtDate(c.created_unix)} · ${c.seconds.toFixed(1)} s${c.detail && c.detail.value ? ` · ${Math.round(c.detail.value)} uu/s` : ''}${c.detail && c.detail.support && c.detail.support !== 'none' ? ` · ${c.detail.support}` : ''}${(c.detector || 1) < 2 ? ' · v1' : c.quality ? ` · qualité ${Math.round(c.quality.score * 100)} %${c.quality.goal_3s ? ' · but' : ''}` : ''}</span>`;
     d.onclick = () => { location.hash = c.id; };
     it.appendChild(d);
   }

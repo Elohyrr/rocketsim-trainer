@@ -437,6 +437,8 @@ pub struct Env {
     /// Clip construit qui attend sa qualité (mesurée 3 s après la mécanique) et le suivi correspondant.
     clip_wait: Option<Clip>,
     quality: Option<mechanics::QualityTracker>,
+    /// Valeur et support de la mécanique qui a déclenché le clip en attente.
+    clip_detail: Option<clip::ClipDetail>,
     /// Drill en cours (None en match) et son bonus ; compteurs de drill depuis la dernière reprise.
     drill: Option<(Drill, drill::EpisodeBonus)>,
     drill_report: DrillReport,
@@ -467,6 +469,7 @@ impl Env {
             opp_ctl: Controls::default(),
             clip_wait: None,
             quality: None,
+            clip_detail: None,
             drill: None,
             drill_report: DrillReport::default(),
         };
@@ -504,6 +507,7 @@ impl Env {
         if let (Some(mut c), Some(t)) = (self.clip_wait.take(), q) {
             let q = t.quality();
             c.detector = if self.cfg.detector_v1 { 1 } else { 2 };
+            c.detail = self.clip_detail.take();
             c.quality = Some(clip::ClipQuality {
                 ball_speed_to_goal: q.speed,
                 goal_3s: q.goal,
@@ -538,6 +542,7 @@ impl Env {
         self.flush_clip();
         self.clip_wait = None;
         self.quality = None;
+        self.clip_detail = None;
         self.rec.reset();
         self.opp_ctl = Controls::default();
         if let Some((d, bonus)) = self.drill.take() {
@@ -872,11 +877,16 @@ impl Env {
                 let rarest = mechanics::Mechanic::ALL
                     .into_iter()
                     .filter(|&m| m != mechanics::Mechanic::Touch && seen.get(m) > 0)
-                    .max_by_key(|m| m.index());
+                    .max_by_key(|m| (m.clip_priority(), m.index()));
                 if let Some(m) = rarest
                     && self.rec.trigger(m.label())
                 {
                     self.quality = Some(mechanics::QualityTracker::start(true));
+                    let d = self.detector.detail(m);
+                    self.clip_detail = Some(clip::ClipDetail {
+                        value: d.value,
+                        support: d.support.label().to_string(),
+                    });
                 }
                 if let Some(c) = self.rec.end_step(&mut self.sim) {
                     self.clip_wait = Some(c);

@@ -10,12 +10,13 @@ fn tous_les_cas_scriptes() {
     let mut failures = Vec::new();
     for case in script::cases() {
         let got = script::replay(&case.frames);
-        if got != case.expected {
+        let seen = case.observed(&got);
+        if seen != case.expected {
             failures.push(format!(
                 "{} : attendu {:?}, obtenu {:?}",
                 case.name,
                 case.expected.nonzero(),
-                got.nonzero()
+                seen.nonzero()
             ));
         }
         assert_eq!(
@@ -188,9 +189,11 @@ fn concatenation_des_cas() {
     let mut expected = Counts::default();
     for case in script::cases() {
         det.reset();
+        let mut local = Counts::default();
         for (c, b) in &case.frames {
-            det.tick(c, b, &mut counts);
+            det.tick(c, b, &mut local);
         }
+        counts.add(&case.observed(&local));
         expected.add(&case.expected);
     }
     assert_eq!(counts, expected);
@@ -215,5 +218,29 @@ fn bench_ns_par_tick() {
         el.as_nanos() as f64 / ticks,
         ticks,
         black_box(counts.total())
+    );
+}
+
+#[test]
+fn anciens_cas_et_catalogue_etendu() {
+    // Les cas d'origine ne listent pas les mécaniques étendues : on relève ce qu'elles y reconnaissent
+    // (conséquences naturelles, ex. un flick de dribble est aussi un flick_45) pour les passer en revue.
+    let mut vu = Vec::new();
+    for case in script::cases().iter().filter(|c| !c.exact) {
+        let got = script::replay(&case.frames);
+        for m in Mechanic::ALL.iter().skip(script::LEGACY_COUNT) {
+            if got.get(*m) > 0 {
+                vu.push(format!("{}→{}", case.name, m.label()));
+            }
+        }
+    }
+    // Attendu : le wall to air dribble est un air dribble ; le double touch d'origine rebondit sur le mur du fond.
+    assert_eq!(
+        vu,
+        [
+            "wall_to_air_dribble→wall_to_air_dribble",
+            "double_touch→backboard_read",
+            "double_touch→backboard_double"
+        ]
     );
 }

@@ -213,6 +213,18 @@ pub struct Clip {
     /// Qualité mesurée après la mécanique (vitesse de balle vers le but adverse, but dans les 3 s).
     #[serde(default)]
     pub quality: Option<ClipQuality>,
+    /// Valeur (vitesse de balle après toucher, uu/s) et support de la mécanique (pinch : sol, mur, coin…).
+    #[serde(default)]
+    pub detail: Option<ClipDetail>,
+}
+
+/// Détail d'une occurrence (métadonnées d'un clip) : mesure propre à la mécanique et support.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ClipDetail {
+    /// Vitesse de balle après le toucher (uu/s) pour les mécaniques à record, sinon 0.
+    pub value: f32,
+    /// `none`, `ground`, `wall`, `backwall`, `corner`, `ceiling` (voir `mechanics::Support`).
+    pub support: String,
 }
 
 /// Qualité d'une mécanique (métadonnées d'un clip).
@@ -735,6 +747,7 @@ impl ClipRecorder {
             steps,
             detector: 0,
             quality: None,
+            detail: None,
         })
     }
 }
