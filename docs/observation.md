@@ -45,3 +45,20 @@ Boost de départ : tiré dans 0–100 aux épisodes de match des paliers 5/6 (vo
 (comme le vrai jeu) ; drills inchangés (`docs/drills.md`).
 
 Métriques : `docs/metrics.md` (`trainer_boost_*`).
+
+## Essai local (acteur de prod, palier 5, 9 min, 32 envs, drills 30 %)
+
+Acteur `https://rocketsim.celri.dev/policy.safetensors` (palier 6), critique neuf échauffé 60 itérations (politique figée),
+même binaire : **avant** = `--boost-reward 0 --fixed-boost` (comportement antérieur), **après** = défauts (prime 0,2, boost
+de départ aléatoire). Les deux runs n'ont pas eu la même charge CPU (168 k vs 315 k pas) : comparer des ratios.
+
+| | avant | après |
+| --- | --- | --- |
+| taux de but (moyenne par itération, hors échauffement : après seulement) | 0,57 (échauffement) | 0,54 (échauffement) / 0,53 (apprentissage) |
+| buts marqués / encaissés | 196 / 14 | 330 / 33 |
+| ramassages pour 1 000 pas (petits + gros) | 8,8 | 8,4 |
+| boost moyen · part du temps à 0 | 5,0 · 83 % | 5,6 · 80 % |
+| Elo de départ (palier 5) | 1414 | 1412 |
+
+Lecture : pas de régression du taux de but ; en 9 min les ramassages ne changent pas encore nettement (la politique est
+figée un tiers du temps et le bot reste à 0 de boost ~80 % du temps : marge de progrès, à suivre via `trainer_boost_*` en prod).
