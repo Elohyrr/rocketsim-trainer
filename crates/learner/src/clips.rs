@@ -2,9 +2,10 @@
 //!
 //! Borné en nombre et en octets ; quand il est plein, on retire le plus ancien clip de la mécanique la plus
 //! représentée (les mécaniques rares restent). Un délai minimal par mécanique évite d'inonder l'anneau avec la
-//! même action répétée. Le serveur HTTP du learner (`metrics.rs`) sert la liste et les fichiers en lecture seule.
+//! même action répétée. Les meilleurs clips (score de qualité) sont en plus copiés dans `clips/top/` (« hall of
+//! fame ») : ils survivent à l'éviction de l'anneau et aux redémarrages. Le serveur HTTP du learner (`metrics.rs`) sert la liste et les fichiers en lecture seule.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -22,6 +23,12 @@ pub const INDEX: &str = "index.json";
 pub const V2_MARKER: &str = "detecteur-v2";
 pub const DEFAULT_MAX_CLIPS: usize = 200;
 pub const DEFAULT_MAX_BYTES: u64 = 200 * 1024 * 1024;
+/// Sous-dossier du hall of fame (`clips/top/<id>.json` + `index.json`).
+pub const TOP_DIR: &str = "top";
+/// Nombre de clips du classement général (`--clips-top`).
+pub const DEFAULT_TOP: usize = 10;
+/// Meilleurs clips gardés en plus pour chaque mécanique.
+pub const TOP_PER_MECHANIC: usize = 3;
 /// Délai minimal entre deux clips de la même mécanique.
 pub const DEFAULT_MIN_GAP: Duration = Duration::from_secs(20);
 
@@ -52,6 +59,25 @@ fn v1() -> u32 {
     1
 }
 
+/// `top/index.json` : classement général (meilleur en premier) et meilleurs clips de chaque mécanique.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TopIndex {
+    pub global: Vec<Entry>,
+    pub mechanics: BTreeMap<String, Vec<Entry>>,
+}
+
+/// Ordre du classement : score de qualité décroissant, puis vitesse de balle, puis id (déterministe).
+fn rank_cmp(a: &Entry, b: &Entry) -> std::cmp::Ordering {
+    let k = |e: &Entry| {
+        e.quality
+            .map_or((f32::MIN, f32::MIN), |q| (q.score, q.ball_speed_to_goal))
+    };
+    let (ka, kb) = (k(a), k(b));
+    kb.0.total_cmp(&ka.0)
+        .then(kb.1.total_cmp(&ka.1))
+        .then_with(|| a.id.cmp(&b.id))
+}
+
 pub struct ClipStore {
     dir: PathBuf,
     pub max_clips: usize,
@@ -61,6 +87,10 @@ pub struct ClipStore {
     entries: Vec<Entry>,
     last: HashMap<String, Instant>,
     seq: u64,
+    /// Taille du classement général (0 = pas de hall of fame) et meilleurs par mécanique.
+    pub top_n: usize,
+    pub top_per_mechanic: usize,
+    top: TopIndex,
 }
 
 fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
@@ -95,6 +125,17 @@ impl ClipStore {
         max_bytes: u64,
         purge_v1: bool,
     ) -> std::io::Result<Self> {
+        Self::open_with(out, max_clips, max_bytes, purge_v1, DEFAULT_TOP)
+    }
+
+    /// Comme [`ClipStore::open_for`], avec `top_n` clips au classement général (0 : hall of fame coupé).
+    pub fn open_with(
+        out: &Path,
+        max_clips: usize,
+        max_bytes: u64,
+        purge_v1: bool,
+        top_n: usize,
+    ) -> std::io::Result<Self> {
         let dir = out.join(DIR);
         std::fs::create_dir_all(&dir)?;
         if purge_v1 && !dir.join(V2_MARKER).exists() {
@@ -116,6 +157,7 @@ impl ClipStore {
                 let name = f.file_name().to_string_lossy().into_owned();
                 let known = name == INDEX
                     || name == V2_MARKER
+                    || name == TOP_DIR
                     || name
                         .strip_suffix(".json")
                         .is_some_and(|id| entries.iter().any(|e| e.id == id));
@@ -133,8 +175,13 @@ impl ClipStore {
             entries,
             last: HashMap::new(),
             seq,
+            top_n,
+            top_per_mechanic: TOP_PER_MECHANIC,
+            top: TopIndex::default(),
         };
+        s.load_top();
         s.evict();
+        s.rebuild_top()?;
         s.write_index()?;
         Ok(s)
     }
@@ -188,9 +235,113 @@ impl ClipStore {
         };
         self.last.insert(clip.mechanic, now);
         self.entries.push(e.clone());
+        if e.quality.is_some() {
+            self.rebuild_top()?;
+        }
         self.evict();
         self.write_index()?;
         Ok(Some(e))
+    }
+
+    /// Classement général du hall of fame (meilleur en premier).
+    pub fn top(&self) -> &[Entry] {
+        &self.top.global
+    }
+
+    /// Plus bas score du classement général (0 s'il est vide).
+    pub fn top_min_score(&self) -> f32 {
+        self.top
+            .global
+            .last()
+            .and_then(|e| e.quality)
+            .map_or(0.0, |q| q.score)
+    }
+
+    fn top_dir(&self) -> PathBuf {
+        self.dir.join(TOP_DIR)
+    }
+
+    /// Reprend `top/index.json` (entrées sans fichier ignorées).
+    fn load_top(&mut self) {
+        let td = self.top_dir();
+        let mut t: TopIndex = std::fs::read(td.join(INDEX))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let ok = |e: &Entry| valid_id(&e.id) && td.join(format!("{}.json", e.id)).is_file();
+        t.global.retain(ok);
+        for v in t.mechanics.values_mut() {
+            v.retain(ok);
+        }
+        self.top = t;
+    }
+
+    /// Recalcule le hall of fame : candidats = hall actuel + clips de l'anneau avec qualité ; garde les `top_n`
+    /// meilleurs et les `top_per_mechanic` meilleurs de chaque mécanique, copie les fichiers manquants dans
+    /// `top/` et supprime ceux qui n'y ont plus leur place. Les clips v1 (sans qualité) sont exclus.
+    fn rebuild_top(&mut self) -> std::io::Result<()> {
+        if self.top_n == 0 {
+            return Ok(());
+        }
+        let td = self.top_dir();
+        std::fs::create_dir_all(&td)?;
+        let mut cands: HashMap<String, Entry> = HashMap::new();
+        for e in self
+            .top
+            .global
+            .iter()
+            .chain(self.top.mechanics.values().flatten())
+            .chain(self.entries.iter())
+        {
+            let has_file = td.join(format!("{}.json", e.id)).is_file()
+                || self.dir.join(format!("{}.json", e.id)).is_file();
+            if e.quality.is_some() && has_file {
+                cands.entry(e.id.clone()).or_insert_with(|| e.clone());
+            }
+        }
+        let mut ranked: Vec<Entry> = cands.into_values().collect();
+        ranked.sort_by(rank_cmp);
+        let mut t = TopIndex {
+            global: ranked.iter().take(self.top_n).cloned().collect(),
+            mechanics: BTreeMap::new(),
+        };
+        for e in &ranked {
+            let v = t.mechanics.entry(e.mechanic.clone()).or_default();
+            if v.len() < self.top_per_mechanic {
+                v.push(e.clone());
+            }
+        }
+        let keep: HashSet<&str> = t
+            .global
+            .iter()
+            .chain(t.mechanics.values().flatten())
+            .map(|e| e.id.as_str())
+            .collect();
+        for id in &keep {
+            let to = td.join(format!("{id}.json"));
+            if !to.is_file() {
+                let tmp = to.with_extension("tmp");
+                std::fs::copy(self.dir.join(format!("{id}.json")), &tmp)?;
+                std::fs::rename(&tmp, &to)?;
+            }
+        }
+        for f in std::fs::read_dir(&td)?.flatten() {
+            let name = f.file_name().to_string_lossy().into_owned();
+            let stale = match name.strip_suffix(".json") {
+                Some("index") => false,
+                Some(id) => !keep.contains(id),
+                None => true,
+            };
+            if stale {
+                let _ = std::fs::remove_file(f.path());
+            }
+        }
+        write_atomic(
+            &td.join(INDEX),
+            &serde_json::to_vec(&t).expect("index sérialisable"),
+        )?;
+        self.top = t;
+        Ok(())
     }
 
     /// Retire le plus ancien clip de la mécanique la plus représentée jusqu'à respecter les deux plafonds.
@@ -223,6 +374,27 @@ impl ClipStore {
             &serde_json::to_vec(&newest_first).expect("index sérialisable"),
         )
     }
+}
+
+/// Fichier d'un clip : l'anneau, sinon le hall of fame (le clip a pu quitter l'anneau).
+fn clip_path(clips: &Path, id: &str) -> Option<PathBuf> {
+    [
+        clips.join(format!("{id}.json")),
+        clips.join(TOP_DIR).join(format!("{id}.json")),
+    ]
+    .into_iter()
+    .find(|p| p.is_file())
+}
+
+/// Valeur du paramètre `key` de la requête.
+fn query<'a>(req: &'a str, key: &str) -> Option<&'a str> {
+    req.strip_prefix("GET ")?
+        .split(' ')
+        .next()?
+        .split_once('?')?
+        .1
+        .split('&')
+        .find_map(|kv| kv.strip_prefix(key)?.strip_prefix('='))
 }
 
 /// Fréquences d'échantillonnage acceptées par `/trajectory` (Hz).
@@ -260,7 +432,7 @@ struct TrajectoryReply<'a> {
 /// JSON de la trajectoire de `<clips>/<id>.json` à `hz`, d'après le cache ou un rejeu à la demande.
 /// `None` si le clip n'existe pas.
 fn trajectory_json(clips: &Path, id: &str, hz: u32) -> Option<Result<Arc<[u8]>, Fail>> {
-    let file = std::fs::read(clips.join(format!("{id}.json"))).ok()?;
+    let file = std::fs::read(clip_path(clips, id)?).ok()?;
     let key = (id.to_string(), hz);
     if let Some(hit) = CACHE
         .lock()
@@ -312,7 +484,8 @@ fn trajectory_json(clips: &Path, id: &str, hz: u32) -> Option<Result<Arc<[u8]>, 
 
 type Reply = (&'static str, &'static str, Vec<u8>);
 
-/// Routes en lecture seule : `GET /clips` (index, du plus récent au plus ancien) et `GET /clips/<id>`.
+/// Routes en lecture seule : `GET /clips` (index, du plus récent au plus ancien), `GET /clips?top=1` ou
+/// `GET /clips/top` (hall of fame ; `&mechanic=` pour une mécanique) et `GET /clips/<id>` (anneau puis hall).
 /// `None` si la requête n'est pas pour les clips.
 pub fn route(req: &str, dir: Option<&Path>) -> Option<Reply> {
     let path = req.strip_prefix("GET ")?.split([' ', '?']).next()?;
@@ -324,13 +497,7 @@ pub fn route(req: &str, dir: Option<&Path>) -> Option<Reply> {
     let clips = dir.map(|d| d.join(DIR));
     let not_found = ("404 Not Found", "text/plain", Vec::new());
     if let Some(id) = rest.strip_suffix("/trajectory") {
-        let hz = req
-            .strip_prefix("GET ")
-            .and_then(|r| r.split(' ').next())
-            .and_then(|p| p.split_once('?'))
-            .and_then(|(_, q)| q.split('&').find_map(|kv| kv.strip_prefix("hz=")))
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(30);
+        let hz = query(req, "hz").and_then(|v| v.parse().ok()).unwrap_or(30);
         if !valid_id(id) || id == "index" || !HZ_OK.contains(&hz) {
             return Some(not_found);
         }
@@ -341,7 +508,23 @@ pub fn route(req: &str, dir: Option<&Path>) -> Option<Reply> {
             None => not_found,
         });
     }
-    Some(if rest.is_empty() {
+    let top = rest == "top" || (rest.is_empty() && query(req, "top").is_some_and(|v| v != "0"));
+    Some(if top {
+        // Hall of fame : classement général, ou meilleurs d'une mécanique (`?mechanic=`).
+        let t: TopIndex = clips
+            .and_then(|c| std::fs::read(c.join(TOP_DIR).join(INDEX)).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let list = match query(req, "mechanic") {
+            Some(m) => t.mechanics.get(m).cloned().unwrap_or_default(),
+            None => t.global,
+        };
+        (
+            "200 OK",
+            "application/json",
+            serde_json::to_vec(&list).expect("sérialisable"),
+        )
+    } else if rest.is_empty() {
         match clips.and_then(|c| std::fs::read(c.join(INDEX)).ok()) {
             Some(b) => ("200 OK", "application/json", b),
             None => ("200 OK", "application/json", b"[]".to_vec()),
@@ -351,7 +534,7 @@ pub fn route(req: &str, dir: Option<&Path>) -> Option<Reply> {
         if !valid_id(id) || id == "index" {
             return Some(not_found);
         }
-        match clips.and_then(|c| std::fs::read(c.join(format!("{id}.json"))).ok()) {
+        match clips.and_then(|c| std::fs::read(clip_path(&c, id)?).ok()) {
             Some(b) => ("200 OK", "application/json", b),
             None => not_found,
         }
@@ -409,7 +592,11 @@ mod tests {
             s.entries().iter().any(|e| e.id == rare.id),
             "le clip rare est gardé"
         );
-        let files = std::fs::read_dir(d.path().join(DIR)).unwrap().count();
+        let files = std::fs::read_dir(d.path().join(DIR))
+            .unwrap()
+            .flatten()
+            .filter(|f| f.path().is_file())
+            .count();
         assert_eq!(files, 5 + 1, "5 clips + index.json");
     }
 
@@ -508,6 +695,103 @@ mod tests {
         assert_eq!(route("GET /clips HTTP/1.1", None).unwrap().2, b"[]");
     }
 
+    fn scored(mech: &str, score: f32, speed: f32) -> Clip {
+        let mut c = clip(mech);
+        c.quality = Some(ClipQuality {
+            ball_speed_to_goal: speed,
+            goal_3s: score > 0.5,
+            score,
+        });
+        c
+    }
+
+    fn top_ids(s: &ClipStore) -> Vec<String> {
+        s.top().iter().map(|e| e.id.clone()).collect()
+    }
+
+    #[test]
+    fn hall_ranks_by_score_then_speed_and_excludes_v1() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = ClipStore::open_with(d.path(), 100, u64::MAX, false, 3).unwrap();
+        s.min_gap = Duration::ZERO;
+        s.add(clip("flick"), 0).unwrap(); // sans qualité
+        let a = s.add(scored("dribble", 0.5, 100.0), 0).unwrap().unwrap();
+        let b = s.add(scored("dribble", 0.9, 100.0), 0).unwrap().unwrap();
+        let c = s.add(scored("dribble", 0.9, 300.0), 0).unwrap().unwrap();
+        assert_eq!(top_ids(&s), [c.id.clone(), b.id.clone(), a.id.clone()]);
+        assert_eq!(s.top_min_score(), 0.5);
+    }
+
+    #[test]
+    fn better_clip_replaces_tenth_and_survives_ring_eviction() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = ClipStore::open_with(d.path(), 2, u64::MAX, false, 2).unwrap();
+        s.min_gap = Duration::ZERO;
+        s.top_per_mechanic = 0;
+        let best = s.add(scored("a", 0.9, 1.0), 0).unwrap().unwrap();
+        let mid = s.add(scored("b", 0.5, 1.0), 0).unwrap().unwrap();
+        let low = s.add(scored("c", 0.1, 1.0), 0).unwrap().unwrap();
+        assert_eq!(top_ids(&s), [best.id.clone(), mid.id.clone()]);
+        let top = d.path().join(DIR).join(TOP_DIR);
+        assert!(!top.join(format!("{}.json", low.id)).exists());
+        // Le meilleur est évincé de l'anneau (2 places) mais reste servi.
+        for _ in 0..4 {
+            s.add(scored("d", 0.2, 1.0), 0).unwrap();
+        }
+        assert!(!s.entries().iter().any(|e| e.id == best.id));
+        let get = |p: &str| route(&format!("GET {p} HTTP/1.1\r\n\r\n"), Some(d.path())).unwrap();
+        assert_eq!(get(&format!("/clips/{}", best.id)).0, "200 OK");
+        // Un meilleur clip chasse le dernier.
+        let new = s.add(scored("e", 0.7, 1.0), 0).unwrap().unwrap();
+        assert_eq!(top_ids(&s), [best.id.clone(), new.id.clone()]);
+        assert_eq!(get(&format!("/clips/{}", mid.id)).0, "404 Not Found");
+    }
+
+    #[test]
+    fn hall_persists_across_restart_and_keeps_best_per_mechanic() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = ClipStore::open_with(d.path(), 100, u64::MAX, false, 1).unwrap();
+        s.min_gap = Duration::ZERO;
+        for i in 0..5 {
+            s.add(scored("dribble", 0.9 - i as f32 * 0.1, 1.0), 0)
+                .unwrap();
+        }
+        let first = s.top()[0].clone();
+        let per = s.top.mechanics["dribble"].len();
+        assert_eq!(per, 3);
+        drop(s);
+        // Anneau perdu : seul le hall survit.
+        for f in std::fs::read_dir(d.path().join(DIR)).unwrap().flatten() {
+            if f.path().extension().is_some_and(|e| e == "json") {
+                std::fs::remove_file(f.path()).unwrap();
+            }
+        }
+        let s2 = ClipStore::open_with(d.path(), 100, u64::MAX, false, 1).unwrap();
+        assert_eq!(s2.top(), [first]);
+        assert_eq!(s2.top.mechanics["dribble"].len(), 3);
+    }
+
+    #[test]
+    fn top_routes() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = ClipStore::open_with(d.path(), 100, u64::MAX, false, 2).unwrap();
+        s.min_gap = Duration::ZERO;
+        let a = s.add(scored("flick", 0.4, 1.0), 0).unwrap().unwrap();
+        let b = s.add(scored("dribble", 0.8, 1.0), 0).unwrap().unwrap();
+        let get = |p: &str| route(&format!("GET {p} HTTP/1.1\r\n\r\n"), Some(d.path())).unwrap();
+        for p in ["/clips?top=1", "/clips/top"] {
+            let (st, ct, body) = get(p);
+            assert_eq!((st, ct), ("200 OK", "application/json"));
+            let l: Vec<Entry> = serde_json::from_slice(&body).unwrap();
+            assert_eq!(l, [b.clone(), a.clone()], "{p}");
+        }
+        let l: Vec<Entry> = serde_json::from_slice(&get("/clips/top?mechanic=flick").2).unwrap();
+        assert_eq!(l, [a]);
+        assert_eq!(get("/clips").0, "200 OK");
+        let all: Vec<Entry> = serde_json::from_slice(&get("/clips").2).unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
     /// Vrai clip court (deux voitures, ≈ 3 s) enregistré sur une simulation réelle. Exige les meshes.
     fn real_clip() -> Clip {
         use rl_env::clip::ClipRecorder;
@@ -554,6 +838,10 @@ mod tests {
         assert_eq!(v["cars"].as_array().unwrap().len(), 2);
         assert_eq!(v["cars"][1]["blue"], false);
         assert_eq!(v["cars"][0]["boost"].as_array().unwrap().len(), frames);
+        assert_eq!(v["ball_vel"].as_array().unwrap().len(), frames * 3);
+        assert_eq!(v["ball_ang"].as_array().unwrap().len(), frames * 3);
+        assert_eq!(v["cars"][0]["vel"].as_array().unwrap().len(), frames * 3);
+        assert_eq!(v["cars"][1]["ang"].as_array().unwrap().len(), frames * 3);
         assert_eq!(v["pads"]["big"].as_array().unwrap().len(), 34);
         assert_eq!(v["pads"]["pos"].as_array().unwrap().len(), 34 * 3);
         assert_eq!(v["pads"]["active0"].as_array().unwrap().len(), 34);

@@ -30,6 +30,12 @@ pas (suspension, contacts de Bullet). Mesuré (`crates/sim-core/tests/clip_repla
 - `<--out>/clips/<id>.json` + `index.json`, sur le PVC. Anneau borné : `--clips-max` (200) et `--clips-mb` (200) ;
   plein, on retire le plus ancien clip de la mécanique la plus représentée (les mécaniques rares restent).
   20 s minimum entre deux clips de la même mécanique. `--no-clips` coupe tout.
+- **Hall of fame** : `<--out>/clips/top/` (`<id>.json` + `index.json`), hors anneau, donc jamais évincé et conservé
+  au redémarrage. Classement par `quality.score` décroissant, départage par `ball_speed_to_goal`, puis id ; les clips
+  sans qualité (v1) sont exclus. `--clips-top N` (10) : classement général ; en plus, les 3 meilleurs de chaque
+  mécanique (`TOP_PER_MECHANIC`). Mis à jour à chaque clip avec qualité (un meilleur clip chasse le dernier ; fichiers
+  copiés/supprimés dans `top/`) et reconstruit au démarrage depuis `top/` + l'anneau. `--clips-top 0` le coupe.
+  Coût : ≤ 10 + 3 × mécaniques fichiers de ≈ 30 Kio.
 - Le serveur de `--metrics` sert en lecture seule `GET /clips` (liste JSON, du plus récent au plus ancien) et
   `GET /clips/<id>` (id restreint à `[A-Za-z0-9_-]`).
 - `GET /clips/<id>/trajectory[?hz=15|30|60]` (défaut 30) : le learner **rejoue le clip à la demande** avec RocketSim
@@ -38,7 +44,8 @@ pas (suspension, contacts de Bullet). Mesuré (`crates/sim-core/tests/clip_repla
   `hz`/`dt`/`frames`, `agent` (index de la voiture de l'agent dans `cars` : toujours 0, bleue), `ball` et
   `cars[].pose` en tableaux plats de 9 flottants par image (x y z en uu, axe avant, axe haut ; repère RocketSim,
   z vers le haut ; la droite = avant × haut), `cars[].boost` (0–100), `cars[].flags` (1 sol, 2 boost, 4 a sauté,
-  8 flip, 16 démolie), `cars[].blue`. `pads` (rejeu RocketSim ; l'état initial des 34 pads vient du premier état
+  8 flip, 16 démolie), `cars[].blue`. `ball_vel`/`ball_ang` et `cars[].vel`/`ang` (vitesse en uu/s, angulaire en rad/s, repère monde, 3 flottants par
+  image ; optionnels, absents des anciennes réponses), `pads` (rejeu RocketSim ; l'état initial des 34 pads vient du premier état
   clé du clip) : `pos` (x y z, 3 flottants par pad), `big` (gros = 100, petit = 12), `active0` (actif à l'image 0) et
   `events` (3 entiers par changement : image, pad, 1 réactivé / 0 ramassé ; seuls les changements, donc léger).
   Un client qui ignore `pads` marche toujours ; absent (`{}` ou manquant) ⇒ pas de pads affichés. Ça pèse ≈ 25 Kio. Cache mémoire de 48 trajectoires ; coût CPU : quelques ms
@@ -54,7 +61,20 @@ pas (suspension, contacts de Bullet). Mesuré (`crates/sim-core/tests/clip_repla
   balle / agent, lecture/pause, vitesse 0,25×–2×, boucle, barre de temps (repère orange = détection), lien
   partageable `/#<id>`. Les URL sont relatives : la page marche sous n'importe quel hôte. Exposée en lecture seule
   par la HTTPRoute `rlclips` (flux-gitops) : `/`, `/index.html`, `/clips`, `/clips/…` seulement.
-- Métrique : `trainer_clips_saved_total{kind="known"|"novel"}` (`novel` reste à 0 jusqu'à la PR de nouveauté).
+- `GET /clips?top=1` (ou `/clips/top`) : classement général (liste d'`Entry`, meilleur en premier) ;
+  `GET /clips/top?mechanic=<nom>` : les 3 meilleurs de la mécanique. `GET /clips/<id>` et `/trajectory` cherchent
+  dans l'anneau puis dans `top/` : un clip du top reste servi après avoir quitté l'anneau.
+- Lecteur 3D : le HUD affiche en direct la vitesse de la balle (et son max sur le clip) et celle des deux voitures
+  en km/h (uu/s × 0,036, uu/s en petit, couleur d'équipe, « ⚡ SUPERSONIQUE » au-delà de 2 200 uu/s), lues dans les
+  champs de vitesse de la trajectoire. **Mode avancé** (bouton, désactivé par défaut, mémorisé dans `localStorage`) :
+  flèches de vitesse (balle, voitures ; longueur ∝ vitesse), avant (vert) / haut (rose) et vitesse angulaire (jaune)
+  de chaque voiture, traînée de la balle (2,5 s), trajectoire balistique prédite (gravité 650, rebond sol à 60 %,
+  sans murs ni voitures), anneau rouge au point de détection de la mécanique, panneau texte (hauteur de balle,
+  sol/air, boost, distance voiture-balle).
+- Page web : onglet « 🏆 Top N » en tête (ouvert par défaut) : rang, mécanique, score en %, vitesse de balle (uu/s),
+  but oui/non, date ; clic = lecture. Le score est affiché en % partout dans la liste.
+- Métriques : `trainer_clips_saved_total{kind="known"|"novel"}` (`novel` reste à 0 jusqu'à la PR de nouveauté) ;
+  `trainer_clips_top_score` (score minimal du classement général, 0 s'il est vide).
 
 ## Client
 
