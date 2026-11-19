@@ -196,3 +196,28 @@ Essai v2 de 9 min, `--drill-prob 0.3` (≈ 2 490 épisodes de drill, ≈ 355 par
   7,5 min) ;
 - récupération : good 27, wheels 159, bad 159 : l'acteur de prod retombe sur le toit ou le côté dans près de la moitié
   des cas, c'est ce que le drill doit lui apprendre.
+
+### Essai drills v2 (17 min, avant le rebase sur l'observation v3)
+
+Acteur de prod, palier 5, `--drill-prob 0.3`, poids par défaut, `--no-clips`, 3,58 M pas (1 748 itérations, ≈ 3 400
+pas/s sur 2 vCPU), observation 43 / 78 actions.
+
+- **Non-régression** : buts / (buts + buts contre son camp) en match **0,919** (0,923 · 0,925 · 0,906 · 0,922 · 0,915 par
+  tranche de 350 itérations ; 0,920 avant la v2) ; toucher 0,93 ; Elo 1373 (palier 5 : 52 %).
+- **Réussite par famille** (épisodes → réussis) : `roof_still` 67 % (180/270), `roof_moving` 62 %, `wall_ball` 51 %,
+  `shot_roll` 45 % (182/404), `shot_bounce` 38 %, `shot_lob` 37 %, **`dribble_turn` 32 % (253/786)**, `shot_cross` 23 %,
+  `flip_reset` 3 %, `rebound` 4 %, `wall_run` 3 %, `recovery` 8 % (20 `good`/264) ; 0 pour `keeper` (0/692),
+  `aerial_touch`, `air_dribble`, `aerial_high` : l'acteur de prod ne défend pas et ne décolle pas volontairement.
+- **Mécaniques** : `dribble_turn` vu 1 fois en match et jamais en drill sur 786 épisodes (l'acteur de prod ne tourne
+  pas avec la balle : c'est le défaut à corriger) ; aucun but payé après virage/flick, aucun arrêt, bonus payés :
+  `wall_shot` 14, `flip_reset` 4, `dribble` 1.
+- Le gardien de cet essai tirait à 1300–2600 uu/s (aucun arrêt sur 692) ; la v2 finale le ralentit à 900–2200 pour
+  qu'un arrêt reste possible au début de l'apprentissage (non remesuré).
+- Taux de succès à lire comme un point de départ, pas un objectif : ils montrent où l'acteur de prod échoue
+  (virage, gardien, aérien, mur, rebond), donc où l'apprentissage doit progresser.
+
+**Après le rebase sur l'observation v3 (89 entrées / 90 actions, #24)** : 5 min, 1,25 M pas (≈ 6 100 pas/s avec #26),
+même acteur de prod agrandi automatiquement : buts / (buts + buts contre son camp) **0,902**, toucher 0,92 (5 min
+après l'échauffement du critique : bruit d'un essai court, pas de chute) ; réussites par famille du même ordre
+(`dribble_turn` 87/252 = 35 %, `shot_roll` 42 %, `shot_bounce` 38 %, `shot_lob` 32 %, `shot_cross` 28 %) ; gardien
+(900–2200 uu/s) toujours 0 arrêt sur 221 épisodes avec cet acteur.
