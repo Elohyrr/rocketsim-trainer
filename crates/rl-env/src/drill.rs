@@ -66,13 +66,16 @@ pub const FLIP_SHOT_USEFUL_SPEED: f32 = 1000.0;
 pub const FLICK_USEFUL_SPEED: f32 = 1500.0;
 
 /// Demi-tour : faire face à la cible (cos ≥ 0,866 = 30°) avec au moins `TURN_MIN_SPEED` uu/s vers elle, au sol.
-/// Barème linéaire sur le temps : plein tarif à `TURN_FAST_S`, rien à `TURN_SLOW_S` (mesures dans
-/// `docs/drills.md`, banc `examples/turnaround_bench.rs`). Bonus de base plafonné à 10 % du but ; le half flip
-/// détecté ajoute `HALF_FLIP_BONUS` (une fois).
+/// Barème linéaire sur le RETARD = temps écoulé − progression vers la cible / `TURN_MIN_SPEED` (temps de retard sur une
+/// voiture qui serait partie à 1 400 uu/s dès le départ ; négatif si on était déjà lancé vers la cible) : plein tarif à
+/// `TURN_FAST_S`, rien à `TURN_SLOW_S`. Le temps seul punissait le half flip (en l'air ≈ 1,2 s) alors qu'il avance vers la
+/// cible pendant que le demi-tour en roulant s'en éloigne de 330–430 uu (mesures dans `docs/drills.md`, banc
+/// `examples/turnaround_bench.rs`). Bonus de base plafonné à 10 % du but ; le half flip détecté ajoute
+/// `HALF_FLIP_BONUS` (une fois).
 pub const TURN_MIN_COS: f32 = 0.866;
 pub const TURN_MIN_SPEED: f32 = 1400.0;
-pub const TURN_FAST_S: f32 = 1.3;
-pub const TURN_SLOW_S: f32 = 2.6;
+pub const TURN_FAST_S: f32 = 0.0;
+pub const TURN_SLOW_S: f32 = 1.6;
 pub const TURN_BONUS: f32 = 0.8;
 pub const HALF_FLIP_BONUS: f32 = 0.2;
 
@@ -482,7 +485,7 @@ impl EpisodeBonus {
     }
 }
 
-/// Part du bonus de demi-tour selon le temps (s) pour faire face à la cible avec de la vitesse.
+/// Part du bonus de demi-tour selon le retard (s, voir `TURN_FAST_S`) pour faire face à la cible avec de la vitesse.
 pub fn turn_fraction(secs: f32) -> f32 {
     ((TURN_SLOW_S - secs) / (TURN_SLOW_S - TURN_FAST_S)).clamp(0.0, 1.0)
 }
@@ -492,6 +495,8 @@ pub fn turn_fraction(secs: f32) -> f32 {
 pub struct TurnTrack {
     start_tick: u64,
     pub half_flip_paid: bool,
+    /// Position de départ (xy) et direction unitaire vers la cible, prises à la première décision.
+    start: Option<([f32; 2], [f32; 2])>,
 }
 
 impl TurnTrack {
@@ -499,21 +504,28 @@ impl TurnTrack {
         Self {
             start_tick,
             half_flip_paid: false,
+            start: None,
         }
     }
 
-    /// Temps écoulé (s) si le critère est rempli à cette décision.
+    /// Retard (s) si le critère est rempli à cette décision : temps écoulé moins progression vers la cible / 1 400.
     pub fn step(&mut self, e: &StepEvents) -> Option<f32> {
+        let to = [e.ball.0[0] - e.car_pos[0], e.ball.0[1] - e.car_pos[1]];
+        let dn = to[0].hypot(to[1]).max(1.0);
+        let (p0, u) = *self
+            .start
+            .get_or_insert(([e.car_pos[0], e.car_pos[1]], [to[0] / dn, to[1] / dn]));
         if !e.car_on_ground {
             return None;
         }
-        let to = [e.ball.0[0] - e.car_pos[0], e.ball.0[1] - e.car_pos[1]];
-        let dn = to[0].hypot(to[1]).max(1.0);
         let fh = e.car_forward[0].hypot(e.car_forward[1]).max(1e-3);
         let cos = (e.car_forward[0] * to[0] + e.car_forward[1] * to[1]) / (fh * dn);
         let speed = (e.car_vel[0] * to[0] + e.car_vel[1] * to[1]) / dn;
-        (cos >= TURN_MIN_COS && speed >= TURN_MIN_SPEED)
-            .then(|| e.tick.saturating_sub(self.start_tick) as f32 / crate::TICKS_PER_SECOND)
+        (cos >= TURN_MIN_COS && speed >= TURN_MIN_SPEED).then(|| {
+            let secs = e.tick.saturating_sub(self.start_tick) as f32 / crate::TICKS_PER_SECOND;
+            let progress = (e.car_pos[0] - p0[0]) * u[0] + (e.car_pos[1] - p0[1]) * u[1];
+            secs - progress / TURN_MIN_SPEED
+        })
     }
 }
 
@@ -942,9 +954,9 @@ mod tests {
 
     #[test]
     fn demi_tour_bareme_et_half_flip() {
-        assert_eq!(turn_fraction(1.0), 1.0);
+        assert_eq!(turn_fraction(-0.3), 1.0);
         assert_eq!(turn_fraction(3.0), 0.0);
-        assert!((turn_fraction(1.95) - 0.5).abs() < 1e-5);
+        assert!((turn_fraction((TURN_FAST_S + TURN_SLOW_S) / 2.0) - 0.5).abs() < 1e-5);
         let l = BonusLedger::default();
         let mut r = DrillReport::default();
         let mut b = EpisodeBonus {
@@ -960,10 +972,22 @@ mod tests {
             b.on_events(Drill::Turnaround, &e, 1.0, &l, &mut r),
             (0.0, false)
         );
-        // Face à la balle, vite, en 1,2 s : plein tarif, fin.
+        // Face à la balle, vite, en 1 s sans avoir avancé : retard 1 s, tarif partiel.
         e.car_forward = [0.0, 1.0, 0.0];
         let (rw, done) = b.on_events(Drill::Turnaround, &e, 1.0, &l, &mut r);
-        assert!(done && b.success && (rw - TURN_BONUS).abs() < 1e-3, "{rw}");
+        let part = TURN_BONUS * turn_fraction(1.0);
+        assert!(done && b.success && (rw - part).abs() < 1e-3, "{rw}");
+        // Même temps mais 1 400 uu avancés vers la balle (half flip depuis la marche arrière) : retard nul, plein tarif.
+        let mut b = EpisodeBonus {
+            turn: Some(TurnTrack::new(0)),
+            ..Default::default()
+        };
+        let mut e0 = ev(1, false, ([0.0, 3000.0, 93.0], [0.0; 3]), &none);
+        e0.car_forward = [0.0, -1.0, 0.0];
+        b.on_events(Drill::Turnaround, &e0, 1.0, &l, &mut r);
+        e.car_pos = [0.0, 1400.0, 17.0];
+        let (rw, done) = b.on_events(Drill::Turnaround, &e, 1.0, &l, &mut r);
+        assert!(done && (rw - TURN_BONUS).abs() < 1e-3, "{rw}");
         // Half flip vu : bonus en plus, une seule fois.
         let hf = one(Mechanic::HalfFlip);
         let mut b = EpisodeBonus {

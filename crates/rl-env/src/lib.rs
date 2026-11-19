@@ -15,6 +15,7 @@ use sim_core::clip::{Clip, ClipRecorder};
 use sim_core::{Controls, Sim, init_meshes, meshes_dir_from_env};
 
 pub mod drill;
+pub mod half_flip;
 pub use drill::{BonusLedger, DrillReport};
 pub use scenarios::Drill;
 pub use sim_core::SimError;

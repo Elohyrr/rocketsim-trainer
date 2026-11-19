@@ -68,7 +68,7 @@ balle en flippant et fait demi-tour en roulant. Mêmes règles que v1/v2 : bonus
 | Drill | Départ | Bonus | Réussite |
 |---|---|---|---|
 | `flip_shot` (3) | balle au sol (70 %) ou basse (z 110–260), à l'arrêt ou roulante, à 700–1600 devant la voiture lancée (700–1500 uu/s), but dans l'axe ou en angle ; adversaire garé ; 8 s | méca `flip_shot` : 0,5, payée si la balle part vers le but à > 1 000 uu/s (sinon en attente d'un but ≤ 3 s) | but, ou flip shot à > 1 000 uu/s |
-| `turnaround` (2) | voiture au sol, cap tourné de 150–180° par rapport à la balle (1 500–3 200 uu) ; 40 % à l'arrêt, 30 % roulant vers l'avant, 30 % en marche arrière vers la balle ; 6 s | 0,8 × part de temps (plein à ≤ 1,3 s, nul à ≥ 2,6 s) quand la voiture, au sol, fait face à la balle (≤ 30°) avec ≥ 1 400 uu/s vers elle ; + 0,2 une fois si `half_flip` détecté | critère de temps rempli |
+| `turnaround` (2) | voiture au sol, cap tourné de 150–180° par rapport à la balle (1 500–3 200 uu) ; 40 % à l'arrêt, 30 % roulant vers l'avant, 30 % en marche arrière vers la balle ; 6 s | 0,8 × part du retard (plein à ≤ 0 s, nul à ≥ 1,6 s ; retard = temps − progression vers la balle / 1 400) quand la voiture, au sol, fait face à la balle (≤ 30°) avec ≥ 1 400 uu/s vers elle ; + 0,2 une fois si `half_flip` détecté | critère de temps rempli |
 | `flick` (2) | balle sur le toit, voiture à 500–1400 uu/s, cap vers le but ±0,9 rad, **adversaire actif** à 1 200–2 600 devant ; 15 s | `flick` 0,6 payé si la balle part vers le but à > **1 500** uu/s (le seuil du `flick` passe de 500 à 1 500 pour tous les drills) ; but ≤ 6 s après un flick : +0,5 (existant) | but, ou flick à > 1 500 uu/s |
 | `rings` (1,5) | 3–6 anneaux virtuels (rayon 260–380, z 250–1400, 40 % près d'un mur), voiture au sol, boost 100 ; 20 s | 0,8 réparti sur les anneaux (ordre imposé, orientation libre) + jusqu'à 0,2 de temps (nul à 3 s × anneaux) | tous les anneaux |
 
@@ -87,26 +87,58 @@ diagonal), 4 négatives (dodge latéral, dodge trop ancien, balle derrière, auc
 
 ### Mesure du demi-tour (`cargo run --release -p rl-env --example turnaround_bench`)
 
-Voiture dos à la cible (+Y), temps (s) pour être au sol, nez à ≤ 30°, avec la vitesse minimale vers la cible. Demi-tour en
-roulant = meilleur réglage d'un petit balayage (braquage proportionnel, boost, frein à main, marche arrière) ;
-half flip = meilleur de 600 scripts (saut, dodge arrière, annulation, roulis, lacet) :
+Voiture dos à la cible (+Y), boost 100. Deux familles de scripts, **optimisées avec le même budget** (30 000 tirages aléatoires
++ 30 000 mutations d'un paramètre, 6 départs en parallèle) :
+- **demi-tour en roulant** : braquage proportionnel ou plein braquage, frein à main (seuil d'angle), marche arrière initiale,
+  accélérateur réduit pendant le virage, seuil d'angle du boost (boost permanent possible) ;
+- **half flip** (`rl_env::half_flip::HalfFlipScript`) : durée du saut, tangage arrière avant le dodge, instant du dodge,
+  composante latérale, début/durée de l'annulation (tangage −1), roulis (début, durée, sens), lacet, instant du boost
+  (cosinus du nez avec la cible ; boost maintenu à l'atterrissage et en sortie).
 
-| Départ | vitesse mini 1 000 : roulant / half flip | 1 400 : roulant / half flip |
-|---|---|---|
-| à l'arrêt, boost 100 | 1,25 / 1,40 | 1,28 / 1,69 |
-| nez dos à la cible, 700 uu/s vers l'avant | 1,18 / 1,47 | 1,25 / 1,77 |
-| marche arrière vers la cible, 800 uu/s | 1,48 / 1,46 | — |
-| marche arrière, 1 400 uu/s | 1,38 / 1,46 | — |
-| marche arrière, 1 400 uu/s, boost 0 | 1,68 / 1,36 | — |
-| à l'arrêt, boost 0 | 1,38 / 1,90 | 2,50 / 2,19 |
+Temps (s) jusqu'à être AU SOL, nez à ≤ 30°, avec ≥ 1 400 uu/s vers la cible (métrique du drill), puis temps pour avoir parcouru
+2 000 uu vers la cible (`REACH=2000`, sans condition de cap/vitesse) ; « perdu » = recul maximal du demi-tour en roulant.
 
-**Résultat honnête : dans RocketSim, le half flip scripté ne bat PAS nettement le demi-tour en roulant** (il gagne
-seulement en marche arrière sans boost, de peu, et à 1 400 uu/s sans boost). Aucun barème fondé sur le seul temps ne peut
-donc le rendre « nettement » plus rentable ; le script n'est peut-être pas optimal (grille grossière), mais l'écart
-est trop grand pour l'espérer. Choix retenus : barème sur le temps jusqu'à 1 400 uu/s (le half flip y perd moins que le
-roulant sans boost), 30 % de départs en marche arrière (cas où il est compétitif) et **+0,2 de bonus pour un `half_flip`
-détecté**, qui est l'avantage réel donné au half flip. À rouvrir si on veut le forcer : exiger le `half_flip` pour le plein
-tarif.
+| Départ | face + 1 400 : roulant / half flip | perdu (roulant) | 2 000 uu : roulant / half flip |
+|---|---|---|---|
+| à l'arrêt | 1,27 / 1,41 | 327 uu | 2,25 / 1,93 |
+| marche arrière lente 500 | 1,33 / 1,19 | 0 | 2,07 / 1,55 |
+| marche arrière rapide 1 400 | 1,42 / 0,98 | 0 | 1,59 / 1,03 |
+| marche avant lente 500 (nez à l'opposé) | 1,14 / 1,53 | 417 uu | 2,18 / 2,26 |
+| à l'arrêt, boost 0 | 2,50 / 2,90 | 223 uu | 2,86 / 2,54 |
+| marche arrière 1 400, boost 0 | 2,82 / 0,98 | 0 | 1,59 / 1,15 |
+
+**Lecture.** Le jeu de paramètres unique retenu comme référence (`half_flip::REFERENCE`, optimisé sur la somme des temps
+de 4 départs) donne 1,52 / 1,27 / 1,16 / 1,67 s (face + 1 400) et 2,07 / 1,73 / 1,10 / 2,35 s (2 000 uu) ; un réglage par
+départ gagne 0,1–0,2 s de plus (c'est le tableau). Les écarts ± 0,1 s entre deux recherches sont du bruit d'optimisation.
+
+**Pourquoi la conclusion v3 (« le half flip ne gagne qu'en marche arrière ») était incomplète.**
+1. *La métrique « face + 1 400 »* ne mesure que l'instant où l'on est prêt. Un saut en l'air dure ≈ 0,9–1,2 s (gravité 650,
+   saut de 300 uu/s : on ne peut pas atterrir plus tôt), donc le half flip n'est « prêt » qu'après 1,2–1,5 s depuis l'arrêt,
+   alors que le demi-tour en roulant, plein braquage + frein à main, y est en 1,1–1,3 s. Mais pendant ce temps le half flip
+   **avance** vers la cible (le dodge arrière ajoute ≈ 500 uu/s vers elle : y = +950 à +1 100 uu au moment du critère) alors que le
+   demi-tour en roulant **recule** de 330–420 uu (ou reste sur place). En temps pour parcourir 2 000 uu (ou en « retard » =
+   temps − progression/1 400) le half flip gagne de 0,3 s à l'arrêt, 0,5 s en marche arrière lente, 0,6 s en marche arrière rapide ;
+   il perd seulement en marche avant lente, nez à l'opposé (≈ 0,1 s : le roulant tourne presque sur place avec l'élan).
+2. *Sans boost* l'écart est énorme en marche arrière (0,98 s contre 2,8 s : le half flip garde la vitesse, le roulant doit
+   freiner puis réaccélérer).
+3. *Ce qui reste vrai* : vu du seul critère de cap + vitesse, depuis l'arrêt ou en avançant, le demi-tour en roulant bien
+   fait (powerslide + boost) est aussi rapide. RocketSim reproduit donc l'avantage du half flip, mais c'est un avantage de
+   **distance / vitesse conservée**, pas de rotation plus rapide. Paramètres RocketSim impliqués : un half flip qui réussit
+   demande l'annulation dès 0–6 ticks après le dodge (le tangage arrière du dodge dure ≈ 0,65 s sinon), un roulis
+   ±1 d'environ 0,1–0,4 s et du lacet pendant l'annulation ; le boost en l'air (nez vers la cible) vaut ≈ 990 uu/s², contre
+   ≈ 1 600 + 990 au sol, d'où l'intérêt de poser les roues vite.
+
+**Barème retenu** : le drill note le *retard* (temps − progression vers la cible / 1 400 uu/s) au lieu du temps seul. Mesuré
+(roulant / half flip de référence) : arrêt 1,25 / 0,75 ; marche arrière lente 0,84 / 0,38 ; rapide 0,52 / −0,37 ; avant lente
+1,17 / 1,09. Plein tarif à ≤ 0 s, rien à ≥ 1,6 s : le half flip est récompensé là où il est réellement meilleur, le demi-tour en
+roulant garde une part correcte (≈ 20–45 %) et reste le bon choix quand il gagne. Le bonus unique de 0,2 pour un `half_flip`
+détecté est conservé (0 half flip vu en production : sans lui l'exploration ne trouve pas la mécanique).
+
+**Séquence de référence** (`rl_env::half_flip::REFERENCE`, test `reference_bat_le_demi_tour_en_marche_arriere`) : saut de
+2 ticks → tangage arrière (pitch +1) 4 ticks → dodge arrière → annulation (pitch −1 + lacet) dès 2 ticks après le dodge →
+roulis +1 à 8 ticks après le dodge pendant 45 ticks → boost dès que le nez passe l'horizontale vers la cible, maintenu à
+l'atterrissage → sortie en ligne droite (braquage proportionnel au cap). `turnaround_bench ref` la recalcule ;
+`turnaround_bench best` (variables `V0`, `REACH`) trace une exécution.
 
 ### Recherche : maps workshop dans RocketSim (non implémenté)
 
@@ -301,5 +333,5 @@ après l'échauffement du critique : bruit d'un essai court, pas de chute) ; ré
 - **Mécaniques** : `half_flip` et `flip_shot` **jamais vus** (0 en drill comme en match) avec l'acteur de prod : c'est le
   constat d'Elohyrr, et le bonus ne peut payer que ce qui arrive ; c'est à l'apprentissage de les découvrir. Bonus payés :
   wall_shot 9, dribble 6, flip_reset 1.
-- Limites : essai court, un seul tirage, pas de décision statistique ; le barème de `turnaround` est réglé sur un script de half flip
-  qui ne bat pas le demi-tour en roulant (voir plus haut).
+- Limites : essai court, un seul tirage, pas de décision statistique ; le barème de `turnaround` de cet essai (temps seul) a été remplacé
+  ensuite par le retard (voir « Mesure du demi-tour » : le half flip y est récompensé quand il est meilleur).
