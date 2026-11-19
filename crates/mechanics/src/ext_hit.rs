@@ -43,6 +43,9 @@
 //!   z > 300 au toucher ; une fois par rebond.
 //! - `backboard_double` : double touch de base dont le rebond était sur le mur du fond (compté en plus de
 //!   `double_touch`). Valeur = vitesse de balle au second toucher.
+//! - `flip_shot` : dodge avant ou diagonal (secteur 0, 1 ou 7) au plus 30 ticks (0,25 s) avant le toucher, balle
+//!   basse (z ≤ 300), au moins 30 uu devant le centre de la voiture dans son repère (toucher par l'avant), gain de vitesse ≥ 300.
+//!   Famille du flick (un flick le déclenche aussi). Valeur = vitesse après.
 //! - `half_volley` : toucher 1 à 8 ticks après un rebond de la balle au sol (centre < 170 uu, vitesse verticale
 //!   < −100 puis > 0, rebond antérieur au tick du toucher), balle z < 300 au toucher, vitesse après > 1 800.
 
@@ -215,6 +218,19 @@ impl Group {
             out.emit(Mechanic::Save, after, Support::None);
             if !h.car.on_ground {
                 out.emit(Mechanic::AerialSave, after, Support::None);
+            }
+        }
+
+        // --- Flip shot : toucher par l'avant pendant un dodge avant ou diagonal (≤ 0,25 s), qui ajoute de la vitesse.
+        if let (Some(d), Some(age)) = (h.dodge, h.dodge_age) {
+            let nose = dot(sub(h.ball.pos, h.car.pos), h.car.forward);
+            if age <= FLIP_SHOT_MAX_DODGE_TICKS
+                && matches!(d.sector, 0 | 1 | 7)
+                && nose >= FLIP_SHOT_MIN_FWD
+                && h.ball.pos[2] <= FLIP_SHOT_MAX_BALL_Z
+                && gain >= FLIP_SHOT_MIN_GAIN
+            {
+                out.emit(Mechanic::FlipShot, after, Support::None);
             }
         }
 

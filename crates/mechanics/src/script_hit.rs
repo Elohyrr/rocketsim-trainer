@@ -79,6 +79,41 @@ fn pinch_seq(
 const WALL_BALL: [f32; 3] = [3990.0, 0.0, 400.0];
 const WALL_CAR: [f32; 3] = [3800.0, 0.0, 400.0];
 
+// ---------------------------------------------------------------- flip shot
+
+/// Voiture au sol qui saute puis dodge (`fwd`, `lat`) ; `wait` ticks plus tard elle touche une balle posée à
+/// `ball_off` (repère monde, relatif à la voiture) et l'envoie à `v_after`.
+fn flip_shot_seq(
+    fwd: f32,
+    lat: f32,
+    wait: usize,
+    ball_off: [f32; 3],
+    v_after: [f32; 3],
+) -> Vec<Frame> {
+    let mut car = car_on_ground();
+    car.vel = [1200.0, 0.0, 0.0];
+    let mut s = Script::new(
+        car,
+        BallTick {
+            pos: [400.0, 0.0, 93.0],
+            vel: [0.0; 3],
+        },
+    );
+    s.hold(5).once(|c, _| {
+        crate::script::jump(c);
+        c.pos[2] = 60.0;
+    });
+    s.hold(5).once(|c, _| dodge(c, fwd, lat));
+    s.hold(wait).once(move |c, b| {
+        hit(c);
+        c.pos[2] = 80.0;
+        b.pos = add(c.pos, ball_off);
+        b.vel = v_after;
+    });
+    s.hold(10);
+    s.frames()
+}
+
 // ---------------------------------------------------------------- cushion
 
 /// Voiture au sol à 500 uu/s, balle qui arrive à `vx_before` (vers la voiture) et repart à `v_after`.
@@ -256,6 +291,49 @@ pub fn cases() -> Vec<Case> {
             PowerShot,
             false,
             ground_shot([2900.0, 0.0, 0.0]),
+            &[(Touch, 1)],
+        ),
+        // --- Flip shot.
+        case(
+            "flip_shot",
+            FlipShot,
+            true,
+            flip_shot_seq(1.0, 0.0, 8, [110.0, 0.0, 0.0], [2200.0, 0.0, 300.0]),
+            &[(Touch, 1), (FlipShot, 1)],
+        ),
+        case(
+            "flip_shot_diagonal",
+            FlipShot,
+            true,
+            flip_shot_seq(0.7, 0.7, 8, [110.0, 0.0, 0.0], [2000.0, 400.0, 300.0]),
+            &[(Touch, 1), (FlipShot, 1)],
+        ),
+        case(
+            "flip_shot_negative_side_dodge",
+            FlipShot,
+            false,
+            flip_shot_seq(0.0, 1.0, 8, [110.0, 0.0, 0.0], [2200.0, 0.0, 300.0]),
+            &[(Touch, 1)],
+        ),
+        case(
+            "flip_shot_negative_late",
+            FlipShot,
+            false,
+            flip_shot_seq(1.0, 0.0, 40, [110.0, 0.0, 0.0], [2200.0, 0.0, 300.0]),
+            &[(Touch, 1)],
+        ),
+        case(
+            "flip_shot_negative_behind",
+            FlipShot,
+            false,
+            flip_shot_seq(1.0, 0.0, 8, [-110.0, 0.0, 0.0], [-2200.0, 0.0, 300.0]),
+            &[(Touch, 1)],
+        ),
+        case(
+            "flip_shot_negative_no_gain",
+            FlipShot,
+            false,
+            flip_shot_seq(1.0, 0.0, 8, [110.0, 0.0, 0.0], [150.0, 0.0, 0.0]),
             &[(Touch, 1)],
         ),
         // --- Pinch.
