@@ -448,6 +448,12 @@ pub struct CarTrack {
     pub pose: Vec<f32>,
     pub boost: Vec<f32>,
     pub flags: Vec<u8>,
+    /// Vitesse linéaire (uu/s) et angulaire (rad/s, repère monde), 3 flottants par image. Absentes des réponses
+    /// d'avant l'ajout du champ.
+    #[serde(default)]
+    pub vel: Vec<f32>,
+    #[serde(default)]
+    pub ang: Vec<f32>,
 }
 
 /// Boosts au sol d'un rejeu : liste fixe (une fois) puis changements d'état échantillonnés.
@@ -472,6 +478,11 @@ pub struct Trajectory {
     pub max_drift: f32,
     /// Balle : même disposition que [`CarTrack::pose`].
     pub ball: Vec<f32>,
+    /// Vitesse (uu/s) et vitesse angulaire (rad/s) de la balle, 3 flottants par image (champs optionnels).
+    #[serde(default)]
+    pub ball_vel: Vec<f32>,
+    #[serde(default)]
+    pub ball_ang: Vec<f32>,
     /// Voitures dans l'ordre du clip ; la 0 est l'agent.
     pub cars: Vec<CarTrack>,
     /// Pads (absent des réponses d'avant l'ajout du champ).
@@ -492,6 +503,10 @@ fn push_pose(out: &mut Vec<f32>, p: Vec3, f: Vec3, u: Vec3) {
     out.extend([r4(f.x), r4(f.y), r4(f.z), r4(u.x), r4(u.y), r4(u.z)]);
 }
 
+fn push_vec(out: &mut Vec<f32>, v: Vec3) {
+    out.extend([r1(v.x), r1(v.y), r1(v.z)]);
+}
+
 impl Sim {
     /// Rejoue `clip` sur cette simulation (sans voiture) et échantillonne à `hz` (1, 15, 30, 60 ou 120 : un
     /// diviseur de [`crate::TICK_RATE`] et de `tick_skip`).
@@ -504,6 +519,8 @@ impl Sim {
             frames: 0,
             max_drift: 0.0,
             ball: Vec::new(),
+            ball_vel: Vec::new(),
+            ball_ang: Vec::new(),
             cars: rp
                 .clip()
                 .blue
@@ -513,6 +530,8 @@ impl Sim {
                     pose: Vec::new(),
                     boost: Vec::new(),
                     flags: Vec::new(),
+                    vel: Vec::new(),
+                    ang: Vec::new(),
                 })
                 .collect(),
             pads: PadTrack::default(),
@@ -540,9 +559,13 @@ impl Sim {
             prev = now;
             let b = sim.arena.pin_mut().get_ball();
             push_pose(&mut t.ball, b.pos, b.rot_mat.forward, b.rot_mat.up);
+            push_vec(&mut t.ball_vel, b.vel);
+            push_vec(&mut t.ball_ang, b.ang_vel);
             for (&id, track) in ids.iter().zip(&mut t.cars) {
                 let c = sim.arena.pin_mut().get_car(id);
                 push_pose(&mut track.pose, c.pos, c.rot_mat.forward, c.rot_mat.up);
+                push_vec(&mut track.vel, c.vel);
+                push_vec(&mut track.ang, c.ang_vel);
                 track.boost.push(r1(c.boost));
                 let on = |cond: bool, bit: u8| if cond { bit } else { 0 };
                 track.flags.push(

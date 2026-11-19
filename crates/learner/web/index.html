@@ -27,7 +27,16 @@
   .gauge .bar { display:inline-block; width:64px; height:9px; border:1px solid #fff8; border-radius:2px; overflow:hidden; }
   .gauge .bar i { display:block; height:100%; width:0; }
   .gauge.blue .bar i { background:var(--blue); } .gauge.orange .bar i { background:var(--orange); }
+  .gauge { flex-wrap:wrap; }
   .gauge b { min-width:2.2em; text-align:right; }
+  .spd { flex-basis:100%; font-size:12px; line-height:1.25; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .spd b { min-width:0; font-size:15px; } .spd small { opacity:.7; font-size:10.5px; }
+  .gauge.blue .spd b { color:#7db4ff; } .gauge.orange .spd b { color:#ffb070; }
+  .ss { color:#ff5b5b; font-weight:700; font-size:11px; }
+  #ballhud { margin-top:4px; background:#0009; border-radius:6px; padding:4px 8px; font-size:12px; font-variant-numeric:tabular-nums; }
+  #ballhud b { font-size:15px; } #ballhud small { opacity:.7; font-size:10.5px; }
+  #adv { position:absolute; left:8px; bottom:8px; background:#000a; border-radius:6px; padding:4px 8px; font:11.5px/1.35 ui-monospace,monospace; pointer-events:none; white-space:pre; display:none; max-width:calc(100% - 16px); overflow:hidden; text-shadow:0 1px 3px #000; }
+  #advbtn.on { background:var(--blue); color:#fff; }
   .gauge.agent { outline:1px solid #fffa; }
   #msg { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--dim); text-align:center; padding:20px; pointer-events:none; }
   #ctl { background:var(--panel); border-top:1px solid var(--line); padding:8px 12px; padding-bottom:max(8px,env(safe-area-inset-bottom)); }
@@ -78,7 +87,8 @@
   <div class="wrap">
     <main>
       <div id="view"></div>
-      <div id="hud"><div class="g"><div class="b" id="hudl"></div></div><div class="g r" id="gauges"></div></div>
+      <div id="hud"><div class="g"><div class="b" id="hudl"></div><div id="ballhud"></div></div><div class="g r" id="gauges"></div></div>
+      <div id="adv"></div>
       <div id="msg">Choisis un clip dans la liste.</div>
     </main>
     <section id="ctl">
@@ -91,6 +101,7 @@
         <button id="speed">1×</button>
         <button id="loop" class="on">Boucle</button>
         <span class="grow"></span>
+        <button id="advbtn" title="Flèches de vitesse, orientation, trajectoire prédite">Mode avancé</button>
         <button data-cam="free" class="cam on">Libre</button>
         <button data-cam="ball" class="cam">Balle</button>
         <button data-cam="agent" class="cam">Agent</button>
@@ -320,8 +331,9 @@ function setTraj(t) {
   for (const c of cars) scene.remove(c);
   cars = t.cars.map((c, i) => makeCar(c.blue, i === t.agent));
   buildPads(t);
-  $('gauges').innerHTML = t.cars.map((c, i) => `<div class="gauge ${c.blue ? 'blue' : 'orange'}${i === t.agent ? ' agent' : ''}"><span>${i === t.agent ? 'Agent' : (c.blue ? 'Bleu' : 'Orange')}</span><span class="bar"><i></i></span><b></b></div>`).join('');
-  gaugeEls = [...$('gauges').children].map(d => [d.querySelector('i'), d.querySelector('b')]);
+  $('gauges').innerHTML = t.cars.map((c, i) => `<div class="gauge ${c.blue ? 'blue' : 'orange'}${i === t.agent ? ' agent' : ''}"><span>${i === t.agent ? 'Agent' : (c.blue ? 'Bleu' : 'Orange')}</span><span class="bar"><i></i></span><b></b><div class="spd"></div></div>`).join('');
+  gaugeEls = [...$('gauges').children].map(d => [d.querySelector('i'), d.querySelector('b'), d.querySelector('.spd')]);
+  setupExtras(t);
   if (ballPath) scene.remove(ballPath);
   const pts = []; for (let i = 0; i < t.frames; i++) pts.push(P(t.ball[i * 9], t.ball[i * 9 + 1], t.ball[i * 9 + 2]));
   ballPath = line(pts, 0xffffff, 0.35); scene.add(ballPath);
@@ -332,6 +344,108 @@ function setTraj(t) {
   time = 0; playing = true; $('play').textContent = '⏸';
   if (camMode === 'free') { orbit.target.set(0, 300, 0); camera.position.set(0, 3800, 7600); }
 }
+
+/* ---------- Vitesses (HUD) et mode avancé ---------- */
+const KMH = 0.036, SUPERSONIC = 2200, GRAVITY = 650, BALL_R = 93;
+let adv = false;
+try { adv = localStorage.getItem('adv') === '1'; } catch (e) { /* stockage indisponible */ }
+const advGroup = new THREE.Group(); scene.add(advGroup);
+let A = null; // objets 3D du mode avancé pour le clip en cours
+const vlen = (a, i) => Math.hypot(a[i * 3], a[i * 3 + 1], a[i * 3 + 2]);
+const vlerp = (a, i, j, k, o) => { for (let c = 0; c < 3; c++) o[c] = a[i * 3 + c] + (a[j * 3 + c] - a[i * 3 + c]) * k; return o; };
+const fmtSpeed = v => `<b>${Math.round(v * KMH)}</b> km/h <small>${Math.round(v).toLocaleString('fr-FR')} uu/s</small>`;
+const arrow = (hex) => { const a = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(), 1, hex, 100, 50); a.visible = false; advGroup.add(a); return a; };
+function setArrow(a, org, v, len) {
+  const m = Math.hypot(v[0], v[1], v[2]);
+  if (!(len > 15) || m < 1e-6) { a.visible = false; return; }
+  a.visible = true; a.position.copy(org); a.setDirection(P(v[0] / m, v[1] / m, v[2] / m));
+  a.setLength(len, Math.min(len * 0.25, 130), Math.min(len * 0.12, 60));
+}
+function setupExtras(t) {
+  while (advGroup.children.length) advGroup.remove(advGroup.children[0]);
+  const hasVel = !!(t.ball_vel && t.ball_vel.length >= t.frames * 3);
+  const cv = c => !!(c.vel && c.vel.length >= t.frames * 3);
+  let max = 0; if (hasVel) for (let i = 0; i < t.frames; i++) max = Math.max(max, vlen(t.ball_vel, i));
+  const trailN = Math.max(2, Math.round(2.5 * t.hz)), predN = 45;
+  const line3 = (n, hex, op) => {
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3)); g.setDrawRange(0, 0);
+    const l = new THREE.Line(g, new THREE.LineBasicMaterial({ color: hex, transparent: true, opacity: op })); l.frustumCulled = false; advGroup.add(l); return l;
+  };
+  const ti = Math.min(Math.round(t.trigger_time / t.dt), t.frames - 1);
+  const impact = new THREE.Mesh(new THREE.TorusGeometry(130, 14, 8, 24), new THREE.MeshBasicMaterial({ color: 0xff3b6b }));
+  impact.position.copy(P(t.ball[ti * 9], t.ball[ti * 9 + 1], t.ball[ti * 9 + 2])); impact.rotation.x = Math.PI / 2; advGroup.add(impact);
+  A = {
+    hasVel, ballMax: max, trailN, predN, impact, pos: t.cars.map(() => new THREE.Vector3()),
+    trail: line3(trailN, 0xffffff, 0.8), pred: line3(predN, 0x55ffcc, 0.9),
+    ballV: arrow(0xffffff),
+    carV: t.cars.map(c => arrow(c.blue ? BLUE : ORANGE)), carF: t.cars.map(() => arrow(0x4cff6a)),
+    carU: t.cars.map(() => arrow(0xff5cf0)), carW: t.cars.map(() => arrow(0xffe14c)),
+    carHasVel: t.cars.map(cv),
+  };
+  $('adv').style.display = 'none';
+  advGroup.visible = adv;
+}
+function updateExtras(t, i, j, k, x, bp) {
+  const v = [0, 0, 0], o = [0, 0, 0];
+  // HUD de vitesses : balle (+ max du clip) et chaque voiture, d'après les champs de la trajectoire.
+  const bh = $('ballhud');
+  if (A.hasVel) {
+    vlerp(t.ball_vel, i, j, k, v); const sp = Math.hypot(v[0], v[1], v[2]);
+    bh.innerHTML = `Balle ${fmtSpeed(sp)}<br>max ${Math.round(A.ballMax * KMH)} km/h <small>${Math.round(A.ballMax).toLocaleString('fr-FR')} uu/s</small>`;
+    bh.style.display = '';
+  } else bh.style.display = 'none';
+  const lines = [];
+  t.cars.forEach((c, n) => {
+    const el = gaugeEls[n] && gaugeEls[n][2];
+    let cs = 0;
+    if (A.carHasVel[n]) {
+      vlerp(c.vel, i, j, k, o); cs = Math.hypot(o[0], o[1], o[2]);
+      if (el) el.innerHTML = `${fmtSpeed(cs)}${cs > SUPERSONIC ? ' <span class="ss">⚡ SUPERSONIQUE</span>' : ''}`;
+    } else if (el) el.textContent = '';
+    if (!adv) return;
+    const org = A.pos[n];
+    setArrow(A.carV[n], org, A.carHasVel[n] ? o : [0, 0, 0], Math.min(cs * 0.3, 2500));
+    const f = c.pose.slice(i * 9 + 3, i * 9 + 6), u = c.pose.slice(i * 9 + 6, i * 9 + 9);
+    setArrow(A.carF[n], org, f, 320); setArrow(A.carU[n], org, u, 220);
+    if (c.ang && c.ang.length >= t.frames * 3) { const w = vlerp(c.ang, i, j, k, [0, 0, 0]); setArrow(A.carW[n], org, w, Math.min(Math.hypot(w[0], w[1], w[2]) * 60, 450)); }
+    const dist = org.distanceTo(bp);
+    const g = c.flags[i] & 1;
+    const bo = c.boost[i];
+    lines.push(`${n === t.agent ? 'Agent' : (c.blue ? 'Bleu ' : 'Orange')}: ${g ? 'sol' : 'air'} · boost ${Math.round(bo)} · balle à ${Math.round(dist)} uu`);
+  });
+  if (!adv) return;
+  vlerp(t.ball_vel || [], i, j, k, v);
+  const bv = A.hasVel ? v : [0, 0, 0];
+  setArrow(A.ballV, bp, bv, Math.min(Math.hypot(bv[0], bv[1], bv[2]) * 0.3, 2500));
+  lines.unshift(`Balle: hauteur ${Math.round(bp.y)} uu`);
+  const panel = $('adv'); panel.textContent = lines.join('\n'); panel.style.display = 'block';
+  // Traînée : les ~2,5 dernières secondes de la balle.
+  const a0 = Math.max(0, i - A.trailN + 1), pos = A.trail.geometry.attributes.position;
+  let n = 0;
+  for (let f = a0; f <= i; f++, n++) { const q = P(t.ball[f * 9], t.ball[f * 9 + 1], t.ball[f * 9 + 2]); pos.setXYZ(n, q.x, q.y, q.z); }
+  pos.needsUpdate = true; A.trail.geometry.setDrawRange(0, n);
+  // Trajectoire balistique prédite (gravité, rebond au sol à 60 %, sans murs ni plafond ni voitures).
+  const pp = A.pred.geometry.attributes.position;
+  if (A.hasVel) {
+    const r = [t.ball[i * 9] + (t.ball[j * 9] - t.ball[i * 9]) * k, t.ball[i * 9 + 1] + (t.ball[j * 9 + 1] - t.ball[i * 9 + 1]) * k, bp.y];
+    let px = r[0], py = r[1], pz = r[2], vx = v[0], vy = v[1], vz = v[2];
+    const h = 0.04;
+    for (let s = 0; s < A.predN; s++) {
+      pp.setXYZ(s, px, pz, -py);
+      px += vx * h; py += vy * h; vz -= GRAVITY * h; pz += vz * h;
+      if (pz < BALL_R) { pz = BALL_R; if (vz < 0) vz = -vz * 0.6; }
+    }
+    pp.needsUpdate = true; A.pred.geometry.setDrawRange(0, A.predN);
+  } else A.pred.geometry.setDrawRange(0, 0);
+}
+function setAdv(on) {
+  adv = on; $('advbtn').classList.toggle('on', on);
+  try { localStorage.setItem('adv', on ? '1' : '0'); } catch (e) { /* stockage indisponible */ }
+  if (A) advGroup.visible = on;
+  if (!on) $('adv').style.display = 'none';
+}
+$('advbtn').onclick = () => setAdv(!adv);
+setAdv(adv);
 
 /* ---------- Lecture ---------- */
 let playing = false, time = 0, speed = 1, loop = true, camMode = 'free', last = performance.now(), seeking = false;
@@ -375,10 +489,12 @@ function frame(now) {
       const bo = c.boost[i] + (c.boost[Math.min(i + 1, traj.frames - 1)] - c.boost[i]) * k;
       if (gaugeEls[n]) { gaugeEls[n][0].style.width = bo + '%'; gaugeEls[n][1].textContent = Math.round(bo); }
       cars[n].updateMatrixWorld(true);
+      if (A) A.pos[n].copy(p);
       if (n === traj.agent) {
         _cp.copy(p); _cf.setFromMatrixColumn(cars[n].matrix, 0);
       }
     });
+    if (A) updateExtras(traj, i, i + 1, k, x, _bp);
     updatePads(traj, x, now);
     if (!seeking) $('seek').value = Math.round(time / end * 1000);
     $('time').textContent = `${time.toFixed(1)} / ${end.toFixed(1)} s`;
