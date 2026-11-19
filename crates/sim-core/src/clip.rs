@@ -206,7 +206,7 @@ pub struct Clip {
     pub keyframes: Vec<Keyframe>,
     /// `steps[s][voiture]` : contrôles tenus pendant `tick_skip` ticks.
     pub steps: Vec<Vec<Ctl>>,
-    /// Version du détecteur de mécaniques qui a déclenché le clip (1 = règles d'origine, 2 = strictes ; 0 =
+    /// Version du détecteur de mécaniques qui a déclenché le clip (1 = règles d'origine, 2 = strictes, 3 = strictes + collisions ; 0 =
     /// absent des anciens fichiers, à lire comme 1).
     #[serde(default)]
     pub detector: u32,

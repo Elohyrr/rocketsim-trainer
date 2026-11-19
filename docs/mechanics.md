@@ -61,6 +61,49 @@ les anciennes entrées sans champ se lisent v1. Au premier démarrage v2, l'anne
 `clips/detecteur-v2`, pas de vidage avec `--detector-v1`) ; la page web affiche la qualité et filtre « v2 seulement » si
 des clips v1 subsistent.
 
+## Collisions voiture-voiture et touchers simultanés (détecteur « v3 »)
+
+Constat (clips de prod, rlclips.celri.dev) : en self-play, au coup d'envoi les deux voitures frappent la balle au même
+instant ; elle part à la verticale à ~2 400 uu/s, les voitures rebondissent et tournent, et le détecteur étiquetait
+`tornado_spin`, `recovery`, `power_shot`… Ces mouvements sont **subis**, pas exécutés.
+
+**Entrées** (`CarTick`, remplies par `Sim::car_tick`, coût : une lecture de l'autre voiture par tick) :
+`contact_other` / `contact_cooldown` (`car_contact` de RocketSim), `demoed`, et `other: Option<OtherCar>` (position,
+vitesse, `ball_hit_tick`, `demoed` de la voiture la plus proche ; filtrée par id, jamais par position dans la liste).
+
+**Événements du détecteur** (par voiture, calculés avant les automates) :
+
+- *Choc* : nouveau contact (`car_contact` apparaît ou son cooldown remonte) ou autre voiture à < 260 uu avec un saut de
+  vitesse > 250 uu/s en un tick (> 500 si la voiture touche aussi la balle). Il est **subi** si la voiture change d'au
+  moins 150 uu/s ou 3 rad/s en un tick ; démolie = subi.
+- *Toucher simultané* : les deux voitures touchent la balle à ≤ 8 ticks d'écart.
+- *Fenêtre d'invalidation* (`COLLISION_WINDOW_TICKS` = 60 ticks = 0,5 s) après un choc subi ou un toucher simultané ;
+  `Detector::tainted()`. Un dodge en cours et un flick en attente sont abandonnés au choc.
+
+**Effet** : pendant la fenêtre, les mécaniques de `Mechanic::collision_sensitive()` ne comptent pas (retour arrière des
+compteurs, détails et records du tick, `Detector::invalidate`, seulement pendant la fenêtre : aucun coût ailleurs).
+Automates à état : `tornado_spin` (une rotation subie ne compte pas, même après la fin de la fenêtre, jusqu'au
+retour au sol), `recovery` (le vol retourné par un choc ne compte pas), `stall` (abandonné).
+
+| Classe | Mécaniques | Raison |
+| --- | --- | --- |
+| Annulées (mouvement subi) | `tornado_spin`, `recovery`, `stall`, `half_flip`, `wave_dash`, `speed_flip`, `chain_dash`, `wall_dash`, `dribble_turn` | jugées sur une rotation, un cap ou un gain de vitesse de la voiture |
+| Annulées (vitesse de balle) | `power_shot`, `pinch` (hors support `car`), `kuxir_pinch`, `flick` + variantes (45, 90, musty, delayed, breezi), `wall_shot`, `redirect`, `air_roll_shot`, `cushion`, `half_volley` | jugées sur la vitesse de balle après le toucher : un choc à deux la gonfle |
+| Conservées | `touch`, `aerial_touch`, `air_dribble`, `flip_reset`, `ceiling_shot`, `double_touch`, `backboard_*`, `dribble`, `*_dribble`, `reset_shot`, `double_reset`, `ceiling_reset`, `wall_to_air_dribble`, `fast_aerial`, `bump`, `demo` | état ou intention du joueur (position, drapeaux, commandes), pas une vitesse subie |
+
+**Nouvelles mécaniques** (ajoutées en fin de catalogue : 44) :
+
+- *car pinch / kickoff pinch* : pas de nouvelle entrée, c'est un `pinch` de **support `car`** : toucher simultané,
+  gain de vitesse de balle ≥ 1 500, vitesse après ≥ 2 000, autre voiture à < 350 uu de la balle. Exclusif avec
+  `power_shot` et pinch de surface ; seul pinch épargné par l'invalidation.
+- `bump` : nouveau choc où l'autre voiture gagne ≥ 350 uu/s en un tick, plus que la nôtre. `demo` : l'autre voiture
+  devient démolie ≤ 12 ticks après un choc (un demo est aussi un bump). Jamais clippés (`bump` : priorité 0, comme
+  `touch`).
+
+**Clips et qualité** : une méca invalidée n'est pas comptée, donc ne déclenche aucun clip. `QualityTracker::observe_with`
+ignore la vitesse de balle des ticks où `Detector::tainted()` est vrai (le but dans les 3 s compte toujours) : une
+vitesse due à un choc à deux ne gonfle pas le score. Les clips portent `detector = 3` (la page web traite `≥ 2` comme v2).
+
 ## Catalogue v1 (seuils : `crates/mechanics/src/thresholds.rs`)
 
 | Mécanique | Signature retenue |
@@ -128,7 +171,7 @@ le toucher (uu/s, jugée sur les 4 ticks qui suivent) ; la colonne « record » 
 | `tornado_spin` | b | \|ω·haut\| > 4 rad/s ≥ 0,3 s en l'air | |
 | `recovery` | b | atterrissage à plat après ≥ 0,6 s en l'air dont un moment renversé/de côté, en gardant ≥ 60 % de la vitesse | |
 
-Séries Prometheus : `trainer_mechanic_total{mechanic,context}` = 41 × 2 ; `trainer_mechanic_record{mechanic}` = 16 ; le
+Séries Prometheus : `trainer_mechanic_total{mechanic,context}` = 44 × 2 ; `trainer_mechanic_record{mechanic}` = 16 ; le
 total reste très sous les 500 séries (test `series_stay_far_below_the_cap`). Les nouvelles mécaniques ne rapportent
 **aucun bonus** en drill (`base_bonus` → 0) : à décider. Clips : toutes sauf `touch` ; la mécanique la plus précieuse
 du pas gagne (`Mechanic::clip_priority`), le clip porte `detail = {value, support}` (vitesse de balle, support du pinch)
@@ -138,7 +181,6 @@ et la page web liste les mécaniques présentes dans les clips (filtre automatiq
 
 | Méca | Raison |
 | --- | --- |
-| `bump`, `demo`, `pinch` contre une voiture | aucune donnée de l'adversaire dans `CarTick` (demo = état « démolie » de l'autre voiture) |
 | `50/50` | deux voitures adverses : l'adversaire n'est pas observé |
 | `boost steal`, gestion de boost | ni pads ni quantité de boost dans `CarTick` |
 | `fake`, `shadow defense`, `kill`/`clear`/`pass`/`rotation`, `bang it` | dépendent de l'intention et de la position des autres joueurs (une fake = absence de toucher) |
@@ -188,7 +230,7 @@ ceiling shot comptent aussi leurs `touch` et `aerial_touch` ; flick compte aussi
   non standard (hoops, dropshot) ne sont pas gérées pour le rebond mur.
 - Wave dash : un dodge très près du sol compte même sans intention (c'est la définition retenue). Half flip :
   exige un roulis commandé après l'annulation.
-- Pas de `bump`/`demo`, ni de « reset utilisé », ni de détection de nouveauté (§4.2 point 2) : à faire au-dessus des
+- Pas de « reset utilisé », ni de détection de nouveauté (§4.2 point 2) : à faire au-dessus des
   `Events`.
 
 ## Câblage et coût
@@ -196,7 +238,7 @@ ceiling shot comptent aussi leurs `touch` et `aerial_touch` ; flick compte aussi
 - `sim-core` : `Sim::car_tick` / `ball_tick` lisent l'état au tick ; `flip_rel_torque` est converti du couple RocketSim
   en direction du dodge (avant, latéral). `Sim::place_car_airborne` sert aux scénarios scriptés.
 - `rl-env` : quand `EnvConfig::detect_mechanics` est vrai (défaut), `Env::step_vs` avance tick par tick (même physique
-  que `step(tick_skip)`) et nourrit le `Detector` de la voiture de l'agent ; l'adversaire n'est pas observé. Les
+  que `step(tick_skip)`) et nourrit le `Detector` de la voiture de l'agent ; l'adversaire n'a pas de détecteur (seule sa position, vitesse et ses touchers sont lus pour les collisions). Les
   compteurs remontent par `VecStep::mechanics` jusqu'à `trainer_mechanic_total{mechanic,context}` (contexte `match`).
 - Tests réels (RocketSim) : flip reset roues vers la balle reconnu (4 roues, drapeaux remis à zéro), toit vers la balle =
   toucher sans reset (`crates/sim-core/tests/mechanics_sim.rs`) ; 10 min de jeu aléatoire sans flip reset, speed flip,

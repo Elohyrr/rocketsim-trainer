@@ -578,7 +578,7 @@ impl Env {
         let q = self.quality.take();
         if let (Some(mut c), Some(t)) = (self.clip_wait.take(), q) {
             let q = t.quality();
-            c.detector = if self.cfg.detector_v1 { 1 } else { 2 };
+            c.detector = if self.cfg.detector_v1 { 1 } else { 3 };
             c.detail = self.clip_detail.take();
             c.quality = Some(clip::ClipQuality {
                 ball_speed_to_goal: q.speed,
@@ -971,7 +971,8 @@ impl Env {
                 let (c, b) = (self.sim.car_tick(self.car), self.sim.ball_tick());
                 self.detector.tick(&c, &b, &mut seen);
                 if let Some(t) = self.quality.as_mut() {
-                    t.observe(&b);
+                    // Une vitesse de balle due à un choc à deux ne rapporte rien à la note.
+                    t.observe_with(&b, self.detector.tainted());
                 }
             }
             if in_drill {
@@ -983,7 +984,10 @@ impl Env {
                 // Tout sauf le simple toucher (trop fréquent) ; la plus rare des mécaniques vues ce pas.
                 let rarest = mechanics::Mechanic::ALL
                     .into_iter()
-                    .filter(|&m| m != mechanics::Mechanic::Touch && seen.get(m) > 0)
+                    .filter(|&m| {
+                        !matches!(m, mechanics::Mechanic::Touch | mechanics::Mechanic::Bump)
+                            && seen.get(m) > 0
+                    })
                     .max_by_key(|m| (m.clip_priority(), m.index()));
                 if let Some(m) = rarest
                     && self.rec.trigger(m.label())

@@ -292,3 +292,42 @@ pub const RECOVERY_MIN_SPEED: f32 = 400.0;
 pub const DRIBBLE_TURN_MIN_ANGLE: f32 = 0.785;
 /// Vitesse horizontale mini (uu/s) : un tour sur place balle sur le toit n'est pas un virage de dribble.
 pub const DRIBBLE_TURN_MIN_SPEED: f32 = 250.0;
+
+// --- Collisions voiture-voiture et touchers simultanés.
+
+/// Fenêtre d'invalidation (0,5 s) après une collision ou un toucher simultané : les mécaniques de
+/// [`crate::Mechanic::collision_sensitive`] ne comptent pas.
+pub const COLLISION_WINDOW_TICKS: u64 = 60;
+/// Deux touchers de la balle par deux voitures à au plus ce nombre de ticks d'écart (= `HIT_JUDGE_TICKS` : le jugement du toucher voit le partage) = toucher simultané.
+pub const SHARED_TOUCH_TICKS: u64 = 4;
+/// Collision détectée sans contact RocketSim : l'autre voiture à moins de cette distance (centres) et un saut de
+/// vitesse d'un tick supérieur à `COLLISION_MIN_DV` (uu/s ; `COLLISION_MIN_DV_TOUCH` si la voiture touche aussi la balle).
+pub const COLLISION_NEAR_DIST: f32 = 260.0;
+pub const COLLISION_MIN_DV: f32 = 250.0;
+pub const COLLISION_MIN_DV_TOUCH: f32 = 500.0;
+/// Car pinch : toucher simultané (ou collision) avec gain de vitesse de balle ≥ 1 500 et vitesse après ≥ 2 000,
+/// l'autre voiture à moins de 350 uu de la balle au toucher.
+pub const CAR_PINCH_MIN_GAIN: f32 = 1500.0;
+pub const CAR_PINCH_MIN_SPEED: f32 = 2000.0;
+pub const CAR_PINCH_MAX_OTHER_DIST: f32 = 350.0;
+/// Bump : saut de vitesse de l'autre voiture d'au moins 350 uu/s en un tick, plus grand que celui de la nôtre.
+pub const BUMP_MIN_OTHER_DV: f32 = 350.0;
+/// Demo : l'autre voiture devient démolie dans les 12 ticks qui suivent un contact.
+pub const DEMO_CONTACT_TICKS: u64 = 12;
+/// Un choc compte comme « subi » si la vitesse change d'au moins 150 uu/s ou la rotation d'au moins 3 rad/s en un tick.
+pub const COLLISION_TAINT_DV: f32 = 150.0;
+pub const COLLISION_TAINT_DW: f32 = 3.0;
+
+// --- Arrêts (save, aerial_save, squishy_save).
+
+/// Horizon de la trajectoire balistique de la balle (2 s) et pas d'intégration (1/60 s).
+pub const SAVE_HORIZON_TICKS: u32 = 240;
+pub const SAVE_STEP_TICKS: u32 = 2;
+/// Gravité (uu/s²), restitution du rebond au sol, centre de la balle au sol.
+pub const BALL_GRAVITY: f32 = 650.0;
+pub const BALL_GROUND_RESTITUTION: f32 = 0.6;
+pub const BALL_GROUND_Z: f32 = 93.0;
+/// Squishy save : vitesse de balle vers son but avant le toucher au moins 500 uu/s, après le toucher réduite d'au
+/// moins 70 % (ou inversée).
+pub const SQUISHY_MIN_SPEED_TOWARD: f32 = 500.0;
+pub const SQUISHY_KEEP_RATIO: f32 = 0.3;

@@ -170,7 +170,7 @@ impl Group {
         let fwd_speed =
             car.vel[0] * car.forward[0] + car.vel[1] * car.forward[1] + car.vel[2] * car.forward[2];
 
-        if self.ground.ticks == 0 {
+        if self.ground.ticks == 0 || cx.tainted {
             self.turn_prev = None;
             self.turn_sum = 0.0;
             self.turn_counted = false;
