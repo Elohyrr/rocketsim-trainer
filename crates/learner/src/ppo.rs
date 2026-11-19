@@ -218,7 +218,18 @@ pub struct IterStats {
     pub lr: f64,
     pub epochs_run: usize,
     pub collect_seconds: f64,
+    /// Part de `collect_seconds` passée en inférence (hors simulation).
+    pub infer_seconds: f64,
     pub train_seconds: f64,
+}
+
+/// Statistiques de perte de l'acteur sur un minibatch.
+struct PolStats {
+    en_match: f64,
+    en_n: f64,
+    en_all: f64,
+    pl: f64,
+    kl: f64,
 }
 
 pub struct Trainer {
@@ -226,6 +237,8 @@ pub struct Trainer {
     env: VecEnv,
     model: ActorCritic,
     opt: ModuleOptimizer,
+    /// Optimiseur du critique (l'acteur a `opt`) : les deux sont entraînés en parallèle.
+    opt_value: ModuleOptimizer,
     device: Device,
     plain: Device,
     obs: Vec<f32>,
@@ -272,6 +285,7 @@ impl Trainer {
             value: Mlp::new(obs_dim, cfg.hidden, 1, &device),
         };
         let opt = AdamConfig::new().with_epsilon(1e-5).init();
+        let opt_value = AdamConfig::new().with_epsilon(1e-5).init();
         let obs = env.reset();
         let selfplay = env_cfg_selfplay;
         Ok(Self {
@@ -282,6 +296,7 @@ impl Trainer {
             env,
             model,
             opt,
+            opt_value,
             device,
             plain,
             obs,
@@ -339,9 +354,30 @@ impl Trainer {
 
         for _ in 0..h {
             let x = tensor2(self.obs.clone(), n, od, &idev);
-            let logp_all = log_softmax(inner.policy.forward(x.clone()), 1);
-            let values = to_vec(inner.value.forward(x));
-            let lp = to_vec(logp_all);
+            // Acteur, critique et adversaires sont indépendants : un thread chacun (les tirages restent dans
+            // le même ordre, donc mêmes actions).
+            let ox = self
+                .frozen
+                .is_some()
+                .then(|| tensor2(self.env.opp_obs().to_vec(), n, od, &idev));
+            let ti = std::time::Instant::now();
+            let (lp, values, opp_lps) = std::thread::scope(|sc| {
+                let hv = sc.spawn(|| to_vec(inner.value.forward(x.clone())));
+                let ho = ox.as_ref().map(|ox| {
+                    let (frozen, pool_net) = (self.frozen.as_ref(), pool_net.as_ref());
+                    sc.spawn(move || {
+                        let lps = |net: &Mlp| to_vec(log_softmax(net.forward(ox.clone()), 1));
+                        (lps(frozen.expect("adversaire gelé")), pool_net.map(lps))
+                    })
+                });
+                let lp = to_vec(log_softmax(inner.policy.forward(x.clone()), 1));
+                (
+                    lp,
+                    hv.join().expect("thread critique"),
+                    ho.map(|h| h.join().expect("thread adversaire")),
+                )
+            });
+            st.infer_seconds += ti.elapsed().as_secs_f64();
             let mut acts = Vec::with_capacity(n);
             for e in 0..n {
                 let row = &lp[e * na..(e + 1) * na];
@@ -360,10 +396,8 @@ impl Trainer {
             }
             obs_buf.extend_from_slice(&self.obs);
             val_buf.extend(values);
-            let opp_acts = self.frozen.as_ref().map(|f| {
-                let ox = tensor2(self.env.opp_obs().to_vec(), n, od, &idev);
-                let sample = |net: &Mlp, rng: &mut Rng| {
-                    let lp = to_vec(log_softmax(net.forward(ox.clone()), 1));
+            let opp_acts = opp_lps.map(|(lp_f, lp_pool)| {
+                let sample = |lp: &[f32], rng: &mut Rng| {
                     (0..n)
                         .map(|e| {
                             let row = &lp[e * na..(e + 1) * na];
@@ -378,9 +412,9 @@ impl Trainer {
                         })
                         .collect::<Vec<usize>>()
                 };
-                let mut acts = sample(f, &mut self.rng);
-                if let Some(pn) = &pool_net {
-                    let from_pool = sample(pn, &mut self.rng);
+                let mut acts = sample(&lp_f, &mut self.rng);
+                if let Some(lp_p) = &lp_pool {
+                    let from_pool = sample(lp_p, &mut self.rng);
                     for e in (0..n).filter(|&e| on_pool[e]) {
                         acts[e] = from_pool[e];
                     }
@@ -496,49 +530,65 @@ impl Trainer {
                     rt.push(ret[i]);
                 }
                 let d = &self.device;
+                let device_p = d.clone();
                 let x = tensor2(ob, m, od, d);
                 let onehot = tensor2(oh, m, na, d);
                 let old_lp = tensor2(olp, m, 1, d);
                 let adv_t = tensor2(ad, m, 1, d);
                 let ret_t = tensor2(rt, m, 1, d);
 
-                let logits = self.model.policy.forward(x.clone());
-                let logits = if self.freeze_policy {
-                    logits.detach()
-                } else {
-                    logits
-                };
-                let logp_all = log_softmax(logits, 1);
-                let logp = (logp_all.clone() * onehot).sum_dim(1);
-                let ratio = (logp.clone() - old_lp.clone()).exp();
-                let s1 = ratio.clone() * adv_t.clone();
-                let s2 = ratio
-                    .clone()
-                    .clamp(1.0 - self.cfg.clip, 1.0 + self.cfg.clip)
-                    * adv_t;
-                let pol_loss = -(s1.min_pair(s2)).mean();
-                let v = self.model.value.forward(x);
-                let val_loss = (v - ret_t).powf_scalar(2.0).mean();
-                let ent_vec = -(logp_all.clone().exp() * logp_all).sum_dim(1);
-                let w = tensor2(match_w, m, 1, d);
-                en_match += scalar((ent_vec.clone() * w.clone()).sum().reshape([1]));
-                en_n += scalar(w.sum().reshape([1]));
-                en_all += scalar(ent_vec.clone().sum().reshape([1]));
-                let entropy = ent_vec.mean();
-                let loss = if self.freeze_policy {
-                    val_loss.clone() * self.cfg.vf_coef
-                } else {
-                    pol_loss.clone() + val_loss.clone() * self.cfg.vf_coef
-                        - entropy.clone() * ent_coef
-                };
-
-                pl += scalar(pol_loss.clone().reshape([1]));
-                vl += scalar(val_loss.clone().reshape([1]));
-                kl += scalar((old_lp - logp).mean().reshape([1]));
+                // Acteur et critique sont indépendants (pertes et optimiseurs séparés) : un thread chacun.
+                // Mêmes gradients et même Adam que sur une seule perte somme : les paramètres ne se croisent pas.
+                let (freeze, clip, vf_coef) = (self.freeze_policy, self.cfg.clip, self.cfg.vf_coef);
+                let (policy, value) = (self.model.policy.clone(), self.model.value.clone());
+                let (opt_p, opt_v) = (&mut self.opt, &mut self.opt_value);
+                let (xp, xv) = (x.clone(), x);
+                let (pol, val) = std::thread::scope(|sc| {
+                    let hp = sc.spawn(move || {
+                        let logits = policy.forward(xp);
+                        let logits = if freeze { logits.detach() } else { logits };
+                        let logp_all = log_softmax(logits, 1);
+                        let logp = (logp_all.clone() * onehot).sum_dim(1);
+                        let ratio = (logp.clone() - old_lp.clone()).exp();
+                        let s1 = ratio.clone() * adv_t.clone();
+                        let s2 = ratio.clamp(1.0 - clip, 1.0 + clip) * adv_t;
+                        let pol_loss = -(s1.min_pair(s2)).mean();
+                        let ent_vec = -(logp_all.clone().exp() * logp_all).sum_dim(1);
+                        let w = tensor2(match_w, m, 1, &device_p);
+                        let stats = PolStats {
+                            en_match: scalar((ent_vec.clone() * w.clone()).sum().reshape([1])),
+                            en_n: scalar(w.sum().reshape([1])),
+                            en_all: scalar(ent_vec.clone().sum().reshape([1])),
+                            pl: scalar(pol_loss.clone().reshape([1])),
+                            kl: scalar((old_lp - logp).mean().reshape([1])),
+                        };
+                        let entropy = ent_vec.mean();
+                        if freeze {
+                            return (policy, stats);
+                        }
+                        let loss = pol_loss - entropy * ent_coef;
+                        let grads = GradientsParams::from_grads(loss.backward(), &policy);
+                        (opt_p.step(lr, policy, grads), stats)
+                    });
+                    let vloss = {
+                        let v = value.forward(xv);
+                        (v - ret_t).powf_scalar(2.0).mean()
+                    };
+                    let vl = scalar(vloss.clone().reshape([1]));
+                    let grads = GradientsParams::from_grads((vloss * vf_coef).backward(), &value);
+                    let value = opt_v.step(lr, value, grads);
+                    (hp.join().expect("thread acteur"), (value, vl))
+                });
+                let (policy, stats) = pol;
+                let (value, vloss) = val;
+                self.model = ActorCritic { policy, value };
+                en_match += stats.en_match;
+                en_n += stats.en_n;
+                en_all += stats.en_all;
+                pl += stats.pl;
+                kl += stats.kl;
+                vl += vloss;
                 cnt += 1.0;
-
-                let grads = GradientsParams::from_grads(loss.backward(), &self.model);
-                self.model = self.opt.step(lr, self.model.clone(), grads);
             }
             st.epochs_run += 1;
             // Plafond de KL : la politique a trop bougé sur cette époque, on garde les données pour la suivante.
