@@ -58,6 +58,9 @@ pub struct Metrics {
     pub boost_pickups_big: u64,
     pub boost_mean: f64,
     pub boost_empty_fraction: f64,
+    /// Vitesse de balle vers le but adverse juste après un toucher de l'agent en match : moyenne sur la dernière itération avec des touchers, et record depuis le démarrage (uu/s).
+    pub hit_speed_mean: f64,
+    pub hit_speed_record: f32,
     /// Réussites par drill, buts payés après virage/flick, arrêts du gardien (voir `docs/drills.md`).
     pub drill_success: [u64; scenarios::DRILL_COUNT],
     pub drill_dribble_goal: u64,
@@ -320,6 +323,14 @@ impl Metrics {
             s,
             "trainer_boost_empty_fraction {}",
             self.boost_empty_fraction
+        );
+        let _ = writeln!(s, "# TYPE trainer_hit_speed_to_goal_mean gauge");
+        let _ = writeln!(s, "trainer_hit_speed_to_goal_mean {}", self.hit_speed_mean);
+        let _ = writeln!(s, "# TYPE trainer_hit_speed_to_goal_record gauge");
+        let _ = writeln!(
+            s,
+            "trainer_hit_speed_to_goal_record {}",
+            self.hit_speed_record
         );
         let _ = writeln!(s, "# TYPE trainer_clips_saved_total counter");
         for (kind, n) in [("known", self.clips_saved_known), ("novel", 0)] {

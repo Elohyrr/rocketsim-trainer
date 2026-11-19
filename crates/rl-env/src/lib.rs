@@ -46,6 +46,21 @@ pub const TICKS_PER_SECOND: f32 = 120.0;
 const POS_SCALE: [f32; 3] = [4096.0, 5120.0, 2048.0];
 const REL_POS_SCALE: [f32; 3] = [8192.0, 10240.0, 2048.0];
 const CAR_VEL_SCALE: f32 = 2300.0;
+/// Vitesse max de la balle (uu/s) : normalisation des récompenses de vitesse de balle.
+pub const BALL_SPEED_MAX: f32 = 6000.0;
+/// Centre du but adverse (+Y) : fond du terrain, mi-hauteur de la cage.
+const GOAL_CENTER: [f32; 3] = [0.0, 5120.0, 321.0];
+
+/// Composante de la vitesse `vel` (uu/s) de la balle en `pos` dirigée vers le centre du but adverse.
+fn speed_to_goal(pos: [f32; 3], vel: [f32; 3]) -> f32 {
+    let d = [
+        GOAL_CENTER[0] - pos[0],
+        GOAL_CENTER[1] - pos[1],
+        GOAL_CENTER[2] - pos[2],
+    ];
+    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1.0);
+    (vel[0] * d[0] + vel[1] * d[1] + vel[2] * d[2]) / n
+}
 const BALL_VEL_SCALE: f32 = 6000.0;
 const ANG_VEL_SCALE: f32 = 5.5;
 const BALL_REST_Z: f32 = 93.0;
@@ -193,6 +208,14 @@ pub struct EnvConfig {
     /// Poids `c` de la récompense de ramassage `c × (√boost_t − √boost_t−1)` (boost dans 0–1), sur les gains
     /// seulement : aucune pénalité de dépense. 0 = désactivée. Hors drills.
     pub boost_reward: f32,
+    /// Poids `w` de la récompense dense « balle vers le but adverse » : `w × clamp(v_balle · u / BALL_SPEED_MAX, −1, 1)`
+    /// par décision, `u` = direction balle → centre du but adverse (+Y). Signée : négative quand la balle file
+    /// vers notre but (somme nulle en self-play, voir `docs/rewards.md`). 0 = désactivée. Hors drills.
+    pub ball_goal_reward: f32,
+    /// Poids `w` de la récompense de frappe : au toucher, `w × clamp(Δ(v_balle · u) / BALL_SPEED_MAX, −1, 1)`, gain
+    /// de vitesse de balle vers le but adverse dû au toucher (signé, il se télescope : pas d'exploitation par
+    /// touchers répétés). 0 = désactivée. Hors drills.
+    pub hit_speed_reward: f32,
     /// Récompense d'un but marqué dans le but adverse (la balle franchit le fond du terrain côté +Y).
     pub goal_reward: f32,
     /// Pénalité (valeur positive, soustraite) quand la balle entre dans le but de la voiture (+Y est le but visé).
@@ -261,6 +284,8 @@ impl Default for EnvConfig {
             boost_reward: 0.0,
             goal_reward: 0.0,
             own_goal_penalty: 0.0,
+            ball_goal_reward: 0.0,
+            hit_speed_reward: 0.0,
             ball_speed_max: 0.0,
             spawn: SpawnMode::Random,
             opponent: Opponent::None,
@@ -466,6 +491,11 @@ pub struct BoostReport {
     pub steps: u64,
     /// Décisions prises sans aucun boost.
     pub empty_steps: u64,
+    /// Touchers de l'agent en match (hors drills) : nombre, somme et record (uu/s) de la vitesse de balle vers le
+    /// but adverse juste après le toucher.
+    pub hits: u64,
+    pub hit_speed_sum: f64,
+    pub hit_speed_max: f32,
 }
 
 impl BoostReport {
@@ -475,6 +505,9 @@ impl BoostReport {
         self.boost_sum += o.boost_sum;
         self.steps += o.steps;
         self.empty_steps += o.empty_steps;
+        self.hits += o.hits;
+        self.hit_speed_sum += o.hit_speed_sum;
+        self.hit_speed_max = self.hit_speed_max.max(o.hit_speed_max);
     }
 }
 
@@ -924,6 +957,7 @@ impl Env {
 
     /// Comme [`Env::step`], avec l'action de l'adversaire (self-play).
     pub fn step_vs(&mut self, action: usize, opp_action: Option<usize>) -> StepInfo {
+        let ball_before = self.sim.ball_tick();
         self.sim
             .set_controls(self.car, self.actions.get(action))
             .expect("voiture connue");
@@ -1033,6 +1067,17 @@ impl Env {
         }
         if !in_drill {
             reward += self.boost_step(&snap, car_index(&snap, self.car));
+            let (pos, vel) = (snap.ball.pos, snap.ball.vel);
+            let v_goal = speed_to_goal(pos, vel);
+            reward += self.cfg.ball_goal_reward * (v_goal / BALL_SPEED_MAX).clamp(-1.0, 1.0);
+            if touched {
+                let gain = v_goal - speed_to_goal(pos, ball_before.vel);
+                reward += self.cfg.hit_speed_reward * (gain / BALL_SPEED_MAX).clamp(-1.0, 1.0);
+                let rep = &mut self.boost_report;
+                rep.hits += 1;
+                rep.hit_speed_sum += f64::from(v_goal);
+                rep.hit_speed_max = rep.hit_speed_max.max(v_goal);
+            }
         }
         let scored = self.sim.is_ball_scored();
         // But pour nous : la balle est au fond du terrain côté +Y (but orange) ; côté -Y, c'est contre son camp.
@@ -2404,6 +2449,18 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn speed_to_goal_is_signed_toward_the_opponent_goal() {
+        // Balle au centre filant vers +Y : positive ; vers −Y : négative (somme nulle) ; de côté : ≈ 0.
+        let c = [0.0, 0.0, 321.0];
+        assert!((speed_to_goal(c, [0.0, 3000.0, 0.0]) - 3000.0).abs() < 1.0);
+        assert!((speed_to_goal(c, [0.0, -3000.0, 0.0]) + 3000.0).abs() < 1.0);
+        assert!(speed_to_goal(c, [2000.0, 0.0, 0.0]).abs() < 1.0);
+        // Le terme de l'adversaire (miroir : but en −Y) serait exactement l'opposé.
+        let mirrored = speed_to_goal([0.0, 0.0, 321.0], [0.0, 3000.0, 0.0]);
+        assert!(mirrored > 0.0);
     }
 
     #[test]

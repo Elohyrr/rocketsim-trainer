@@ -14,7 +14,7 @@ courant est la métrique `trainer_curriculum_stage` et le fichier `<out>/stage` 
 | 6 | self-play : adversaire = copie gelée (70 % des envs) ou ancien du pool (30 %), récompense à somme nulle ; maintien jugé sur l'Elo (`docs/self-play.md`) | idem |
 
 Récompenses dès le palier 2 : +10 pour un but marqué (+Y), **−5 pour un but contre son camp** (balle dans le but −Y,
-y compris un but encaissé en self-play), 0,1 par toucher, 0,05 × vitesse vers la balle.
+y compris un but encaissé en self-play), 0,1 par toucher, 0,05 × vitesse vers la balle. Termes optionnels de vitesse de balle (désactivés par défaut) : `docs/rewards.md`.
 
 ## Coups d'envoi (paliers 5 et 6)
 
