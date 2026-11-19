@@ -30,6 +30,11 @@
 //!   3ᵉ toucher, une fois par série ; un toucher qui ne remplit pas les conditions casse la série.
 //!   Approximation : la distance balle-voiture n'est vérifiée qu'aux touchers.
 //!
+//! - **DribbleTurn** : pendant un portage au sol à plat (même fenêtre toit que ci-dessus), le cap de la voiture
+//!   change d'au moins [`DRIBBLE_TURN_MIN_ANGLE`] (≈ 45°, cumulé, signé) en roulant à plus de
+//!   [`DRIBBLE_TURN_MIN_SPEED`] ; une fois par portage. Approximation : le cap est celui du nez (pas de la
+//!   trajectoire), un zigzag qui s'annule ne compte pas.
+//!
 //! Variantes de flick, classées quand le flick de base se déclenche (`cx.base.flick`) avec le dernier dodge
 //! (`cx.dodge`) ; valeur = vitesse de balle à ce tick (record) :
 //! - **Flick45** : secteur 1 ou 7 (dodge avant-diagonal). **Flick90** : secteur 2 ou 6 (latéral).
@@ -111,6 +116,10 @@ pub(crate) struct Group {
     reverse: Run,
     wall: Run,
     ceiling: Run,
+    // Dribble turn : cap précédent, virage cumulé du portage au sol, déjà compté.
+    turn_prev: Option<f32>,
+    turn_sum: f32,
+    turn_counted: bool,
     // Bounce dribble : série de touchers, rebond au sol depuis le dernier toucher.
     bd_last: Option<u64>,
     bd_touches: u32,
@@ -161,7 +170,32 @@ impl Group {
         let fwd_speed =
             car.vel[0] * car.forward[0] + car.vel[1] * car.forward[1] + car.vel[2] * car.forward[2];
 
+        if self.ground.ticks == 0 {
+            self.turn_prev = None;
+            self.turn_sum = 0.0;
+            self.turn_counted = false;
+        }
         self.ground.update(carried && flat, cx, cx.hspeed);
+        if carried && flat && self.ground.ticks > 0 {
+            let head = car.forward[1].atan2(car.forward[0]);
+            if let Some(p) = self.turn_prev {
+                let mut d = head - p;
+                if d > std::f32::consts::PI {
+                    d -= std::f32::consts::TAU;
+                } else if d < -std::f32::consts::PI {
+                    d += std::f32::consts::TAU;
+                }
+                self.turn_sum += d;
+            }
+            self.turn_prev = Some(head);
+            if !self.turn_counted
+                && self.turn_sum.abs() >= DRIBBLE_TURN_MIN_ANGLE
+                && cx.hspeed > DRIBBLE_TURN_MIN_SPEED
+            {
+                self.turn_counted = true;
+                out.emit(Mechanic::DribbleTurn, self.turn_sum.abs(), Support::Ground);
+            }
+        }
         self.reverse.update(
             carried && flat && fwd_speed < REVERSE_MAX_FWD_SPEED,
             cx,

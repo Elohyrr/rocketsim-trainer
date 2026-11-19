@@ -26,10 +26,29 @@ pub enum Drill {
     FlipReset,
     /// Voiture en l'air, orientation, vitesses et boost aléatoires : retomber sur les roues, vite, bien orientée.
     Recovery,
+    /// Balle sur le toit, voiture orientée au hasard (souvent de côté ou dos au but), adversaire actif : il faut
+    /// tourner avec la balle (dribble de virage), puis marquer.
+    DribbleTurn,
+    /// Tir à cadrer : balle qui roule au sol, voiture derrière elle.
+    ShotRoll,
+    /// Tir à cadrer : balle qui rebondit (descend), voiture en approche.
+    ShotBounce,
+    /// Centre : balle qui traverse devant le but depuis un côté.
+    ShotCross,
+    /// Lob : balle haute qui avance vers le but, voiture au sol.
+    ShotLob,
+    /// Gardien : balle tirée vers SA cage depuis divers angles, la voiture doit l'arrêter ou la dégager.
+    Keeper,
+    /// Aérien : balle haute en mouvement, voiture au sol avec du boost.
+    AerialHigh,
+    /// Mur : balle qui longe puis monte le mur latéral.
+    WallRun,
+    /// Récupération après rebond : balle repartie du mur du fond, la voiture doit la reprendre.
+    Rebound,
 }
 
 /// Nombre de drills.
-pub const DRILL_COUNT: usize = 7;
+pub const DRILL_COUNT: usize = 16;
 
 impl Drill {
     pub const ALL: [Drill; DRILL_COUNT] = [
@@ -40,6 +59,21 @@ impl Drill {
         Drill::WallBall,
         Drill::FlipReset,
         Drill::Recovery,
+        Drill::DribbleTurn,
+        Drill::ShotRoll,
+        Drill::ShotBounce,
+        Drill::ShotCross,
+        Drill::ShotLob,
+        Drill::Keeper,
+        Drill::AerialHigh,
+        Drill::WallRun,
+        Drill::Rebound,
+    ];
+
+    /// Poids de tirage par défaut (même ordre que [`Drill::ALL`]) : les drills de la v1 pèsent 1, les nouvelles
+    /// familles davantage (dribble de virage 3, gardien 2,5, tirs 1,5).
+    pub const DEFAULT_WEIGHTS: [f32; DRILL_COUNT] = [
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3.0, 1.5, 1.5, 1.5, 1.0, 2.5, 1.0, 1.0, 1.5,
     ];
 
     pub fn label(self) -> &'static str {
@@ -51,6 +85,15 @@ impl Drill {
             Drill::WallBall => "wall_ball",
             Drill::FlipReset => "flip_reset",
             Drill::Recovery => "recovery",
+            Drill::DribbleTurn => "dribble_turn",
+            Drill::ShotRoll => "shot_roll",
+            Drill::ShotBounce => "shot_bounce",
+            Drill::ShotCross => "shot_cross",
+            Drill::ShotLob => "shot_lob",
+            Drill::Keeper => "keeper",
+            Drill::AerialHigh => "aerial_high",
+            Drill::WallRun => "wall_run",
+            Drill::Rebound => "rebound",
         }
     }
 
@@ -61,8 +104,80 @@ impl Drill {
 
     /// Drill tiré uniformément avec `u` dans [0, 1).
     pub fn pick(u: f32) -> Drill {
-        Self::ALL[((u * Self::ALL.len() as f32) as usize).min(Self::ALL.len() - 1)]
+        Self::pick_weighted(&[1.0; DRILL_COUNT], u)
     }
+
+    /// Drill tiré avec `u` dans [0, 1) selon `weights` (≥ 0, même ordre que [`Drill::ALL`]) ; poids tous nuls =
+    /// uniforme.
+    pub fn pick_weighted(weights: &[f32; DRILL_COUNT], u: f32) -> Drill {
+        let total: f32 = weights.iter().map(|w| w.max(0.0)).sum();
+        if total <= 0.0 {
+            return Self::pick(u);
+        }
+        let mut t = u * total;
+        for (d, w) in Self::ALL.iter().zip(weights) {
+            let w = w.max(0.0);
+            if t < w {
+                return *d;
+            }
+            t -= w;
+        }
+        // Reste d'arrondi : dernier drill de poids non nul.
+        Self::ALL
+            .iter()
+            .zip(weights)
+            .rev()
+            .find(|(_, w)| **w > 0.0)
+            .map_or(Drill::RoofStill, |(d, _)| *d)
+    }
+
+    /// Drill dont l'adversaire joue (politique adverse) ; les autres le laissent garé.
+    pub fn active_opponent(self) -> bool {
+        self == Drill::DribbleTurn
+    }
+
+    /// Drill de dribble (clips possibles avec l'option `drill_clips`).
+    pub fn is_dribble(self) -> bool {
+        matches!(
+            self,
+            Drill::RoofStill | Drill::RoofMoving | Drill::DribbleTurn
+        )
+    }
+
+    /// Valeur du label `drill` → drill.
+    pub fn from_label(l: &str) -> Option<Drill> {
+        Self::ALL.into_iter().find(|d| d.label() == l)
+    }
+}
+
+/// Lit des poids `label=poids,label=poids` (labels de [`Drill::label`]) par-dessus [`Drill::DEFAULT_WEIGHTS`].
+/// Erreur sur un label inconnu ou un poids négatif / illisible.
+pub fn parse_weights(spec: &str) -> Result<[f32; DRILL_COUNT], String> {
+    let mut w = Drill::DEFAULT_WEIGHTS;
+    for part in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let (k, v) = part
+            .split_once('=')
+            .ok_or_else(|| format!("« {part} » : attendu label=poids"))?;
+        let d = Drill::from_label(k.trim()).ok_or_else(|| format!("drill inconnu : {k}"))?;
+        let v: f32 = v
+            .trim()
+            .parse()
+            .map_err(|_| format!("poids illisible : {v}"))?;
+        if !(v >= 0.0 && v.is_finite()) {
+            return Err(format!("poids négatif : {v}"));
+        }
+        w[d.index()] = v;
+    }
+    Ok(w)
+}
+
+/// Adversaire d'un drill : position, cap, boost ; `active` = il joue (politique adverse), sinon garé.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OppSetup {
+    pub pos: V3,
+    pub yaw: f32,
+    pub boost: f32,
+    pub active: bool,
 }
 
 /// État de départ d'un drill.
@@ -82,6 +197,8 @@ pub struct DrillSetup {
     pub car_axes: Option<[V3; 3]>,
     /// En l'air : le flip est encore disponible.
     pub flip_available: bool,
+    /// Adversaire (None : l'environnement le gare près de sa cage, inactif).
+    pub opponent: Option<OppSetup>,
 }
 
 fn range(unit: &mut dyn FnMut() -> f32, lo: f32, hi: f32) -> f32 {
@@ -102,6 +219,61 @@ pub fn random_boost(unit: &mut dyn FnMut() -> f32) -> f32 {
 
 fn sign(unit: &mut dyn FnMut() -> f32) -> f32 {
     if unit() < 0.5 { -1.0 } else { 1.0 }
+}
+
+/// Cap (radians) de `from` vers `to` dans le plan horizontal.
+fn yaw_towards(from: V3, to: V3) -> f32 {
+    (to[1] - from[1]).atan2(to[0] - from[0])
+}
+
+/// Garde (x, y) dans une marge du terrain.
+fn clamp_xy(p: V3) -> V3 {
+    [
+        p[0].clamp(-3800.0, 3800.0),
+        p[1].clamp(-4800.0, 4800.0),
+        p[2],
+    ]
+}
+
+/// Vitesse initiale (balle) pour aller de `from` à `to` à `speed` uu/s à l'horizontale 3D, gravité comprise.
+fn aim(from: V3, to: V3, speed: f32) -> V3 {
+    let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1.0);
+    let t = dist / speed.max(1.0);
+    [
+        d[0] / t,
+        d[1] / t,
+        ((d[2] + 0.5 * 650.0 * t * t) / t).clamp(-1500.0, 2200.0),
+    ]
+}
+
+fn dist_xy(a: V3, b: V3) -> f32 {
+    (a[0] - b[0]).hypot(a[1] - b[1])
+}
+
+/// Voiture au sol placée à `back` uu derrière la balle (par rapport à `dir`, vecteur horizontal unitaire) avec un
+/// décalage latéral, cap vers la balle à `spread` près, vitesse `speed` le long du cap.
+fn car_behind(
+    unit: &mut dyn FnMut() -> f32,
+    s: &mut DrillSetup,
+    dir: [f32; 2],
+    back: (f32, f32),
+    side: f32,
+    spread: f32,
+    speed: (f32, f32),
+) {
+    let b = range(unit, back.0, back.1);
+    let lat = range(unit, -side, side);
+    let p = clamp_xy([
+        s.ball_pos[0] - dir[0] * b - dir[1] * lat,
+        s.ball_pos[1] - dir[1] * b + dir[0] * lat,
+        17.0,
+    ]);
+    s.car_pos = p;
+    s.car_yaw = yaw_towards(p, s.ball_pos) + range(unit, -spread, spread);
+    let h = heading(s.car_yaw);
+    let v = range(unit, speed.0, speed.1);
+    s.car_vel = [h[0] * v, h[1] * v, 0.0];
 }
 
 /// Cap tourné vers le but adverse (+Y) à ± `spread` près.
@@ -157,6 +329,7 @@ pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
         car_boost: 33.0,
         car_axes: None,
         flip_available: false,
+        opponent: None,
     };
     match drill {
         Drill::RoofStill | Drill::RoofMoving => {
@@ -302,8 +475,235 @@ pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
                 }
             }
         }
+        Drill::DribbleTurn => {
+            // Souvent de côté ou dos au but : il faut tourner avec la balle avant de tirer.
+            let off = if unit() < 0.75 {
+                sign(unit) * range(unit, 0.8, PI)
+            } else {
+                range(unit, -0.4, 0.4)
+            };
+            let yaw = FRAC_PI_2 + off;
+            let h = heading(yaw);
+            let speed = if unit() < 0.4 {
+                0.0
+            } else {
+                range(unit, 300.0, 1100.0)
+            };
+            s.car_pos = [
+                range(unit, -2500.0, 2500.0),
+                range(unit, -3000.0, 2500.0),
+                17.0,
+            ];
+            s.car_yaw = yaw;
+            s.car_vel = [h[0] * speed, h[1] * speed, 0.0];
+            s.ball_pos = [
+                s.car_pos[0] + h[0] * 25.0,
+                s.car_pos[1] + h[1] * 25.0,
+                ROOF_BALL_Z,
+            ];
+            s.ball_vel = s.car_vel;
+            // Adversaire actif entre la voiture et son but, face à la balle.
+            let opp = loop {
+                let p = [
+                    range(unit, -2500.0, 2500.0),
+                    range(unit, 1500.0, 4300.0),
+                    17.0,
+                ];
+                if dist_xy(p, s.car_pos) > 700.0 {
+                    break p;
+                }
+            };
+            s.opponent = Some(OppSetup {
+                pos: opp,
+                yaw: yaw_towards(opp, s.car_pos) + range(unit, -0.3, 0.3),
+                boost: random_boost(unit),
+                active: true,
+            });
+        }
+        Drill::ShotRoll => {
+            s.ball_pos = [
+                range(unit, -2500.0, 2500.0),
+                range(unit, 500.0, 3000.0),
+                93.0,
+            ];
+            let goal = yaw_to_goal(unit, 0.9);
+            let h = heading(goal);
+            let sp = range(unit, 400.0, 1500.0);
+            s.ball_vel = [h[0] * sp, h[1] * sp, 0.0];
+            car_behind(
+                unit,
+                &mut s,
+                [h[0], h[1]],
+                (900.0, 2500.0),
+                800.0,
+                0.7,
+                (0.0, 1400.0),
+            );
+        }
+        Drill::ShotBounce => {
+            s.ball_pos = [
+                range(unit, -2500.0, 2500.0),
+                range(unit, 500.0, 3000.0),
+                range(unit, 400.0, 1000.0),
+            ];
+            let goal = yaw_to_goal(unit, 0.8);
+            let h = heading(goal);
+            let sp = range(unit, 300.0, 1300.0);
+            s.ball_vel = [h[0] * sp, h[1] * sp, range(unit, -300.0, 200.0)];
+            car_behind(
+                unit,
+                &mut s,
+                [h[0], h[1]],
+                (700.0, 2200.0),
+                900.0,
+                0.7,
+                (200.0, 1400.0),
+            );
+        }
+        Drill::ShotCross => {
+            let side = sign(unit);
+            s.ball_pos = [
+                side * range(unit, 2600.0, 3600.0),
+                range(unit, 2200.0, 3800.0),
+                range(unit, 150.0, 700.0),
+            ];
+            let target = [
+                range(unit, -500.0, 500.0),
+                range(unit, 4000.0, 4700.0),
+                250.0,
+            ];
+            let v = aim(s.ball_pos, target, range(unit, 900.0, 1700.0));
+            s.ball_vel = [v[0], v[1], v[2].min(500.0)];
+            let yaw = yaw_to_goal(unit, 0.6);
+            let h = heading(yaw);
+            let sp = range(unit, 300.0, 1400.0);
+            s.car_pos = [
+                -side * range(unit, 0.0, 1500.0),
+                range(unit, 1000.0, 3000.0),
+                17.0,
+            ];
+            s.car_yaw = yaw;
+            s.car_vel = [h[0] * sp, h[1] * sp, 0.0];
+        }
+        Drill::ShotLob => {
+            s.ball_pos = [
+                range(unit, -2000.0, 2000.0),
+                range(unit, 0.0, 2500.0),
+                range(unit, 500.0, 1300.0),
+            ];
+            let goal = yaw_to_goal(unit, 0.5);
+            let h = heading(goal);
+            let sp = range(unit, 500.0, 1400.0);
+            s.ball_vel = [h[0] * sp, h[1] * sp, range(unit, -100.0, 500.0)];
+            car_behind(
+                unit,
+                &mut s,
+                [h[0], h[1]],
+                (600.0, 1800.0),
+                900.0,
+                0.6,
+                (200.0, 1400.0),
+            );
+        }
+        Drill::Keeper => {
+            s.ball_pos = [
+                range(unit, -3000.0, 3000.0),
+                range(unit, -3500.0, 0.0),
+                range(unit, 93.0, 600.0),
+            ];
+            let target = [
+                range(unit, -800.0, 800.0),
+                -5120.0,
+                range(unit, 100.0, 600.0),
+            ];
+            s.ball_vel = aim(s.ball_pos, target, range(unit, 1300.0, 2600.0));
+            loop {
+                s.car_pos = [
+                    range(unit, -1500.0, 1500.0),
+                    range(unit, -4600.0, -2200.0),
+                    17.0,
+                ];
+                if dist_xy(s.car_pos, s.ball_pos) > 700.0 {
+                    break;
+                }
+            }
+            s.car_yaw = yaw_towards(s.car_pos, s.ball_pos) + range(unit, -0.5, 0.5);
+            let h = heading(s.car_yaw);
+            let sp = range(unit, 0.0, 900.0);
+            s.car_vel = [h[0] * sp, h[1] * sp, 0.0];
+        }
+        Drill::AerialHigh => {
+            s.ball_pos = [
+                range(unit, -2500.0, 2500.0),
+                range(unit, -1500.0, 2500.0),
+                range(unit, 900.0, 1700.0),
+            ];
+            s.ball_vel = [
+                range(unit, -600.0, 600.0),
+                range(unit, 200.0, 900.0),
+                range(unit, -300.0, 500.0),
+            ];
+            let away = range(unit, 800.0, 2200.0);
+            let a = range(unit, -PI, PI);
+            s.car_pos = clamp_xy([
+                s.ball_pos[0] + a.cos() * away,
+                s.ball_pos[1] + a.sin() * away,
+                17.0,
+            ]);
+            s.car_yaw = yaw_towards(s.car_pos, s.ball_pos) + range(unit, -0.4, 0.4);
+            let h = heading(s.car_yaw);
+            let sp = range(unit, 0.0, 1200.0);
+            s.car_vel = [h[0] * sp, h[1] * sp, 0.0];
+        }
+        Drill::WallRun => {
+            let side = sign(unit);
+            s.ball_pos = [
+                side * range(unit, 3700.0, 3980.0),
+                range(unit, -2000.0, 1500.0),
+                range(unit, 250.0, 800.0),
+            ];
+            s.ball_vel = [
+                side * range(unit, -200.0, 150.0),
+                range(unit, 600.0, 1600.0),
+                range(unit, 0.0, 600.0),
+            ];
+            s.car_pos = [
+                side * range(unit, 3300.0, 3800.0),
+                s.ball_pos[1] - range(unit, 800.0, 2000.0),
+                17.0,
+            ];
+            s.car_yaw = FRAC_PI_2 + range(unit, -0.25, 0.25);
+            let h = heading(s.car_yaw);
+            let sp = range(unit, 700.0, 1500.0);
+            s.car_vel = [h[0] * sp, h[1] * sp, 0.0];
+        }
+        Drill::Rebound => {
+            s.ball_pos = [
+                range(unit, -2500.0, 2500.0),
+                range(unit, 3800.0, 4900.0),
+                range(unit, 150.0, 800.0),
+            ];
+            s.ball_vel = [
+                range(unit, -500.0, 500.0),
+                -range(unit, 500.0, 1800.0),
+                range(unit, -200.0, 400.0),
+            ];
+            s.car_pos = [
+                range(unit, -2000.0, 2000.0),
+                range(unit, 800.0, 2800.0),
+                17.0,
+            ];
+            s.car_yaw = yaw_towards(s.car_pos, s.ball_pos) + range(unit, -0.8, 0.8);
+            let h = heading(s.car_yaw);
+            let sp = range(unit, 400.0, 1500.0);
+            s.car_vel = [h[0] * sp, h[1] * sp, 0.0];
+        }
     }
     s.car_boost = random_boost(unit);
+    if matches!(drill, Drill::AerialHigh | Drill::WallRun | Drill::ShotLob) {
+        // Ces tirs demandent du boost pour être joués.
+        s.car_boost = s.car_boost.max(range(unit, 40.0, 100.0));
+    }
     s
 }
 
@@ -331,7 +731,7 @@ mod tests {
         labels.dedup();
         assert_eq!(labels.len(), Drill::ALL.len());
         assert_eq!(Drill::pick(0.0), Drill::RoofStill);
-        assert_eq!(Drill::pick(0.999_999), Drill::Recovery);
+        assert_eq!(Drill::pick(0.999_999), Drill::Rebound);
     }
 
     #[test]
@@ -393,6 +793,79 @@ mod tests {
                     && (n(r) - 1.0).abs() < 1e-4
                     && (n(up) - 1.0).abs() < 1e-4
             );
+        }
+    }
+
+    #[test]
+    fn poids_tirage_et_lecture() {
+        let mut w = [0.0; DRILL_COUNT];
+        w[Drill::Keeper.index()] = 2.0;
+        w[Drill::Rebound.index()] = 2.0;
+        assert_eq!(Drill::pick_weighted(&w, 0.1), Drill::Keeper);
+        assert_eq!(Drill::pick_weighted(&w, 0.9), Drill::Rebound);
+        assert_eq!(Drill::pick_weighted(&w, 0.999_999), Drill::Rebound);
+        assert_eq!(
+            Drill::pick_weighted(&[0.0; DRILL_COUNT], 0.0),
+            Drill::RoofStill
+        );
+        let mut u = lcg(9);
+        let mut seen = [0u32; DRILL_COUNT];
+        for _ in 0..20000 {
+            seen[Drill::pick_weighted(&Drill::DEFAULT_WEIGHTS, u()).index()] += 1;
+        }
+        assert!(seen.iter().all(|n| *n > 400), "{seen:?}");
+        assert!(seen[Drill::DribbleTurn.index()] > 2 * seen[Drill::RoofStill.index()]);
+        let w = parse_weights("dribble_turn=0, keeper=5").unwrap();
+        assert_eq!(w[Drill::DribbleTurn.index()], 0.0);
+        assert_eq!(w[Drill::Keeper.index()], 5.0);
+        assert_eq!(w[Drill::Recovery.index()], 1.0);
+        assert_eq!(parse_weights("").unwrap(), Drill::DEFAULT_WEIGHTS);
+        assert!(parse_weights("inconnu=1").is_err());
+        assert!(parse_weights("keeper=-1").is_err());
+        assert!(parse_weights("keeper").is_err());
+    }
+
+    #[test]
+    fn dribble_de_virage_adversaire_actif_et_cap_varie() {
+        let mut u = lcg(21);
+        let mut turn_needed = 0;
+        for _ in 0..500 {
+            let s = sample(Drill::DribbleTurn, &mut u);
+            let o = s.opponent.as_ref().expect("adversaire");
+            assert!(o.active && o.pos[1] > 1000.0);
+            assert!(dist_xy(o.pos, s.car_pos) > 700.0);
+            assert_eq!(s.ball_vel, s.car_vel);
+            assert!(s.ball_pos[2] > 100.0);
+            let off = (s.car_yaw - FRAC_PI_2 + PI).rem_euclid(2.0 * PI) - PI;
+            if off.abs() > 0.78 {
+                turn_needed += 1;
+            }
+        }
+        assert!(turn_needed > 300, "{turn_needed}");
+        // Les autres drills laissent l'adversaire garé.
+        assert!(sample(Drill::Keeper, &mut u).opponent.is_none());
+        assert!(Drill::DribbleTurn.active_opponent() && !Drill::RoofStill.active_opponent());
+    }
+
+    #[test]
+    fn gardien_balle_vers_sa_cage_et_tirs_vers_le_but() {
+        let mut u = lcg(33);
+        for _ in 0..300 {
+            let s = sample(Drill::Keeper, &mut u);
+            assert!(s.ball_vel[1] < -200.0, "{:?}", s.ball_vel);
+            // Atteint le fond (y = -5120) à l'intérieur de la largeur du but (± 893, marge de la gravité).
+            let t = (-5120.0 - s.ball_pos[1]) / s.ball_vel[1];
+            let x = s.ball_pos[0] + s.ball_vel[0] * t;
+            assert!(x.abs() < 900.0, "{x}");
+        }
+        for d in [
+            Drill::ShotRoll,
+            Drill::ShotBounce,
+            Drill::ShotLob,
+            Drill::Rebound,
+        ] {
+            let s = sample(d, &mut u);
+            assert!(s.car_axes.is_none() && s.car_pos[2] == 17.0, "{d:?}");
         }
     }
 

@@ -24,6 +24,34 @@ fn roof_carry(ball_fwd: f32, vx: f32, ticks: usize, every: usize) -> Script {
     s
 }
 
+/// Portage au sol à `vx` pendant 100 ticks, le cap tourne de `total` radians (balle sur le toit, touchers tous les 15).
+fn turning_carry(vx: f32, total: f32) -> Vec<Frame> {
+    let mut car = car_on_ground();
+    car.vel = [vx, 0.0, 0.0];
+    let mut s = Script::new(
+        car,
+        BallTick {
+            pos: [0.0, 0.0, 157.0],
+            vel: [vx, 0.0, 0.0],
+        },
+    );
+    let n = 100;
+    s.run(n, |i, c, b| {
+        let yaw = total * (i + 1) as f32 / n as f32;
+        let (sn, cs) = yaw.sin_cos();
+        c.forward = [cs, sn, 0.0];
+        c.right = [-sn, cs, 0.0];
+        c.vel = [vx * cs, vx * sn, 0.0];
+        b.pos = [c.pos[0], c.pos[1], 157.0];
+        b.vel = c.vel;
+        if i % 15 == 0 {
+            hit(c);
+        }
+    });
+    s.hold(5);
+    s.frames()
+}
+
 fn carry_frames(ball_fwd: f32, vx: f32, ticks: usize, every: usize) -> Vec<Frame> {
     let mut s = roof_carry(ball_fwd, vx, ticks, every);
     s.hold(5);
@@ -191,7 +219,30 @@ pub fn cases() -> Vec<Case> {
     let with = |extra: &[(Mechanic, u64)]| -> Vec<(Mechanic, u64)> {
         flick.iter().chain(extra.iter()).copied().collect()
     };
+    let dribble = [(Touch, 6), (Dribble, 1)];
     vec![
+        // --- Dribble turn.
+        case(
+            "dribble_turn",
+            DribbleTurn,
+            true,
+            turning_carry(800.0, 1.4),
+            &[(Touch, 6), (Dribble, 1), (DribbleTurn, 1)],
+        ),
+        case(
+            "dribble_turn_negative_straight",
+            DribbleTurn,
+            false,
+            turning_carry(800.0, 0.0),
+            &dribble,
+        ),
+        case(
+            "dribble_turn_negative_small_angle",
+            DribbleTurn,
+            false,
+            turning_carry(800.0, 0.5),
+            &dribble,
+        ),
         // --- Hood dribble.
         case(
             "hood_dribble",

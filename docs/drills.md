@@ -15,9 +15,9 @@ Sans effet aux paliers 0 et 1 (`end_on_touch`) : un drill y finirait au premier 
 drill (probabilité `P`), sinon le coup d'envoi (paliers 5/6), sinon l'apparition aléatoire. Observations et actions
 sont inchangées : un checkpoint de prod se reprend tel quel (aucune remise à zéro).
 
-## Les 7 drills (`crates/scenarios`)
+## Les 16 drills (`crates/scenarios`)
 
-Fonctions pures `scenarios::sample(drill, unit)` ; `rl-env` applique l'état (`Env::reset_drill`). Tirage uniforme.
+Fonctions pures `scenarios::sample(drill, unit)` ; `rl-env` applique l'état (`Env::reset_drill`). Tirage pondéré (voir « Pondération »).
 
 **Boost de départ aléatoire** (tous les drills, `scenarios::random_boost`) : 25 % de 0 à 20, 25 % à 100, 50 % uniforme
 sur 0–100, pour apprendre les mécaniques avec ET sans boost. Hors drill, le boost de départ est 33 (ou aléatoire aux paliers 5/6, `docs/observation.md`). Aucune
@@ -33,6 +33,25 @@ pénalise de tenter une occasion avec peu de boost.
 | `wall_ball` | balle qui descend le long d'un mur latéral (x ≈ ±3500–3950), voiture au pied du mur, boost 100 | wall shot, air dribble depuis le mur |
 | `flip_reset` | voiture en l'air sur le dos sous la balle ; flip disponible une fois sur deux | flip reset (plus tard) |
 | `recovery` | voiture à 300–1500 uu de haut, orientation, vitesse (≤ 1500 uu/s) et vitesse angulaire (≤ 4 rad/s) aléatoires, flip une fois sur deux, balle au sol à > 800 uu | retomber sur les roues, vite, bien orientée |
+
+**Drills v2** (« packs d'entraînement » maison : tout est tiré dans des plages continues, jamais deux fois le même
+état, donc rien à apprendre par cœur). Boost de départ aléatoire comme ci-dessus (≥ 40 pour `aerial_high`,
+`wall_run`, `shot_lob`). Poids par défaut entre parenthèses.
+
+| Drill | Famille | Départ | Réussite |
+|---|---|---|---|
+| `dribble_turn` (3) | dribble | balle sur le toit, voiture à l'arrêt (40 %) ou à 300–1100 uu/s, **cap à ±0,8–π du but dans 75 % des cas** (de côté ou dos au but), adversaire **actif** entre 1500 et 4300 en Y, face à la voiture | but |
+| `shot_roll` (1,5) | attaquant | balle qui roule vers le but (cap ±0,9 rad, 400–1500 uu/s), voiture 900–2500 uu derrière, cap ±0,7 rad vers la balle | but |
+| `shot_bounce` (1,5) | attaquant | balle à 400–1000 uu qui descend (−300 à +200) et avance vers le but, voiture 700–2200 derrière | but |
+| `shot_cross` (1,5) | attaquant | centre : balle à 2600–3600 du centre, lancée vers le devant du but (balistique), voiture dans l'axe | but |
+| `shot_lob` (1) | attaquant | balle à 500–1300 uu qui avance vers le but, voiture au sol derrière | but |
+| `keeper` (2,5) | gardien | balle tirée vers SA cage (largeur du but, 1300–2600 uu/s, balistique) depuis (±3000, −3500…0), voiture en y −4600…−2200 (devant sa cage), cap vers la balle ; **6 s** | arrêt sans but encaissé |
+| `aerial_high` (1) | aérien | balle à 900–1700 uu en mouvement, voiture au sol à 800–2200 | toucher en l'air (balle > 300) |
+| `wall_run` (1) | mur | balle qui longe et monte le mur latéral (x 3700–3980, +600–1600 en Y), voiture au pied du mur | but |
+| `rebound` (1,5) | récupération | balle repartie du mur du fond (y 3800–4900, −500 à −1800 uu/s), voiture à mi-terrain | but |
+
+Les épisodes courts (horizon `Env::max_steps`) : gardien 6 s ; `shot_roll/bounce/cross`, `rebound` 10 s ;
+`shot_lob`, `aerial_high`, `wall_run` 8 s ; `dribble_turn` 20 s (autres : `max_steps` du palier).
 
 Pas de drill « plafond » ni de speed flip/wave dash/half flip (pas d'état de départ utile : ils se jouent depuis le
 kickoff ou le sol).

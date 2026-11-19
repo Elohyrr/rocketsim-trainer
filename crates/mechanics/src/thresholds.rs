@@ -286,3 +286,9 @@ pub const RECOVERY_LAND_UP_Z: f32 = 0.8;
 pub const RECOVERY_MIN_KEEP: f32 = 0.6;
 /// … et au moins cette vitesse horizontale (uu/s) à l'atterrissage.
 pub const RECOVERY_MIN_SPEED: f32 = 400.0;
+
+// ---- dribble_turn (groupe carry)
+/// Changement de cap cumulé (rad, ≈ 45°) pendant un portage au sol pour compter un virage avec la balle.
+pub const DRIBBLE_TURN_MIN_ANGLE: f32 = 0.785;
+/// Vitesse horizontale mini (uu/s) : un tour sur place balle sur le toit n'est pas un virage de dribble.
+pub const DRIBBLE_TURN_MIN_SPEED: f32 = 250.0;

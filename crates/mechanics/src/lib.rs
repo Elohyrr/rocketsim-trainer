@@ -28,12 +28,12 @@ pub use detector::{Detector, Events, Mode};
 pub use quality::{Quality, QualityTracker};
 
 /// Nombre de mécaniques du catalogue.
-pub const MECH_COUNT: usize = 41;
+pub const MECH_COUNT: usize = 42;
 
 /// Fréquence de la physique (ticks par seconde).
 pub const TICK_HZ: f32 = 120.0;
 
-/// Catalogue fermé des mécaniques détectées (41, ordre de [`Mechanic::ALL`] = index des compteurs).
+/// Catalogue fermé des mécaniques détectées (42, ordre de [`Mechanic::ALL`] = index des compteurs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Mechanic {
     Touch,
@@ -77,6 +77,7 @@ pub enum Mechanic {
     TornadoSpin,
     Recovery,
     HalfVolley,
+    DribbleTurn,
 }
 
 impl Mechanic {
@@ -122,6 +123,7 @@ impl Mechanic {
         Mechanic::TornadoSpin,
         Mechanic::Recovery,
         Mechanic::HalfVolley,
+        Mechanic::DribbleTurn,
     ];
 
     /// Valeur du label Prometheus `mechanic`.
@@ -168,6 +170,7 @@ impl Mechanic {
             Mechanic::TornadoSpin => "tornado_spin",
             Mechanic::Recovery => "recovery",
             Mechanic::HalfVolley => "half_volley",
+            Mechanic::DribbleTurn => "dribble_turn",
         }
     }
 
@@ -375,7 +378,8 @@ mod tests {
                 "stall",
                 "tornado_spin",
                 "recovery",
-                "half_volley"
+                "half_volley",
+                "dribble_turn"
             ]
         );
     }
