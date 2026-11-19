@@ -10,6 +10,8 @@ self-play ne contiennent **aucun** terme de mécanique : le détecteur y compte,
 | Réglage | Défaut | Effet |
 |---|---|---|
 | `--drill-prob P` du learner, ou variable `DRILL_PROB` | `0` (coupé) | part des épisodes en drill, bornée à [0 ; 0,9]. Conseillé : `0.3` |
+| `--drill-weights label=poids,…` ou `DRILL_WEIGHTS` | voir « Pondération » | poids de tirage par drill (labels de la table ci-dessous) ; label inconnu ou poids négatif = le learner refuse de démarrer |
+| `--drill-clips` ou `DRILL_CLIPS=1` | coupé | garde aussi les clips des drills de dribble (`roof_still`, `roof_moving`, `dribble_turn`) ; jamais les autres |
 
 Sans effet aux paliers 0 et 1 (`end_on_touch`) : un drill y finirait au premier toucher. Chaque épisode tire d'abord le
 drill (probabilité `P`), sinon le coup d'envoi (paliers 5/6), sinon l'apparition aléatoire. Observations et actions
@@ -56,7 +58,14 @@ Les épisodes courts (horizon `Env::max_steps`) : gardien 6 s ; `shot_roll/bounc
 Pas de drill « plafond » ni de speed flip/wave dash/half flip (pas d'état de départ utile : ils se jouent depuis le
 kickoff ou le sol).
 
-## Opposition : aucune adversaire actif
+## Pondération
+
+`Drill::DEFAULT_WEIGHTS` (ordre de `Drill::ALL`) : les 7 drills de la v1 à 1, `dribble_turn` 3, `keeper` 2,5,
+`shot_roll`/`shot_bounce`/`shot_cross`/`rebound` 1,5, `shot_lob`/`aerial_high`/`wall_run` 1 (≈ 21 au total : un drill
+sur 7 est un virage de dribble). `--drill-weights dribble_turn=5,keeper=0` surcharge ces valeurs ; un poids à 0
+retire le drill. Poids tous nuls : tirage uniforme.
+
+## Opposition : adversaire garé, sauf `dribble_turn`
 
 En drill, l'adversaire (paliers 5/6) est **garé immobile** près de sa cage (x ∈ ±1500, y = 4600) et la politique
 adverse est ignorée. Raisons : (1) on montre la mécanique, pas la défense : un adversaire actif transforme 30 % des
@@ -64,6 +73,13 @@ adverse est ignorée. Raisons : (1) on montre la mécanique, pas la défense : u
 détecteur et le bonus d'utilité (balle vers le but) ; (3) la voiture adverse reste dans la simulation, donc la forme
 des observations et le self-play vectorisé ne changent pas. L'adversaire garé est inoffensif ; une balle bien frappée
 passe à côté. La confrontation reste dans les 70 % de matchs.
+
+**Exception v2 : `dribble_turn`.** Le constat d'Elohyrr (bon joueur) sur les clips : balle sur le toit, le bot va
+toujours tout droit ; il sait redresser un départ en virage mais pas tourner une fois la balle posée, et il craint un
+bot qui dribble en ligne droite sans flick. Ce drill garde donc l'adversaire **actif** : placé entre 1500 et 4300 en Y,
+face à la voiture, il joue avec la politique adverse (self-play comme en match ; sans self-play il reste inerte, comme
+avant). Raison : sans défenseur, tourner n'est pas nécessaire, juste plus lent ; avec un défenseur le virage devient la
+condition pour marquer. Conflits de ballon inclus : c'est voulu pour cette famille seulement.
 
 ## Bonus de méca (drills uniquement) — `crates/rl-env/src/drill.rs`
 
@@ -79,6 +95,28 @@ différence de compteurs sur un pas compte, donc valable avec les règles actuel
 - **Décroissants** : `b = b0 / √(1 + n/N)`, `N = 1000`, `n` = bonus de cette mécanique payés sur la dernière heure
   (fenêtre glissante, registre `BonusLedger` partagé par tous les envs et les paliers ; remis à zéro au redémarrage).
 - Jamais en match ni en self-play : `bonus` n'est calculé que si l'épisode est un drill.
+
+### Bonus de dribble de virage (v2)
+
+Détecteur : `dribble_turn` (42ᵉ mécanique, `mechanics::ext_carry`). Pendant un portage au sol à plat (fenêtre toit du
+dribble), le cap du nez change d'au moins 45° (cumul signé, `DRIBBLE_TURN_MIN_ANGLE` = 0,785 rad) en roulant à plus
+de 250 uu/s ; une fois par portage. Le détecteur ne récompense rien ; il compte en match comme en drill, ce qui
+permet de voir si le virage appris en drill est réutilisé en match. Cas scriptés : virage de 80° positif ; ligne droite
+et 29° négatifs.
+
+Bonus (drills seulement, plafonnés à 10 % du but, décroissants `b0/√(1+n/N)` comme les autres) :
+
+- **virage** : `b0 = 0,2`, payé tout de suite (pas besoin d'une balle qui file vers le but : une balle portée n'y va
+  pas), 3 par épisode au plus, sans consommer le plafond de 2 bonus classiques ;
+- **but après virage ou flick** : un but dans les 6 s (720 ticks) qui suivent un `dribble_turn` ou un `flick` rapporte
+  0,5 (une fois, registre horaire propre). Un dribble en ligne droite, même suivi d'un but, ne rapporte pas ce bonus :
+  c'est la correction visée.
+
+### Gardien (drill `keeper`)
+
+Un toucher de l'agent qui arrête une balle qui menaçait sa cage (vitesse vers −Y ≥ 500 uu/s avant, < 200 après) est un
+**arrêt** : +1,0 (plafonné, décroissant, registre propre), l'épisode finit 1,5 s plus tard (dégagement). But encaissé :
+la pénalité de but contre son camp du palier (5) **plus** −1,0 propre au drill ; l'épisode finit sur le but.
 
 ### Bonus de récupération (drill `recovery`)
 
@@ -105,10 +143,37 @@ contact. Verdicts :
 
 ## Métriques
 
-- `trainer_drill_episodes_total{drill}` (7 séries) ; `trainer_drill_recovery_total{outcome}` (good, wheels, bad, none) ; `trainer_drill_bonus_total{mechanic}` (8 séries : celles qui ont
-  un `b0 > 0`) ; `trainer_mechanic_total{context="drill"}` (le label existait déjà).
+- `trainer_drill_episodes_total{drill}` (16 séries) ; **`trainer_drill_success_total{drill}`** (16 séries, réussite
+  par famille : but pour les tirs, dribbles, `wall_*`, `rebound` ; arrêt sans but encaissé pour `keeper` ; toucher en l'air
+  balle > 300 uu pour `aerial_touch`, `air_dribble`, `aerial_high` ; flip reset vu pour `flip_reset` ; verdict `good` pour
+  `recovery`) ; `trainer_drill_dribble_goal_total` (buts payés après virage/flick) ; `trainer_drill_saves_total` ; `trainer_drill_recovery_total{outcome}` (good, wheels, bad, none) ; `trainer_drill_bonus_total{mechanic}` (9 séries : celles qui ont
+  un `b0 > 0`, dont `dribble_turn`) ; `trainer_mechanic_total{context="drill"}` (le label existait déjà).
 - Les compteurs de match (`context="match"`) ne contiennent pas les mécaniques vues en drill : c'est ce qui permet
   de dire si une méca apprise en drill est **réutilisée spontanément en match**.
+
+Séries ajoutées par la v2 : 9 (épisodes) + 16 (succès) + 1 (bonus) + 2 (compteurs) = 28 (≤ 30) + 2 pour le label
+`dribble_turn` de `trainer_mechanic_total` (match/drill). Le garde-fou de séries du test passe de 200 à 250 ; la
+limite dure reste 500.
+
+## Packs d'entraînement de la communauté : pas d'import
+
+Question : importer de vrais packs (Custom Training de Rocket League) pour en tirer des états initiaux ? Recherche
+faite le 2026-11-19 (sources publiques, non vérifiées sur fichiers réels) :
+
+- **Fichiers locaux `.Tem`** (dossier `TAGame/Training` du jeu) : sérialisation Unreal binaire propriétaire, non
+  documentée. Un décodeur open source existe (RocketRP, C#, licence MIT : `RocketRP.TrainingCLI -f pack.tem -p`
+  sort du JSON), mais le schéma n'est pas publié et je n'ai pas pu le vérifier sur un vrai fichier ici.
+- **BakkesMod** : pas de format d'échange standard ; le plugin VersatileTraining exporte du JSON sans schéma public.
+- **Sites et codes de packs** (Prejump, codes `XXXX-XXXX-XXXX-XXXX`) : pas d'API publique, conditions d'utilisation et
+  droits des auteurs de packs non lisibles ; ce sont des créations de joueurs, hébergées sur le service de Psyonix.
+  Aucune source dont la redistribution soit clairement permise.
+
+Décision : **pas d'importeur ni de packs dans ce dépôt public** (pas de source légale vérifiable, schéma `.Tem` non
+vérifié ; un téléchargeur serait du scraping de contenu tiers). À la place, le générateur de la v2 reprend le principe
+des packs (balle + voiture + vitesse + boost, par famille de situation) avec des plages continues écrites ici. Pour
+utiliser ses propres packs plus tard : les convertir en JSON avec RocketRP sur ses fichiers `.Tem` locaux, puis
+ajouter une famille de `scenarios` qui lit ce JSON (position, vitesse, rotation de la balle ; position, rotation,
+vitesse, boost de la voiture) — à faire hors dépôt public.
 
 ## Essai local et mesures
 
