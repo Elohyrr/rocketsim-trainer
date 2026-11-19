@@ -29,12 +29,12 @@ pub use detector::{Detector, Events, Mode};
 pub use quality::{Quality, QualityTracker};
 
 /// Nombre de mécaniques du catalogue.
-pub const MECH_COUNT: usize = 49;
+pub const MECH_COUNT: usize = 50;
 
 /// Fréquence de la physique (ticks par seconde).
 pub const TICK_HZ: f32 = 120.0;
 
-/// Catalogue fermé des mécaniques détectées (49, ordre de [`Mechanic::ALL`] = index des compteurs).
+/// Catalogue fermé des mécaniques détectées (50, ordre de [`Mechanic::ALL`] = index des compteurs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Mechanic {
     Touch,
@@ -86,6 +86,7 @@ pub enum Mechanic {
     SquishySave,
     Clear,
     KickoffWon,
+    FlipShot,
 }
 
 impl Mechanic {
@@ -139,6 +140,7 @@ impl Mechanic {
         Mechanic::SquishySave,
         Mechanic::Clear,
         Mechanic::KickoffWon,
+        Mechanic::FlipShot,
     ];
 
     /// Valeur du label Prometheus `mechanic`.
@@ -193,6 +195,7 @@ impl Mechanic {
             Mechanic::SquishySave => "squishy_save",
             Mechanic::Clear => "clear",
             Mechanic::KickoffWon => "kickoff_won",
+            Mechanic::FlipShot => "flip_shot",
         }
     }
 
@@ -218,6 +221,7 @@ impl Mechanic {
                 | Redirect
                 | AirRollShot
                 | ResetShot
+                | FlipShot
         )
     }
 
@@ -229,7 +233,7 @@ impl Mechanic {
             FlipReset | ResetShot | DoubleReset | CeilingReset | KuxirPinch => 9,
             Pinch | CeilingShot | AerialSave | SquishySave | AirDribble | WallToAirDribble
             | BackboardDouble | DoubleTouch | Flick | Flick45 | Flick90 | MustyFlick
-            | DelayedFlick | BreeziFlick | Redirect | AirRollShot => 8,
+            | DelayedFlick | BreeziFlick | Redirect | AirRollShot | FlipShot => 8,
             PowerShot | Save | Clear | WallShot | SpeedFlip | ChainDash | WallDash | Stall
             | TornadoSpin | BackboardRead | BounceDribble | WallDribble | CeilingDribble
             | ReverseDribble => 6,
@@ -269,6 +273,7 @@ impl Mechanic {
                 | TornadoSpin
                 | Recovery
                 | DribbleTurn
+                | FlipShot
         )
     }
 
@@ -282,7 +287,7 @@ impl Mechanic {
             AirDribble | WallToAirDribble => AirDribble,
             FlipReset | ResetShot | DoubleReset | CeilingReset => FlipReset,
             DoubleTouch | BackboardDouble | BackboardRead => DoubleTouch,
-            Flick | Flick45 | Flick90 | MustyFlick | DelayedFlick | BreeziFlick => Flick,
+            Flick | Flick45 | Flick90 | MustyFlick | DelayedFlick | BreeziFlick | FlipShot => Flick,
             Dribble | BounceDribble | HoodDribble | ReverseDribble | WallDribble
             | CeilingDribble | DribbleTurn => Dribble,
             SpeedFlip | WaveDash | HalfFlip | ChainDash | WallDash => WaveDash,
@@ -481,7 +486,8 @@ mod tests {
                 "aerial_save",
                 "squishy_save",
                 "clear",
-                "kickoff_won"
+                "kickoff_won",
+                "flip_shot"
             ]
         );
     }

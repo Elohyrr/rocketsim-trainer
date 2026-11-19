@@ -91,7 +91,7 @@ retour au sol), `recovery` (le vol retourné par un choc ne compte pas), `stall`
 | Annulées (vitesse de balle) | `power_shot`, `reset_shot`, `pinch` (hors support `car`), `kuxir_pinch`, `flick` + variantes (45, 90, musty, delayed, breezi), `wall_shot`, `redirect`, `air_roll_shot`, `cushion`, `half_volley` | jugées sur la vitesse de balle après le toucher : un choc à deux la gonfle |
 | Conservées | `touch`, `aerial_touch`, `air_dribble`, `flip_reset`, `ceiling_shot`, `double_touch`, `backboard_*`, `dribble`, `*_dribble`, `reset_shot`, `double_reset`, `ceiling_reset`, `wall_to_air_dribble`, `fast_aerial`, `bump`, `demo` | état ou intention du joueur (position, drapeaux, commandes), pas une vitesse subie |
 
-**Nouvelles mécaniques** (ajoutées en fin de catalogue : 49 au total avec les arrêts et `kickoff_won`) :
+**Nouvelles mécaniques** (ajoutées en fin de catalogue : 50 au total avec les arrêts, `kickoff_won` et `flip_shot`) :
 
 - *car pinch / kickoff pinch* : pas de nouvelle entrée, c'est un `pinch` de **support `car`** : toucher simultané,
   gain de vitesse de balle ≥ 1 500, vitesse après ≥ 2 000, autre voiture à < 350 uu de la balle. Exclusif avec
@@ -171,7 +171,7 @@ le toucher (uu/s, jugée sur les 4 ticks qui suivent) ; la colonne « record » 
 | `tornado_spin` | b | \|ω·haut\| > 4 rad/s ≥ 0,3 s en l'air | |
 | `recovery` | b | atterrissage à plat après ≥ 0,6 s en l'air dont un moment renversé/de côté, en gardant ≥ 60 % de la vitesse | |
 
-Séries Prometheus : `trainer_mechanic_total{mechanic,context}` = 49 × 2 ; `trainer_mechanic_record{mechanic}` = 16 ; le
+Séries Prometheus : `trainer_mechanic_total{mechanic,context}` = 50 × 2 ; `trainer_mechanic_record{mechanic}` = 16 ; le
 total reste très sous les 500 séries (test `series_stay_far_below_the_cap`). Les nouvelles mécaniques ne rapportent
 **aucun bonus** en drill (`base_bonus` → 0) : à décider. Clips : toutes sauf `touch` ; la mécanique la plus précieuse
 du pas gagne (`Mechanic::clip_priority`), le clip porte `detail = {value, support}` (vitesse de balle, support du pinch)
@@ -307,3 +307,9 @@ contiennent un choc voiture-voiture. Apparus : bump 28, demo 1, pinch (car) 24.
 
 Voir `docs/clips.md` : un clip garde `mechanics[{mechanic, step, t}]` (toutes les mécaniques validées dans sa
 fenêtre, ordre chronologique), `combo` (≥ 2 familles de `Mechanic::family()` à < 2 s, bonus de score +0,1 plafonné à 1).
+
+## `flip_shot` (50ᵉ, drills v3)
+
+Dodge avant ou diagonal (secteur 0, 1 ou 7) au plus 0,25 s (30 ticks) avant le toucher, balle basse (z ≤ 300), au moins 30 uu
+devant le centre de la voiture (toucher par le nez), gain de vitesse de balle ≥ 300 uu/s. Famille du flick. Valeur = vitesse
+après. Voir `docs/drills.md`.

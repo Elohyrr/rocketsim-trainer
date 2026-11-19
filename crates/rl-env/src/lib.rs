@@ -815,7 +815,24 @@ impl Env {
         self.prev_boost = s.cars[me].boost;
         self.prev_pads = s.pads.iter().map(|p| p.active).collect();
         let other = self.opp.map(|o| car_index(&s, o));
+        let s = self.with_ghost_ball(s);
         build_obs(&s, me, other, false)
+    }
+
+    /// Drill `rings` : la balle vue par l'agent est le prochain anneau (immobile), pour qu'il le voie sans changer
+    /// la forme des observations ; la vraie balle reste hors jeu. Ailleurs : snapshot inchangé.
+    fn with_ghost_ball(&self, mut s: sim_core::Snapshot) -> sim_core::Snapshot {
+        if let Some(r) = self
+            .drill
+            .as_ref()
+            .and_then(|d| d.1.rings.as_ref())
+            .and_then(|r| r.current())
+        {
+            s.ball.pos = r.pos;
+            s.ball.vel = [0.0; 3];
+            s.ball.ang_vel = [0.0; 3];
+        }
+        s
     }
 
     /// Reset en drill : état de départ tiré par `scenarios` (drill uniforme parmi [`Drill::ALL`]). L'adversaire,
@@ -874,6 +891,16 @@ impl Env {
                 self.sim.tick_count(),
                 s.car_pos[2],
                 s.car_vel[2],
+            ));
+        }
+        if d == Drill::Turnaround {
+            bonus.turn = Some(drill::TurnTrack::new(self.sim.tick_count()));
+        }
+        if d == Drill::Rings {
+            bonus.rings = Some(drill::RingTrack::new(
+                s.rings.clone(),
+                self.sim.tick_count(),
+                s.car_pos,
             ));
         }
         if d == Drill::Keeper {
@@ -1085,6 +1112,8 @@ impl Env {
         self.last_touch = touch_now;
 
         let snap = self.sim.snapshot();
+        // Anneaux : la « balle » de l'approche est le prochain anneau (voir `with_ghost_ball`).
+        let snap = self.with_ghost_ball(snap);
         let car = &snap.cars[car_index(&snap, self.car)];
         let mut dir = [
             snap.ball.pos[0] - car.pos[0],
@@ -1177,6 +1206,10 @@ impl Env {
                     our_goal,
                     own_goal,
                     seen: &seen,
+                    car_on_ground: car.on_ground,
+                    car_pos: car.pos,
+                    car_vel: car.vel,
+                    car_forward: car.forward,
                 },
                 cap,
                 ledger,
@@ -1327,6 +1360,10 @@ impl Env {
             Some(Drill::ShotRoll | Drill::ShotBounce | Drill::ShotCross | Drill::Rebound) => 10.0,
             Some(Drill::ShotLob | Drill::AerialHigh | Drill::WallRun) => 8.0,
             Some(Drill::DribbleTurn) => 20.0,
+            Some(Drill::Flick) => 15.0,
+            Some(Drill::FlipShot) => 8.0,
+            Some(Drill::Turnaround) => 6.0,
+            Some(Drill::Rings) => 20.0,
             _ => return self.cfg.max_steps,
         };
         let steps = (secs * TICKS_PER_SECOND / self.cfg.tick_skip.max(1) as f32) as u32;
@@ -1348,6 +1385,7 @@ impl Env {
     pub fn observe(&mut self) -> [f32; OBS_DIM] {
         let s = self.sim.snapshot();
         let other = self.opp.map(|o| car_index(&s, o));
+        let s = self.with_ghost_ball(s);
         build_obs(&s, car_index(&s, self.car), other, false)
     }
 
@@ -1939,6 +1977,7 @@ mod tests {
         // Le dribble de virage a un adversaire actif : testé à part.
         let mut drill_weights = Drill::DEFAULT_WEIGHTS;
         drill_weights[Drill::DribbleTurn.index()] = 0.0;
+        drill_weights[Drill::Flick.index()] = 0.0;
         let cfg = EnvConfig {
             drill_prob: 1.0,
             drill_weights,
@@ -2004,7 +2043,7 @@ mod tests {
         assert!(
             Drill::ALL
                 .iter()
-                .all(|d| rep.episodes[d.index()] >= 1 || *d == Drill::Rebound)
+                .all(|d| rep.episodes[d.index()] >= 1 || *d == Drill::Rings)
         );
     }
 

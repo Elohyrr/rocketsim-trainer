@@ -667,6 +667,7 @@ fn main() {
             m.drill_success = drill_total.success;
             m.drill_dribble_goal = drill_total.dribble_goal;
             m.drill_saves = drill_total.saves;
+            m.drill_rings = drill_total.rings;
             m.clips_saved_known = clips_saved;
             m.clips_top_score = clip_store
                 .as_ref()

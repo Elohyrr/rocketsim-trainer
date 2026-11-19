@@ -45,10 +45,18 @@ pub enum Drill {
     WallRun,
     /// Récupération après rebond : balle repartie du mur du fond, la voiture doit la reprendre.
     Rebound,
+    /// Balle au sol ou basse devant la voiture lancée : la frapper avec le nez pendant un dodge avant/diagonal.
+    FlipShot,
+    /// Demi-tour : voiture dos à la balle, faire face à la cible avec de la vitesse le plus vite possible.
+    Turnaround,
+    /// Balle sur le toit, voiture lancée vers le but, adversaire actif à distance moyenne : un flick qui part vite.
+    Flick,
+    /// Anneaux virtuels (points de passage sans collision) dans l'air et près des murs, à traverser dans l'ordre.
+    Rings,
 }
 
 /// Nombre de drills.
-pub const DRILL_COUNT: usize = 16;
+pub const DRILL_COUNT: usize = 20;
 
 impl Drill {
     pub const ALL: [Drill; DRILL_COUNT] = [
@@ -68,12 +76,17 @@ impl Drill {
         Drill::AerialHigh,
         Drill::WallRun,
         Drill::Rebound,
+        Drill::FlipShot,
+        Drill::Turnaround,
+        Drill::Flick,
+        Drill::Rings,
     ];
 
     /// Poids de tirage par défaut (même ordre que [`Drill::ALL`]) : les drills de la v1 pèsent 1, les nouvelles
     /// familles davantage (dribble de virage 3, gardien 2,5, tirs 1,5).
     pub const DEFAULT_WEIGHTS: [f32; DRILL_COUNT] = [
-        1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3.0, 1.5, 1.5, 1.5, 1.0, 2.5, 1.0, 1.0, 1.5,
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3.0, 1.5, 1.5, 1.5, 1.0, 2.5, 1.0, 1.0, 1.5, 3.0, 2.0,
+        2.0, 1.5,
     ];
 
     pub fn label(self) -> &'static str {
@@ -94,6 +107,10 @@ impl Drill {
             Drill::AerialHigh => "aerial_high",
             Drill::WallRun => "wall_run",
             Drill::Rebound => "rebound",
+            Drill::FlipShot => "flip_shot",
+            Drill::Turnaround => "turnaround",
+            Drill::Flick => "flick",
+            Drill::Rings => "rings",
         }
     }
 
@@ -133,14 +150,14 @@ impl Drill {
 
     /// Drill dont l'adversaire joue (politique adverse) ; les autres le laissent garé.
     pub fn active_opponent(self) -> bool {
-        self == Drill::DribbleTurn
+        matches!(self, Drill::DribbleTurn | Drill::Flick)
     }
 
     /// Drill de dribble (clips possibles avec l'option `drill_clips`).
     pub fn is_dribble(self) -> bool {
         matches!(
             self,
-            Drill::RoofStill | Drill::RoofMoving | Drill::DribbleTurn
+            Drill::RoofStill | Drill::RoofMoving | Drill::DribbleTurn | Drill::Flick
         )
     }
 
@@ -180,9 +197,18 @@ pub struct OppSetup {
     pub active: bool,
 }
 
+/// Anneau virtuel : point de passage (centre, rayon en uu), sans collision.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ring {
+    pub pos: V3,
+    pub radius: f32,
+}
+
 /// État de départ d'un drill.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DrillSetup {
+    /// Anneaux à traverser dans l'ordre (drill `rings` seulement).
+    pub rings: Vec<Ring>,
     pub drill: Drill,
     pub ball_pos: V3,
     pub ball_vel: V3,
@@ -319,6 +345,7 @@ pub fn axes_rolled(yaw: f32, pitch: f32, roll: f32) -> [V3; 3] {
 /// Tire l'état de départ de `drill`. Toutes les positions restent dans le terrain (|x| < 4096, |y| < 5120).
 pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
     let mut s = DrillSetup {
+        rings: Vec::new(),
         drill,
         ball_pos: [0.0; 3],
         ball_vel: [0.0; 3],
@@ -677,6 +704,145 @@ pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
             let sp = range(unit, 700.0, 1500.0);
             s.car_vel = [h[0] * sp, h[1] * sp, 0.0];
         }
+        Drill::FlipShot => {
+            // Balle au sol (roulante ou à l'arrêt) ou basse, but dans l'axe ou en angle, voiture lancée derrière.
+            s.ball_pos = [
+                range(unit, -2200.0, 2200.0),
+                range(unit, -500.0, 2800.0),
+                if unit() < 0.7 {
+                    93.0
+                } else {
+                    range(unit, 110.0, 260.0)
+                },
+            ];
+            let goal = [range(unit, -800.0, 800.0) + 0.0, 5120.0, 300.0];
+            let to_goal = yaw_towards(s.ball_pos, goal);
+            let h = heading(to_goal);
+            if unit() < 0.5 {
+                let sp = range(unit, 200.0, 900.0);
+                let a = to_goal + range(unit, -0.5, 0.5);
+                s.ball_vel = [a.cos() * sp, a.sin() * sp, 0.0];
+            }
+            car_behind(
+                unit,
+                &mut s,
+                [h[0], h[1]],
+                (700.0, 1600.0),
+                450.0,
+                0.25,
+                (700.0, 1500.0),
+            );
+        }
+        Drill::Turnaround => {
+            // Dos à la balle (cap tourné de 150° à 180°), à l'arrêt (40 %) ou roulant vers l'avant (le nez s'éloigne)
+            // ou en marche arrière vers la balle.
+            s.car_pos = [
+                range(unit, -2200.0, 2200.0),
+                range(unit, -2500.0, 2000.0),
+                17.0,
+            ];
+            let a = range(unit, -PI, PI);
+            let dist = range(unit, 1500.0, 3200.0);
+            s.ball_pos = [
+                (s.car_pos[0] + a.cos() * dist).clamp(-3500.0, 3500.0),
+                (s.car_pos[1] + a.sin() * dist).clamp(-4500.0, 4500.0),
+                93.0,
+            ];
+            s.car_yaw = yaw_towards(s.car_pos, s.ball_pos) + sign(unit) * range(unit, 2.62, PI);
+            let h = heading(s.car_yaw);
+            let u = unit();
+            let v = if u < 0.4 {
+                0.0
+            } else if u < 0.7 {
+                range(unit, 300.0, 1000.0)
+            } else {
+                -range(unit, 400.0, 1400.0)
+            };
+            s.car_vel = [h[0] * v, h[1] * v, 0.0];
+            s.ball_vel = [0.0; 3];
+        }
+        Drill::Flick => {
+            // Comme `roof_moving`, cap vers le but ou en angle, avec un adversaire actif à distance moyenne.
+            let yaw = yaw_to_goal(unit, 0.9);
+            let h = heading(yaw);
+            let speed = range(unit, 500.0, 1400.0);
+            s.car_pos = [
+                range(unit, -2500.0, 2500.0),
+                range(unit, -3500.0, 500.0),
+                17.0,
+            ];
+            s.car_yaw = yaw;
+            s.car_vel = [h[0] * speed, h[1] * speed, 0.0];
+            s.ball_pos = [
+                s.car_pos[0] + h[0] * 25.0,
+                s.car_pos[1] + h[1] * 25.0,
+                ROOF_BALL_Z,
+            ];
+            s.ball_vel = s.car_vel;
+            let opp = loop {
+                let d = range(unit, 1200.0, 2600.0);
+                let a = yaw + range(unit, -0.6, 0.6);
+                let p = clamp_xy([s.car_pos[0] + a.cos() * d, s.car_pos[1] + a.sin() * d, 17.0]);
+                if dist_xy(p, s.car_pos) > 900.0 {
+                    break p;
+                }
+            };
+            s.opponent = Some(OppSetup {
+                pos: opp,
+                yaw: yaw_towards(opp, s.car_pos) + range(unit, -0.3, 0.3),
+                boost: random_boost(unit),
+                active: true,
+            });
+        }
+        Drill::Rings => {
+            s.car_boost = 100.0;
+            s.car_pos = [
+                range(unit, -2500.0, 2500.0),
+                range(unit, -3800.0, 1500.0),
+                17.0,
+            ];
+            let n = 3 + (unit() * 4.0) as usize % 4;
+            let mut dir = yaw_to_goal(unit, 1.2);
+            s.car_yaw = dir;
+            let mut p = s.car_pos;
+            for i in 0..n {
+                dir += range(unit, -0.9, 0.9);
+                let step = range(unit, 800.0, 1500.0);
+                let near_wall = unit() < 0.4;
+                let z = if i == 0 {
+                    range(unit, 250.0, 600.0)
+                } else if near_wall {
+                    range(unit, 300.0, 1100.0)
+                } else {
+                    range(unit, 400.0, 1400.0)
+                };
+                p = clamp_xy([p[0] + dir.cos() * step, p[1] + dir.sin() * step, z]);
+                if near_wall {
+                    p[0] = p[0].signum() * range(unit, 3500.0, 3850.0);
+                }
+                // Reste dans le terrain et fait demi-tour contre un mur au lieu d'y rester collé.
+                if p[0].abs() > 3700.0 || p[1].abs() > 4600.0 {
+                    dir += PI;
+                }
+                s.rings.push(Ring {
+                    pos: p,
+                    radius: range(unit, 260.0, 380.0),
+                });
+            }
+            // Balle (inutile ici : la balle vue par l'agent est le prochain anneau) loin de tout.
+            loop {
+                s.ball_pos = [
+                    range(unit, -3000.0, 3000.0),
+                    range(unit, -4000.0, 4000.0),
+                    93.0,
+                ];
+                if dist_xy(s.car_pos, s.ball_pos) > 800.0
+                    && s.rings.iter().all(|r| dist_xy(r.pos, s.ball_pos) > 800.0)
+                {
+                    break;
+                }
+            }
+        }
         Drill::Rebound => {
             s.ball_pos = [
                 range(unit, -2500.0, 2500.0),
@@ -700,6 +866,9 @@ pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
         }
     }
     s.car_boost = random_boost(unit);
+    if drill == Drill::Rings {
+        s.car_boost = 100.0;
+    }
     if matches!(drill, Drill::AerialHigh | Drill::WallRun | Drill::ShotLob) {
         // Ces tirs demandent du boost pour être joués.
         s.car_boost = s.car_boost.max(range(unit, 40.0, 100.0));
@@ -731,7 +900,7 @@ mod tests {
         labels.dedup();
         assert_eq!(labels.len(), Drill::ALL.len());
         assert_eq!(Drill::pick(0.0), Drill::RoofStill);
-        assert_eq!(Drill::pick(0.999_999), Drill::Rebound);
+        assert_eq!(Drill::pick(0.999_999), Drill::Rings);
     }
 
     #[test]
@@ -866,6 +1035,35 @@ mod tests {
         ] {
             let s = sample(d, &mut u);
             assert!(s.car_axes.is_none() && s.car_pos[2] == 17.0, "{d:?}");
+        }
+    }
+
+    #[test]
+    fn drills_v3_etats() {
+        let mut u = lcg(11);
+        for _ in 0..500 {
+            let r = sample(Drill::Rings, &mut u);
+            assert!((3..=6).contains(&r.rings.len()), "{}", r.rings.len());
+            assert_eq!(r.car_boost, 100.0);
+            for g in &r.rings {
+                assert!(g.pos[0].abs() < 4000.0 && g.pos[1].abs() < 5000.0);
+                assert!((200.0..=1500.0).contains(&g.pos[2]) && g.radius >= 250.0);
+            }
+            // Turnaround : cap tourné de 150° à 180° par rapport à la balle.
+            let t = sample(Drill::Turnaround, &mut u);
+            let to = yaw_towards(t.car_pos, t.ball_pos);
+            let d = (t.car_yaw - to).sin().atan2((t.car_yaw - to).cos()).abs();
+            assert!((2.6..=PI + 1e-3).contains(&d), "{d}");
+            // Flip shot : balle basse, devant la voiture.
+            let f = sample(Drill::FlipShot, &mut u);
+            assert!(f.ball_pos[2] <= 260.0);
+            let h = heading(f.car_yaw);
+            let fwd = (f.ball_pos[0] - f.car_pos[0]) * h[0] + (f.ball_pos[1] - f.car_pos[1]) * h[1];
+            assert!(fwd > 0.0);
+            // Flick : adversaire actif, balle sur le toit.
+            let k = sample(Drill::Flick, &mut u);
+            assert!(k.opponent.as_ref().is_some_and(|o| o.active));
+            assert!((k.ball_pos[2] - ROOF_BALL_Z).abs() < 1.0);
         }
     }
 

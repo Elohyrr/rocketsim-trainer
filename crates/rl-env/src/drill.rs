@@ -6,7 +6,7 @@
 //! d'occurrences payées sur la dernière heure : `b0 / √(1 + n/N)`.
 
 use mechanics::{Counts, Mechanic};
-use scenarios::Drill;
+use scenarios::{Drill, Ring};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -56,12 +56,48 @@ pub const KEEPER_SAVED_SPEED: f32 = 200.0;
 /// Ticks entre l'arrêt et la fin de l'épisode (1,5 s).
 pub const KEEPER_CLEAR_TICKS: u64 = 180;
 
+/// Cases du registre : demi-tour, anneaux (par anneau), bonus de temps des anneaux.
+pub const TURN_SLOT: usize = mechanics::MECH_COUNT + 3;
+pub const RINGS_SLOT: usize = mechanics::MECH_COUNT + 4;
+pub const RINGS_TIME_SLOT: usize = mechanics::MECH_COUNT + 5;
+const EXTRA_SLOTS: usize = 6;
+/// Vitesse de balle vers le but (uu/s) au-delà de laquelle un flip shot / un flick est utile.
+pub const FLIP_SHOT_USEFUL_SPEED: f32 = 1000.0;
+pub const FLICK_USEFUL_SPEED: f32 = 1500.0;
+
+/// Demi-tour : faire face à la cible (cos ≥ 0,866 = 30°) avec au moins `TURN_MIN_SPEED` uu/s vers elle, au sol.
+/// Barème linéaire sur le temps : plein tarif à `TURN_FAST_S`, rien à `TURN_SLOW_S` (mesures dans
+/// `docs/drills.md`, banc `examples/turnaround_bench.rs`). Bonus de base plafonné à 10 % du but ; le half flip
+/// détecté ajoute `HALF_FLIP_BONUS` (une fois).
+pub const TURN_MIN_COS: f32 = 0.866;
+pub const TURN_MIN_SPEED: f32 = 1400.0;
+pub const TURN_FAST_S: f32 = 1.3;
+pub const TURN_SLOW_S: f32 = 2.6;
+pub const TURN_BONUS: f32 = 0.8;
+pub const HALF_FLIP_BONUS: f32 = 0.2;
+
+/// Anneaux : bonus total 0,8 réparti sur les anneaux + jusqu'à 0,2 de bonus de temps (≤ 1,0 = 10 % du but).
+pub const RINGS_TOTAL_BONUS: f32 = 0.8;
+pub const RINGS_TIME_BONUS: f32 = 0.2;
+/// Temps de référence par anneau (s) : le bonus de temps est nul à `RINGS_PAR_S × anneaux`.
+pub const RINGS_PAR_S: f32 = 3.0;
+
+/// Seuil d'utilité (vitesse de balle vers le but, uu/s) d'une mécanique.
+pub fn useful_speed(m: Mechanic) -> f32 {
+    match m {
+        Mechanic::FlipShot => FLIP_SHOT_USEFUL_SPEED,
+        Mechanic::Flick => FLICK_USEFUL_SPEED,
+        _ => USEFUL_SPEED,
+    }
+}
+
 /// Bonus de base `b0` (en récompense, pour un but à +10 ; plafonné à 10 % du but). 0 = jamais de bonus.
 pub fn base_bonus(m: Mechanic) -> f32 {
     match m {
         Mechanic::FlipReset => 1.0,
         Mechanic::AirDribble | Mechanic::CeilingShot => 0.8,
         Mechanic::Flick => 0.6,
+        Mechanic::FlipShot => 0.5,
         Mechanic::WallShot => 0.5,
         Mechanic::AerialTouch | Mechanic::DoubleTouch => 0.4,
         Mechanic::Dribble => 0.3,
@@ -91,7 +127,7 @@ pub struct BonusLedger {
 impl Default for BonusLedger {
     fn default() -> Self {
         Self {
-            paid: Mutex::new(vec![VecDeque::new(); mechanics::MECH_COUNT + 3]),
+            paid: Mutex::new(vec![VecDeque::new(); mechanics::MECH_COUNT + EXTRA_SLOTS]),
         }
     }
 }
@@ -162,6 +198,8 @@ pub struct DrillReport {
     pub dribble_goal: u64,
     /// Arrêts du gardien payés.
     pub saves: u64,
+    /// Anneaux traversés.
+    pub rings: u64,
 }
 
 impl DrillReport {
@@ -177,6 +215,7 @@ impl DrillReport {
         }
         self.dribble_goal += o.dribble_goal;
         self.saves += o.saves;
+        self.rings += o.rings;
         self.mechanics.add(&o.mechanics);
         self.bonus.add(&o.bonus);
     }
@@ -198,6 +237,9 @@ pub struct EpisodeBonus {
     pub goal_paid: bool,
     /// Suivi du gardien (drill `keeper` seulement).
     pub keeper: Option<KeeperTrack>,
+    /// Suivi du demi-tour (drill `turnaround`) et des anneaux (drill `rings`).
+    pub turn: Option<TurnTrack>,
+    pub rings: Option<RingTrack>,
 }
 
 /// Ce qu'un pas de drill a produit, pour [`EpisodeBonus::on_events`].
@@ -211,6 +253,11 @@ pub struct StepEvents<'a> {
     pub our_goal: bool,
     pub own_goal: bool,
     pub seen: &'a Counts,
+    /// Voiture de l'agent (au sol, position, vitesse, avant) pour le demi-tour et les anneaux.
+    pub car_on_ground: bool,
+    pub car_pos: [f32; 3],
+    pub car_vel: [f32; 3],
+    pub car_forward: [f32; 3],
 }
 
 /// Vitesse de la balle vers SA cage (−Y), uu/s.
@@ -270,7 +317,7 @@ impl EpisodeBonus {
         let mut reward = 0.0;
         self.pending
             .retain(|(_, t)| tick.saturating_sub(*t) <= GOAL_WINDOW_TICKS);
-        let useful = speed_toward_goal(ball.0, ball.1) > USEFUL_SPEED;
+        let toward = speed_toward_goal(ball.0, ball.1);
         if seen.get(Mechanic::Flick) > 0 || seen.get(Mechanic::DribbleTurn) > 0 {
             self.last_carry = Some(tick);
         }
@@ -289,6 +336,7 @@ impl EpisodeBonus {
                 }
                 continue;
             }
+            let useful = toward > useful_speed(m);
             for _ in 0..seen.get(m) {
                 if useful {
                     if self.paid < MAX_PER_EPISODE {
@@ -376,6 +424,54 @@ impl EpisodeBonus {
                 }
             }
             Drill::Recovery => {}
+            Drill::FlipShot => {
+                let toward = speed_toward_goal(e.ball.0, e.ball.1);
+                if e.our_goal
+                    || (e.seen.get(Mechanic::FlipShot) > 0 && toward > FLIP_SHOT_USEFUL_SPEED)
+                {
+                    self.success = true;
+                }
+            }
+            Drill::Flick => {
+                let toward = speed_toward_goal(e.ball.0, e.ball.1);
+                if e.our_goal || (e.seen.get(Mechanic::Flick) > 0 && toward > FLICK_USEFUL_SPEED) {
+                    self.success = true;
+                }
+            }
+            Drill::Turnaround => {
+                if let Some(t) = self.turn.as_mut() {
+                    if e.seen.get(Mechanic::HalfFlip) > 0 && !t.half_flip_paid {
+                        t.half_flip_paid = true;
+                        reward += ledger.pay(Mechanic::HalfFlip, HALF_FLIP_BONUS.min(bonus_cap));
+                        report.bonus.inc(Mechanic::HalfFlip);
+                    }
+                    if let Some(secs) = t.step(e) {
+                        self.success = true;
+                        reward += ledger
+                            .pay_slot(TURN_SLOT, TURN_BONUS.min(bonus_cap) * turn_fraction(secs));
+                        done = true;
+                    }
+                }
+            }
+            Drill::Rings => {
+                if let Some(r) = self.rings.as_mut() {
+                    let n = r.rings.len() as f32;
+                    let (crossed, secs) = r.step(e.tick, e.car_pos);
+                    for _ in 0..crossed {
+                        report.rings += 1;
+                        reward +=
+                            ledger.pay_slot(RINGS_SLOT, (RINGS_TOTAL_BONUS / n).min(bonus_cap));
+                    }
+                    if let Some(secs) = secs {
+                        self.success = true;
+                        let par = RINGS_PAR_S * n;
+                        let f = ((par - secs) / par).clamp(0.0, 1.0);
+                        reward +=
+                            ledger.pay_slot(RINGS_TIME_SLOT, RINGS_TIME_BONUS.min(bonus_cap) * f);
+                        done = true;
+                    }
+                }
+            }
             _ => {
                 if e.our_goal {
                     self.success = true;
@@ -383,6 +479,104 @@ impl EpisodeBonus {
             }
         }
         (reward, done)
+    }
+}
+
+/// Part du bonus de demi-tour selon le temps (s) pour faire face à la cible avec de la vitesse.
+pub fn turn_fraction(secs: f32) -> f32 {
+    ((TURN_SLOW_S - secs) / (TURN_SLOW_S - TURN_FAST_S)).clamp(0.0, 1.0)
+}
+
+/// Suivi du demi-tour : première décision où la voiture, au sol, fait face à la balle (cible) avec de la vitesse.
+#[derive(Debug)]
+pub struct TurnTrack {
+    start_tick: u64,
+    pub half_flip_paid: bool,
+}
+
+impl TurnTrack {
+    pub fn new(start_tick: u64) -> Self {
+        Self {
+            start_tick,
+            half_flip_paid: false,
+        }
+    }
+
+    /// Temps écoulé (s) si le critère est rempli à cette décision.
+    pub fn step(&mut self, e: &StepEvents) -> Option<f32> {
+        if !e.car_on_ground {
+            return None;
+        }
+        let to = [e.ball.0[0] - e.car_pos[0], e.ball.0[1] - e.car_pos[1]];
+        let dn = to[0].hypot(to[1]).max(1.0);
+        let fh = e.car_forward[0].hypot(e.car_forward[1]).max(1e-3);
+        let cos = (e.car_forward[0] * to[0] + e.car_forward[1] * to[1]) / (fh * dn);
+        let speed = (e.car_vel[0] * to[0] + e.car_vel[1] * to[1]) / dn;
+        (cos >= TURN_MIN_COS && speed >= TURN_MIN_SPEED)
+            .then(|| e.tick.saturating_sub(self.start_tick) as f32 / crate::TICKS_PER_SECOND)
+    }
+}
+
+/// Suivi des anneaux virtuels : traversée dans l'ordre (sphère de rayon `radius` coupée par le segment
+/// parcouru entre deux décisions), orientation libre.
+#[derive(Debug)]
+pub struct RingTrack {
+    pub rings: Vec<Ring>,
+    pub next: usize,
+    prev: [f32; 3],
+    start_tick: u64,
+}
+
+/// Distance (uu) du point `c` au segment `a`–`b`.
+pub fn dist_point_segment(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> f32 {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let l2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    let t = if l2 < 1e-6 {
+        0.0
+    } else {
+        ((ac[0] * ab[0] + ac[1] * ab[1] + ac[2] * ab[2]) / l2).clamp(0.0, 1.0)
+    };
+    let p = [
+        a[0] + ab[0] * t - c[0],
+        a[1] + ab[1] * t - c[1],
+        a[2] + ab[2] * t - c[2],
+    ];
+    (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt()
+}
+
+impl RingTrack {
+    pub fn new(rings: Vec<Ring>, start_tick: u64, car_pos: [f32; 3]) -> Self {
+        Self {
+            rings,
+            next: 0,
+            prev: car_pos,
+            start_tick,
+        }
+    }
+
+    /// Prochain anneau à traverser (None une fois tous traversés).
+    pub fn current(&self) -> Option<Ring> {
+        self.rings.get(self.next).copied()
+    }
+
+    /// Avance d'une décision (voiture en `pos`) : `(anneaux traversés, Some(temps en s) si le parcours est fini)`.
+    pub fn step(&mut self, tick: u64, pos: [f32; 3]) -> (u32, Option<f32>) {
+        let mut crossed = 0;
+        while let Some(r) = self.current() {
+            if dist_point_segment(self.prev, pos, r.pos) <= r.radius {
+                self.next += 1;
+                crossed += 1;
+            } else {
+                break;
+            }
+        }
+        self.prev = pos;
+        let done = self.next >= self.rings.len() && crossed > 0;
+        (
+            crossed,
+            done.then(|| tick.saturating_sub(self.start_tick) as f32 / crate::TICKS_PER_SECOND),
+        )
     }
 }
 
@@ -717,7 +911,114 @@ mod tests {
             our_goal: false,
             own_goal: false,
             seen,
+            car_on_ground: true,
+            car_pos: [0.0; 3],
+            car_vel: [0.0; 3],
+            car_forward: [0.0, 1.0, 0.0],
         }
+    }
+
+    #[test]
+    fn flip_shot_et_flick_seuils_d_utilite() {
+        let l = BonusLedger::default();
+        let mut r = DrillReport::default();
+        let mut b = EpisodeBonus::default();
+        let cap = 1.0;
+        // Balle à 800 uu/s vers le but : utile pour un toucher simple, pas pour un flip shot (1 000) ni un flick (1 500).
+        let ball = ([0.0, 0.0, 300.0], [0.0, 800.0, 0.0]);
+        for m in [Mechanic::FlipShot, Mechanic::Flick] {
+            assert_eq!(b.on_step(&one(m), 1, ball, cap, &l, &mut r), 0.0);
+        }
+        // À 1 200 : flip shot payé ; à 1 600 : flick payé aussi.
+        let ball = ([0.0, 0.0, 300.0], [0.0, 1200.0, 0.0]);
+        assert!(b.on_step(&one(Mechanic::FlipShot), 2, ball, cap, &l, &mut r) > 0.4);
+        assert_eq!(
+            b.on_step(&one(Mechanic::Flick), 3, ball, cap, &l, &mut r),
+            0.0
+        );
+        let ball = ([0.0, 0.0, 300.0], [0.0, 1600.0, 0.0]);
+        assert!(b.on_step(&one(Mechanic::Flick), 4, ball, cap, &l, &mut r) > 0.0);
+    }
+
+    #[test]
+    fn demi_tour_bareme_et_half_flip() {
+        assert_eq!(turn_fraction(1.0), 1.0);
+        assert_eq!(turn_fraction(3.0), 0.0);
+        assert!((turn_fraction(1.95) - 0.5).abs() < 1e-5);
+        let l = BonusLedger::default();
+        let mut r = DrillReport::default();
+        let mut b = EpisodeBonus {
+            turn: Some(TurnTrack::new(0)),
+            ..Default::default()
+        };
+        let none = Counts::default();
+        let mut e = ev(120, false, ([0.0, 3000.0, 93.0], [0.0; 3]), &none);
+        // Dos à la balle : rien.
+        e.car_forward = [0.0, -1.0, 0.0];
+        e.car_vel = [0.0, 1500.0, 0.0];
+        assert_eq!(
+            b.on_events(Drill::Turnaround, &e, 1.0, &l, &mut r),
+            (0.0, false)
+        );
+        // Face à la balle, vite, en 1,2 s : plein tarif, fin.
+        e.car_forward = [0.0, 1.0, 0.0];
+        let (rw, done) = b.on_events(Drill::Turnaround, &e, 1.0, &l, &mut r);
+        assert!(done && b.success && (rw - TURN_BONUS).abs() < 1e-3, "{rw}");
+        // Half flip vu : bonus en plus, une seule fois.
+        let hf = one(Mechanic::HalfFlip);
+        let mut b = EpisodeBonus {
+            turn: Some(TurnTrack::new(0)),
+            ..Default::default()
+        };
+        let mut e = ev(10, false, ([0.0, 3000.0, 93.0], [0.0; 3]), &hf);
+        e.car_forward = [0.0, -1.0, 0.0];
+        let (rw, _) = b.on_events(Drill::Turnaround, &e, 1.0, &l, &mut r);
+        assert!((rw - HALF_FLIP_BONUS).abs() < 1e-3);
+        assert_eq!(b.on_events(Drill::Turnaround, &e, 1.0, &l, &mut r).0, 0.0);
+    }
+
+    #[test]
+    fn anneaux_dans_l_ordre_et_bonus_plafonne() {
+        let rings = vec![
+            Ring {
+                pos: [0.0, 1000.0, 500.0],
+                radius: 300.0,
+            },
+            Ring {
+                pos: [0.0, 2000.0, 600.0],
+                radius: 300.0,
+            },
+            Ring {
+                pos: [500.0, 3000.0, 600.0],
+                radius: 300.0,
+            },
+        ];
+        let mut t = RingTrack::new(rings.clone(), 0, [0.0, 0.0, 17.0]);
+        // Passe en ligne droite à travers le 2e sans avoir fait le 1er (à 800 de l'axe) : rien.
+        assert_eq!(t.step(8, [800.0, 1900.0, 600.0]), (0, None));
+        // Le segment coupe le 1er anneau (même si les extrémités sont de part et d'autre).
+        assert_eq!(t.step(16, [0.0, 1100.0, 500.0]).0, 1);
+        assert_eq!(t.current().map(|r| r.pos[1]), Some(2000.0));
+        let (n, fin) = t.step(100, [500.0, 3200.0, 600.0]);
+        assert_eq!((n, fin), (2, Some(100.0 / 120.0)));
+        // Bonus total ≤ 10 % d'un but.
+        let l = BonusLedger::default();
+        let mut r = DrillReport::default();
+        let mut b = EpisodeBonus {
+            rings: Some(RingTrack::new(rings, 0, [0.0, 0.0, 17.0])),
+            ..Default::default()
+        };
+        let none = Counts::default();
+        let mut e = ev(60, false, ([0.0; 3], [0.0; 3]), &none);
+        e.car_pos = [0.0, 1000.0, 500.0];
+        let mut total = b.on_events(Drill::Rings, &e, 1.0, &l, &mut r).0;
+        e.car_pos = [0.0, 2000.0, 600.0];
+        total += b.on_events(Drill::Rings, &e, 1.0, &l, &mut r).0;
+        e.car_pos = [500.0, 3000.0, 600.0];
+        let (rw, done) = b.on_events(Drill::Rings, &e, 1.0, &l, &mut r);
+        total += rw;
+        assert!(done && b.success && r.rings == 3);
+        assert!(total <= 1.0 + 1e-3 && total > 0.8, "{total}");
     }
 
     #[test]

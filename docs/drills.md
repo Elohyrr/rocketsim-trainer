@@ -17,7 +17,7 @@ Sans effet aux paliers 0 et 1 (`end_on_touch`) : un drill y finirait au premier 
 drill (probabilité `P`), sinon le coup d'envoi (paliers 5/6), sinon l'apparition aléatoire. Observations et actions
 sont inchangées : un checkpoint de prod se reprend tel quel (aucune remise à zéro).
 
-## Les 16 drills (`crates/scenarios`)
+## Les 20 drills (`crates/scenarios`)
 
 Fonctions pures `scenarios::sample(drill, unit)` ; `rl-env` applique l'état (`Env::reset_drill`). Tirage pondéré (voir « Pondération »).
 
@@ -58,9 +58,75 @@ Les épisodes courts (horizon `Env::max_steps`) : gardien 6 s ; `shot_roll/bounc
 Pas de drill « plafond » ni de speed flip/wave dash/half flip (pas d'état de départ utile : ils se jouent depuis le
 kickoff ou le sol).
 
+## Drills v3 (`flip_shot`, `turnaround`, `flick`, `rings`)
+
+Constat d'Elohyrr + compteurs de prod : 0 flick, 0 half flip, 0 speed flip, 0 wave dash ; le bot ne frappe jamais la
+balle en flippant et fait demi-tour en roulant. Mêmes règles que v1/v2 : bonus ≤ 10 % d'un but (1,0), décroissants
+`b0/√(1+n/N)`, jamais en match, hors curriculum/Elo/garde-fou. Poids par défaut : `flip_shot` 3, `turnaround` 2,
+`flick` 2, `rings` 1,5 (la part globale des drills reste `--drill-prob`).
+
+| Drill | Départ | Bonus | Réussite |
+|---|---|---|---|
+| `flip_shot` (3) | balle au sol (70 %) ou basse (z 110–260), à l'arrêt ou roulante, à 700–1600 devant la voiture lancée (700–1500 uu/s), but dans l'axe ou en angle ; adversaire garé ; 8 s | méca `flip_shot` : 0,5, payée si la balle part vers le but à > 1 000 uu/s (sinon en attente d'un but ≤ 3 s) | but, ou flip shot à > 1 000 uu/s |
+| `turnaround` (2) | voiture au sol, cap tourné de 150–180° par rapport à la balle (1 500–3 200 uu) ; 40 % à l'arrêt, 30 % roulant vers l'avant, 30 % en marche arrière vers la balle ; 6 s | 0,8 × part de temps (plein à ≤ 1,3 s, nul à ≥ 2,6 s) quand la voiture, au sol, fait face à la balle (≤ 30°) avec ≥ 1 400 uu/s vers elle ; + 0,2 une fois si `half_flip` détecté | critère de temps rempli |
+| `flick` (2) | balle sur le toit, voiture à 500–1400 uu/s, cap vers le but ±0,9 rad, **adversaire actif** à 1 200–2 600 devant ; 15 s | `flick` 0,6 payé si la balle part vers le but à > **1 500** uu/s (le seuil du `flick` passe de 500 à 1 500 pour tous les drills) ; but ≤ 6 s après un flick : +0,5 (existant) | but, ou flick à > 1 500 uu/s |
+| `rings` (1,5) | 3–6 anneaux virtuels (rayon 260–380, z 250–1400, 40 % près d'un mur), voiture au sol, boost 100 ; 20 s | 0,8 réparti sur les anneaux (ordre imposé, orientation libre) + jusqu'à 0,2 de temps (nul à 3 s × anneaux) | tous les anneaux |
+
+**Anneaux : aucune collision.** Un anneau est traversé quand le segment parcouru entre deux décisions passe à moins
+du rayon de son centre (`drill::RingTrack`). L'observation ne change pas de forme (le checkpoint de prod se reprend
+tel quel) : **la « balle » vue par l'agent est le prochain anneau**, immobile (`Env::with_ghost_ball`) ; la vraie balle
+reste au sol, loin. La récompense d'approche aussi vise l'anneau. Les anneaux ne sont **pas** ajoutés à la trajectoire
+des clips de drill (optionnel dans la consigne, non fait : `--drill-clips` ne couvre que dribbles et flick).
+
+**`flip_shot` (50ᵉ mécanique, `mechanics::ext_hit`)** : dodge avant ou diagonal (secteur 0, 1 ou 7) au plus 30 ticks
+(0,25 s) avant le toucher, balle basse (z ≤ 300), au moins 30 uu devant le centre de la voiture dans son repère
+(toucher par le nez), gain de vitesse ≥ 300 uu/s. De la famille du flick (clips). Séquences : 2 positives (avant,
+diagonal), 4 négatives (dodge latéral, dodge trop ancien, balle derrière, aucun gain). `trainer_mechanic_total` passe
+à 50 × 2 séries ; `trainer_drill_bonus_total` gagne `flip_shot` et `half_flip` (11 séries) ; `trainer_drill_rings_total`
+(1 série) ; épisodes et succès par drill : 20 + 20 séries.
+
+### Mesure du demi-tour (`cargo run --release -p rl-env --example turnaround_bench`)
+
+Voiture dos à la cible (+Y), temps (s) pour être au sol, nez à ≤ 30°, avec la vitesse minimale vers la cible. Demi-tour en
+roulant = meilleur réglage d'un petit balayage (braquage proportionnel, boost, frein à main, marche arrière) ;
+half flip = meilleur de 600 scripts (saut, dodge arrière, annulation, roulis, lacet) :
+
+| Départ | vitesse mini 1 000 : roulant / half flip | 1 400 : roulant / half flip |
+|---|---|---|
+| à l'arrêt, boost 100 | 1,25 / 1,40 | 1,28 / 1,69 |
+| nez dos à la cible, 700 uu/s vers l'avant | 1,18 / 1,47 | 1,25 / 1,77 |
+| marche arrière vers la cible, 800 uu/s | 1,48 / 1,46 | — |
+| marche arrière, 1 400 uu/s | 1,38 / 1,46 | — |
+| marche arrière, 1 400 uu/s, boost 0 | 1,68 / 1,36 | — |
+| à l'arrêt, boost 0 | 1,38 / 1,90 | 2,50 / 2,19 |
+
+**Résultat honnête : dans RocketSim, le half flip scripté ne bat PAS nettement le demi-tour en roulant** (il gagne
+seulement en marche arrière sans boost, de peu, et à 1 400 uu/s sans boost). Aucun barème fondé sur le seul temps ne peut
+donc le rendre « nettement » plus rentable ; le script n'est peut-être pas optimal (grille grossière), mais l'écart
+est trop grand pour l'espérer. Choix retenus : barème sur le temps jusqu'à 1 400 uu/s (le half flip y perd moins que le
+roulant sans boost), 30 % de départs en marche arrière (cas où il est compétitif) et **+0,2 de bonus pour un `half_flip`
+détecté**, qui est l'avantage réel donné au half flip. À rouvrir si on veut le forcer : exiger le `half_flip` pour le plein
+tarif.
+
+### Recherche : maps workshop dans RocketSim (non implémenté)
+
+- Les maps workshop (anneaux, parcours d'obstacles, shooting) sont des cartes UDK de joueurs, distribuées par le Steam
+  Workshop (sous Epic : chargeur communautaire). Leur géométrie de collision est dans des paquets Unreal (`.upk`), format
+  propriétaire de Psyonix/Unreal, **non documenté, non vérifié ici** (la recherche web n'a rien donné de précis).
+- RocketSim lit des meshes de collision `.cmf` (16 pour soccar, chargés depuis un dossier, avec un contrôle de hash
+  qui n'est qu'un avertissement pour les fichiers de `rl_arena_collision_dumper`, d'après son README) : charger une map
+  custom reviendrait à extraire ses collisions en `.cmf` et à les substituer aux meshes standard. Les parois, boosts et
+  buts sont codés en dur pour l'arène soccar : une arène arbitraire n'est pas prévue, et le même fichier de
+  substitution est global au processus (une seule géométrie par entraînement).
+- Licence : maps et géométrie appartiennent à leurs auteurs et à Psyonix ; aucune redistribution dans ce dépôt public
+  (même règle que les meshes soccar : `scripts/fetch-meshes.sh`).
+- Faisabilité : **faible à moyenne et coûteuse** (extraction `.upk`, conversion `.cmf`, boosts/buts à décrire). Les
+  anneaux virtuels de `rings` donnent déjà l'essentiel (passage dans l'air et près des murs) sans changer la physique.
+  Décision : ne pas l'implémenter.
+
 ## Pondération
 
-`Drill::DEFAULT_WEIGHTS` (ordre de `Drill::ALL`) : les 7 drills de la v1 à 1, `dribble_turn` 3, `keeper` 2,5,
+`Drill::DEFAULT_WEIGHTS` (ordre de `Drill::ALL`) : les 7 drills de la v1 à 1, v3 : `flip_shot` 3, `turnaround` 2, `flick` 2, `rings` 1,5 ; `dribble_turn` 3, `keeper` 2,5,
 `shot_roll`/`shot_bounce`/`shot_cross`/`rebound` 1,5, `shot_lob`/`aerial_high`/`wall_run` 1 (≈ 21 au total : un drill
 sur 7 est un virage de dribble). `--drill-weights dribble_turn=5,keeper=0` surcharge ces valeurs ; un poids à 0
 retire le drill. Poids tous nuls : tirage uniforme.
@@ -221,3 +287,19 @@ même acteur de prod agrandi automatiquement : buts / (buts + buts contre son ca
 après l'échauffement du critique : bruit d'un essai court, pas de chute) ; réussites par famille du même ordre
 (`dribble_turn` 87/252 = 35 %, `shot_roll` 42 %, `shot_bounce` 38 %, `shot_lob` 32 %, `shot_cross` 28 %) ; gardien
 (900–2200 uu/s) toujours 0 arrêt sur 221 épisodes avec cet acteur.
+
+### Essai drills v3 (acteur de prod, palier 5, récompenses de vitesse de balle de la prod)
+
+`--stage 5 --init-actor … --critic-warmup 20 --hit-speed-reward 0.5 --ball-goal-reward 0.02 --no-clips`, 2 vCPU partagés.
+
+- **Non-régression** : buts / (buts + buts contre son camp) en match **0,811** avec `--drill-prob 0.3` (10 min, 1,36 M pas : 668 / 156)
+  contre **0,814** sans drill (4 min, 0,78 M pas : 564 / 129), même binaire et mêmes réglages : pas de régression. (Les 0,92 des
+  essais v2 ci-dessus étaient sans les récompenses de vitesse de balle : non comparables.)
+- **Réussite des nouveaux drills** (10 min, épisodes → réussis) : `flip_shot` 37 % (80/215, surtout des buts : le tir au sol
+  marche déjà sans flip), `turnaround` 66 % (88/133 : critère rempli en roulant, voir les mesures), `flick` 35 % (47/136),
+  `rings` : 31 anneaux traversés sur 101 épisodes, réussite 0 (aucun parcours complet).
+- **Mécaniques** : `half_flip` et `flip_shot` **jamais vus** (0 en drill comme en match) avec l'acteur de prod : c'est le
+  constat d'Elohyrr, et le bonus ne peut payer que ce qui arrive ; c'est à l'apprentissage de les découvrir. Bonus payés :
+  wall_shot 9, dribble 6, flip_reset 1.
+- Limites : essai court, un seul tirage, pas de décision statistique ; le barème de `turnaround` est réglé sur un script de half flip
+  qui ne bat pas le demi-tour en roulant (voir plus haut).

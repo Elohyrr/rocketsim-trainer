@@ -137,6 +137,14 @@ pub const POWER_SHOT_MIN_SPEED: f32 = 3000.0;
 /// … avec un gain d'au moins ce montant (uu/s) : une balle déjà rapide à peine déviée n'est pas un tir.
 pub const POWER_SHOT_MIN_GAIN: f32 = 500.0;
 
+/// Flip shot : dodge avant ou diagonal (secteur 0, 1 ou 7) au plus 0,25 s avant le toucher, balle touchée par
+/// l'avant de la voiture (au moins `FLIP_SHOT_MIN_FWD` uu devant le centre), gain de vitesse ≥ 300 uu/s.
+pub const FLIP_SHOT_MAX_DODGE_TICKS: u64 = 30;
+pub const FLIP_SHOT_MIN_FWD: f32 = 30.0;
+pub const FLIP_SHOT_MIN_GAIN: f32 = 300.0;
+/// … et balle basse (centre sous 300 uu : jeu au sol ; plus haut, c'est un aérien, un pinch ou un reset).
+pub const FLIP_SHOT_MAX_BALL_Z: f32 = 300.0;
+
 /// Pinch : gain de vitesse de balle (après − avant, uu/s) et vitesse après (uu/s).
 pub const PINCH_MIN_GAIN: f32 = 2500.0;
 pub const PINCH_MIN_SPEED: f32 = 3500.0;
