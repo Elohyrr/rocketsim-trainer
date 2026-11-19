@@ -76,7 +76,7 @@ vitesse, `ball_hit_tick`, `demoed` de la voiture la plus proche ; filtrée par i
 - *Choc* : nouveau contact (`car_contact` apparaît ou son cooldown remonte) ou autre voiture à < 260 uu avec un saut de
   vitesse > 250 uu/s en un tick (> 500 si la voiture touche aussi la balle). Il est **subi** si la voiture change d'au
   moins 150 uu/s ou 3 rad/s en un tick ; démolie = subi.
-- *Toucher simultané* : les deux voitures touchent la balle à ≤ 8 ticks d'écart.
+- *Toucher simultané* : les deux voitures touchent la balle à ≤ 4 ticks d'écart.
 - *Fenêtre d'invalidation* (`COLLISION_WINDOW_TICKS` = 60 ticks = 0,5 s) après un choc subi ou un toucher simultané ;
   `Detector::tainted()`. Un dodge en cours et un flick en attente sont abandonnés au choc.
 
@@ -88,7 +88,7 @@ retour au sol), `recovery` (le vol retourné par un choc ne compte pas), `stall`
 | Classe | Mécaniques | Raison |
 | --- | --- | --- |
 | Annulées (mouvement subi) | `tornado_spin`, `recovery`, `stall`, `half_flip`, `wave_dash`, `speed_flip`, `chain_dash`, `wall_dash`, `dribble_turn` | jugées sur une rotation, un cap ou un gain de vitesse de la voiture |
-| Annulées (vitesse de balle) | `power_shot`, `pinch` (hors support `car`), `kuxir_pinch`, `flick` + variantes (45, 90, musty, delayed, breezi), `wall_shot`, `redirect`, `air_roll_shot`, `cushion`, `half_volley` | jugées sur la vitesse de balle après le toucher : un choc à deux la gonfle |
+| Annulées (vitesse de balle) | `power_shot`, `reset_shot`, `pinch` (hors support `car`), `kuxir_pinch`, `flick` + variantes (45, 90, musty, delayed, breezi), `wall_shot`, `redirect`, `air_roll_shot`, `cushion`, `half_volley` | jugées sur la vitesse de balle après le toucher : un choc à deux la gonfle |
 | Conservées | `touch`, `aerial_touch`, `air_dribble`, `flip_reset`, `ceiling_shot`, `double_touch`, `backboard_*`, `dribble`, `*_dribble`, `reset_shot`, `double_reset`, `ceiling_reset`, `wall_to_air_dribble`, `fast_aerial`, `bump`, `demo` | état ou intention du joueur (position, drapeaux, commandes), pas une vitesse subie |
 
 **Nouvelles mécaniques** (ajoutées en fin de catalogue : 44) :
@@ -246,3 +246,21 @@ ceiling shot comptent aussi leurs `touch` et `aerial_touch` ; flick compte aussi
 - Coût : détecteur ≈ 63 ns/tick. Banc `rl-env --example bench` (2 threads, 16 envs, politique aléatoire,
   `NO_DETECT=1` pour couper) : 25,9 k pas/s sans, 25,2–25,3 k avec (≈ −3 %, dans le bruit de la machine), pour l'env
   seul ; l'apprentissage occupant ≈ 2/3 d'une itération, l'effet sur le débit de bout en bout est inférieur à 1 %.
+
+## Arrêts : `save`, `aerial_save`, `squishy_save`
+
+`save` : avant le toucher, la trajectoire balistique de la balle (gravité 650, rebond au sol à 60 %, sans murs, 2 s)
+entre dans le but de la voiture ; avec la vitesse après le toucher, non. `aerial_save` : en plus, voiture en l'air.
+`squishy_save` : en plus, balle coincée (même support que `pinch`, sans bond de vitesse exigé) et vitesse vers son
+but ≥ 500 avant, réduite d'au moins 70 % ou inversée après (exemple : clip 1795074459-redirect-311, voir rapport).
+
+## Validation sur les clips de prod (199 clips, `examples/audit_collisions`)
+
+Mécanique d'origine rejouée avant → après : power_shot 30 → 8 (22 rejetés, 20 réétiquetés pinch car/bump), recovery
+30 → 6, tornado_spin 31 → 16, half_volley 30 → 25, wall_shot 30 → 26, cushion 1 → 0 ; les autres inchangées. 58 clips
+contiennent un choc voiture-voiture. Apparus : bump 28, demo 1, pinch (car) 24.
+
+## Clips multi-étiquettes
+
+Voir `docs/clips.md` : un clip garde `mechanics[{mechanic, step, t}]` (toutes les mécaniques validées dans sa
+fenêtre, ordre chronologique), `combo` (≥ 2 familles de `Mechanic::family()` à < 2 s, bonus de score +0,1 plafonné à 1).

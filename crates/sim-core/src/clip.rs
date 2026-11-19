@@ -850,3 +850,27 @@ impl ClipRecorder {
         })
     }
 }
+
+#[cfg(test)]
+mod combo_tests {
+    use super::*;
+
+    fn l(m: &str, step: u32) -> ClipLabel {
+        ClipLabel {
+            mechanic: m.into(),
+            step,
+            t: 0.0,
+        }
+    }
+
+    #[test]
+    fn combo_familles_distinctes_et_proches() {
+        assert!(is_combo(&[l("wall_to_air_dribble", 2), l("flick", 10)], 30));
+        assert!(is_combo(&[l("save", 5), l("power_shot", 5)], 30));
+        // Même famille : pas un combo ; trop éloignées : non plus.
+        assert!(!is_combo(&[l("save", 5), l("aerial_save", 5)], 30));
+        assert!(!is_combo(&[l("flick", 1), l("flick_45", 2)], 30));
+        assert!(!is_combo(&[l("flick", 0), l("save", 40)], 30));
+        assert!(!is_combo(&[l("flick", 0)], 30));
+    }
+}
