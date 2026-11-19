@@ -169,6 +169,10 @@ pub(crate) struct Group {
     bounce_before_touch: Option<u64>,
     /// Tick du rebond sur le mur du fond déjà exploité par un backboard read.
     bb_read_bounce: Option<u64>,
+    /// Dernier tick où la voiture avait les roues sur l'intérieur de son but (fond du filet, parois ou plafond du but) et
+    /// si un saut/flip était alors encore disponible (squishy save).
+    goal_net_tick: Option<u64>,
+    goal_net_flip: bool,
 }
 
 impl Group {
@@ -185,6 +189,18 @@ impl Group {
             && cx.ball.pos[2] < HALF_VOLLEY_BOUNCE_MAX_Z
         {
             self.ground_bounce = Some(cx.n);
+        }
+
+        // Squishy save : roues sur le fond du filet ou le plafond de SON but (pas le sol du but).
+        let own_sign = if cx.attack_neg { 1.0 } else { -1.0 };
+        let c = cx.car;
+        if (c.wheels_contact > 0 || c.world_contact)
+            && c.up[2] < SQUISHY_NET_MAX_UP_Z
+            && c.pos[1] * own_sign > GOAL_LINE_Y
+            && c.pos[0].abs() < GOAL_HALF_WIDTH
+        {
+            self.goal_net_tick = Some(cx.n);
+            self.goal_net_flip = c.has_flip_or_jump;
         }
 
         // Backboard double : le double touch de base, rebond sur le mur du fond.
@@ -224,20 +240,34 @@ impl Group {
             out.emit(Mechanic::KickoffWon, after, Support::None);
         }
 
-        // --- Squishy save : la balle, qui menaçait le but (ou le frôlait : marge `SQUISHY_GOAL_MARGIN_X`), est
-        // écrasée entre la voiture et une surface (support de pinch, ou poussée vers le sol par une voiture
-        // au-dessus), sa vitesse vers son but réduite d'au moins 70 % ou inversée. Pas besoin d'un vrai save.
-        if toward_before > SQUISHY_MIN_SPEED_TOWARD
-            && toward_after < SQUISHY_KEEP_RATIO * toward_before
+        // --- Squishy save : la voiture est partie de l'intérieur de SON but (fond du filet ou plafond du but, roues
+        // sur cette surface), est restée en l'air flip disponible au départ (≤ 1,5 s), a utilisé son dodge dans
+        // l'air et touche la balle pendant ou juste après ce dodge ; c'est un vrai save. Aucune condition de balle
+        // plaquée.
+        // Menace (vrai save, mais avec la marge `SQUISHY_GOAL_MARGIN_X` sur les poteaux) : la trajectoire de la
+        // voiture, elle, décide déjà de tout, la balle peut frôler le but.
+        let threat = h.pre_valid
+            && h.pre.vel[1] * own >= SAVE_MIN_TOWARD
+            && crosses_own_goal_line(h.pre.pos, h.pre.vel, own, SQUISHY_GOAL_MARGIN_X, f32::MAX)
+            && crosses_own_goal_line(
+                h.pre_old.pos,
+                h.pre_old.vel,
+                own,
+                SQUISHY_GOAL_MARGIN_X,
+                f32::MAX,
+            )
             && crosses_own_goal_line(h.ball.pos, h.v_before, own, SQUISHY_GOAL_MARGIN_X, f32::MAX)
+            && !crosses_own_goal_line(h.ball.pos, h.v_after, own, SQUISHY_GOAL_MARGIN_X, f32::MAX);
+        if threat
+            && let (Some(t0), true) = (self.goal_net_tick, self.goal_net_flip)
+            && h.tick > t0
+            && h.tick - t0 <= SQUISHY_MAX_LEAVE_TICKS
+            && u64::from(h.air_ticks) + SQUISHY_AIR_SLACK_TICKS >= h.tick - t0
+            && !h.car.on_ground
+            && h.dodge_age
+                .is_some_and(|age| age < h.tick - t0 && age <= SQUISHY_DODGE_MAX_AGE_TICKS)
         {
-            let pressed = h.ball.pos[2] < SQUISHY_PRESS_MAX_Z
-                && h.v_after[2] < SQUISHY_PRESS_MIN_VZ
-                && h.car.pos[2] > h.ball.pos[2];
-            let sup = pinch_support(h.ball.pos, h.car.pos).or(pressed.then_some(Support::Ground));
-            if let Some(sup) = sup {
-                out.emit(Mechanic::SquishySave, toward_before - toward_after, sup);
-            }
+            out.emit(Mechanic::SquishySave, after, Support::None);
         }
 
         // --- Clear : dégagement depuis son tiers défensif, sans que ce soit un arrêt : la balle part vite loin

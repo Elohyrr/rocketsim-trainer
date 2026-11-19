@@ -1,6 +1,6 @@
 //! Séquences scriptées : collisions voiture-voiture, touchers simultanés, car pinch, bump, demo.
 
-use crate::script::{Case, Frame, Script, ball_far, car_on_ground, case, hit};
+use crate::script::{Case, Frame, Script, ball_far, car_on_ground, case, dodge, hit};
 use crate::{BallTick, CarTick, Mechanic, OtherCar};
 
 /// Voiture en l'air depuis 1 s à 500 uu/s, à plat.
@@ -164,22 +164,36 @@ pub(crate) fn kickoff_two_touch(rest: bool) -> Vec<Frame> {
     s.frames()
 }
 
-/// Reconstitution du clip de prod 1795074459-redirect-311 : balle à (−767, −4114, 214) à (1578, −733, 267),
-/// voiture en l'air à 368 de haut qui l'écrase : elle repart à (903, 597, −1588).
+/// Reconstitution du clip de prod 1795074459-redirect-311 (squishy save validé) : la voiture monte la paroi
+/// intérieure de son but (x = −878, y = −5 404, haut de la voiture vers +x), en sort, dodge, et touche à
+/// (−767, −4 114, 214) la balle qui file à (1 578, −733, 267) (elle coupait la ligne à x ≈ +1 410, hors des poteaux) ;
+/// la balle repart à (903, 597, −1 588). Vol de ≈ 1,8 s.
 fn squish_311() -> Vec<Frame> {
-    let mut car = air_car();
+    let mut car = car_on_ground();
     car.vel = [0.0; 3];
-    car.pos = [-748.0, -4172.0, 368.0];
+    car.pos = [-878.0, -5404.0, 124.0];
+    car.up = [1.0, 0.0, 0.0];
+    let air = 210;
+    let total = (10 + 1 + air + 1 + 10) as f32 / 120.0;
     let mut s = Script::new(
         car,
         BallTick {
-            pos: [-767.0, -4114.0, 214.0],
+            pos: [
+                -767.0 - 1578.0 * total,
+                -4114.0 + 733.0 * total,
+                214.0 - 267.0 * total,
+            ],
             vel: [1578.0, -733.0, 267.0],
         },
     );
-    s.car.pos = [-748.0, -4172.0, 368.0];
-    s.ball.pos = [-767.0, -4114.0, 214.0];
-    s.hold(1).once(|c, b| {
+    s.hold(10).once(|c, _| {
+        c.on_ground = false;
+        c.wheels_contact = 0;
+        c.up = [0.0, 0.0, 1.0];
+    });
+    s.hold(air).once(|c, _| dodge(c, 1.0, 0.0));
+    s.hold(10).once(|c, b| {
+        c.pos = [-748.0, -4172.0, 368.0];
         hit(c);
         b.vel = [903.0, 597.0, -1588.0];
     });
@@ -187,14 +201,89 @@ fn squish_311() -> Vec<Frame> {
     s.frames()
 }
 
-/// Même écrasement mais au milieu du terrain (la balle ne menace pas le but).
-fn squish_far() -> Vec<Frame> {
-    let mut f = squish_311();
-    for (c, b) in f.iter_mut() {
-        c.pos[1] += 3500.0;
-        b.pos[1] += 3500.0;
-    }
-    f
+/// Reconstitution du clip de prod 1795107331-squishy_save-2800 (faux squishy save) : l'agent monte le mur du fond
+/// à côté de son but (x ≈ −1 600, hors des poteaux), la balle roule vers le coin à (1 165, −852, −146), touche la
+/// voiture posée sur le mur et rebondit à (236, 747, −54). Elle n'allait pas dans le but.
+fn squish_2800() -> Vec<Frame> {
+    let mut car = car_on_ground();
+    car.vel = [0.0; 3];
+    car.pos = [-1583.0, -5104.0, 158.0];
+    car.forward = [-0.31, 0.0, 0.95];
+    car.right = [0.95, 0.0, 0.31];
+    car.up = [0.02, 1.0, 0.01];
+    let mut s = Script::new(
+        car,
+        BallTick {
+            pos: [-1634.0 - 116.5, -4976.0 + 85.2, 109.0 + 14.6],
+            vel: [1165.0, -852.0, -146.0],
+        },
+    );
+    s.hold(11).once(|c, b| {
+        hit(c);
+        b.vel = [236.0, 747.0, -54.0];
+    });
+    s.hold(20);
+    s.frames()
+}
+
+/// Point de départ de la voiture dans `squish_net` : position, orientation (haut de la voiture) et contact roues.
+struct NetStart {
+    pos: [f32; 3],
+    up: [f32; 3],
+}
+
+impl NetStart {
+    /// Roues sur le fond du filet de son but (bleu, y < 0).
+    const BACK_NET: Self = Self {
+        pos: [0.0, -5700.0, 400.0],
+        up: [0.0, 1.0, 0.0],
+    };
+    /// Roues sur le plafond du but.
+    const GOAL_CEILING: Self = Self {
+        pos: [0.0, -5500.0, 620.0],
+        up: [0.0, 0.0, -1.0],
+    };
+    /// Mur du fond à côté du but (clip 2800) : hors de la largeur du but.
+    const BACK_WALL_OUTSIDE: Self = Self {
+        pos: [-1600.0, -5100.0, 400.0],
+        up: [0.0, 1.0, 0.0],
+    };
+    /// Sol du but : pas un fond de filet.
+    const GOAL_FLOOR: Self = Self {
+        pos: [0.0, -5500.0, 17.0],
+        up: [0.0, 0.0, 1.0],
+    };
+}
+
+/// Squishy save : la voiture, roues sur `start`, décolle (flip disponible), reste `air` ticks en l'air, fait un
+/// dodge puis touche une balle qui fonçait vers le but bleu (arrêt : elle repart vers le terrain).
+fn squish_net(start: &NetStart, air: usize) -> Vec<Frame> {
+    let mut car = car_on_ground();
+    car.vel = [0.0; 3];
+    car.pos = start.pos;
+    car.up = start.up;
+    // 10 + 1 + air + 1 + 10 ticks avant le toucher ; la balle arrive en (0, −3000, 300) à 2 000 uu/s.
+    let total = (10 + 1 + air + 1 + 10) as f32;
+    let mut s = Script::new(
+        car,
+        BallTick {
+            pos: [0.0, -3000.0 - 2000.0 * total / 120.0, 300.0],
+            vel: [0.0, -2000.0, 0.0],
+        },
+    );
+    s.hold(10).once(|c, _| {
+        c.on_ground = false;
+        c.wheels_contact = 0;
+        c.up = [0.0, 0.0, 1.0];
+    });
+    s.hold(air).once(|c, _| dodge(c, 1.0, 0.0));
+    s.hold(10).once(|c, b| {
+        c.pos = [0.0, -3000.0, 400.0];
+        hit(c);
+        b.vel = [0.0, 1200.0, 200.0];
+    });
+    s.hold(20);
+    s.frames()
 }
 
 /// Dégagement au sol depuis le tiers défensif : balle à y = −3500, `vy_before` avant, 2 400 uu/s après.
@@ -294,21 +383,49 @@ pub(crate) fn cases() -> Vec<Case> {
             "squishy_save",
             SquishySave,
             true,
-            save_seq(100.0, 300.0, true, -1500.0, [0.0, -100.0, 0.0]),
+            squish_net(&NetStart::BACK_NET, 30),
             &[
                 (Touch, 1),
-                (Cushion, 1),
+                (WallShot, 1),
                 (Save, 1),
                 (AerialSave, 1),
                 (SquishySave, 1),
             ],
         ),
         case(
-            "squishy_save_negatif_balle_libre",
+            "squishy_save_plafond_du_but",
+            SquishySave,
+            true,
+            squish_net(&NetStart::GOAL_CEILING, 30),
+            &[(Touch, 1), (Save, 1), (AerialSave, 1), (SquishySave, 1)],
+        ),
+        case(
+            "squishy_save_negatif_montee_du_fond_hors_du_but",
             SquishySave,
             false,
-            save_seq(300.0, 17.0, false, -1500.0, [0.0, -100.0, 0.0]),
-            &[(Touch, 1), (Cushion, 1), (Save, 1)],
+            squish_net(&NetStart::BACK_WALL_OUTSIDE, 30),
+            &[(Touch, 1), (WallShot, 1), (Save, 1), (AerialSave, 1)],
+        ),
+        case(
+            "squishy_save_negatif_depart_du_sol_du_but",
+            SquishySave,
+            false,
+            squish_net(&NetStart::GOAL_FLOOR, 30),
+            &[(Touch, 1), (Save, 1), (AerialSave, 1)],
+        ),
+        case(
+            "squishy_save_negatif_en_l_air_depuis_trop_longtemps",
+            SquishySave,
+            false,
+            squish_net(&NetStart::BACK_NET, 300),
+            &[(Touch, 1), (Save, 1), (AerialSave, 1)],
+        ),
+        case(
+            "squishy_save_negatif_save_au_sol",
+            SquishySave,
+            false,
+            save_seq(300.0, 17.0, false, -2000.0, [0.0, 1200.0, 200.0]),
+            &[(Touch, 1), (Save, 1)],
         ),
         case(
             "squishy_save_clip_redirect_311",
@@ -318,11 +435,11 @@ pub(crate) fn cases() -> Vec<Case> {
             &[(Touch, 1), (Redirect, 1), (SquishySave, 1)],
         ),
         case(
-            "squishy_save_negatif_balle_loin_du_but",
+            "squishy_save_negatif_clip_2800_mur_du_fond_hors_des_poteaux",
             SquishySave,
             false,
-            squish_far(),
-            &[(Touch, 1), (Redirect, 1)],
+            squish_2800(),
+            &[(Touch, 1)],
         ),
         case(
             "clear",

@@ -327,15 +327,15 @@ pub const SAVE_STEP_TICKS: u32 = 2;
 pub const BALL_GRAVITY: f32 = 650.0;
 pub const BALL_GROUND_RESTITUTION: f32 = 0.6;
 pub const BALL_GROUND_Z: f32 = 93.0;
-/// Squishy save : vitesse de balle vers son but avant le toucher au moins 500 uu/s, après le toucher réduite d'au
-/// moins 70 % (ou inversée).
-pub const SQUISHY_MIN_SPEED_TOWARD: f32 = 500.0;
-pub const SQUISHY_KEEP_RATIO: f32 = 0.3;
-/// Squishy save : la trajectoire frôle le but (à moins de 2 500 uu du centre à la ligne) ; balle poussée vers le
-/// sol : z < 350 et vitesse verticale après < −1 000 uu/s.
-pub const SQUISHY_GOAL_MARGIN_X: f32 = 2500.0;
-pub const SQUISHY_PRESS_MAX_Z: f32 = 350.0;
-pub const SQUISHY_PRESS_MIN_VZ: f32 = -1000.0;
+/// Squishy save : marge sur les poteaux (|x| < 1 600 à la ligne, poteaux à 893) pour la menace : le clip 311 validé
+/// avait une balle coupant la ligne à x ≈ +1 410.
+pub const SQUISHY_GOAL_MARGIN_X: f32 = 1600.0;
+/// Squishy save : voiture partie de l'intérieur de son but (roues sur le fond du filet ou le plafond : up.z < 0,7),
+/// en l'air au plus 2 s (240 ticks ; le clip 311 en compte ≈ 1,8 s, une chute depuis le haut des cages dure longtemps ; 3 ticks de tolérance) avant le toucher, dodge au plus 0,5 s avant le toucher.
+pub const SQUISHY_NET_MAX_UP_Z: f32 = 0.7;
+pub const SQUISHY_MAX_LEAVE_TICKS: u64 = 240;
+pub const SQUISHY_AIR_SLACK_TICKS: u64 = 3;
+pub const SQUISHY_DODGE_MAX_AGE_TICKS: u64 = 60;
 /// Clear : balle à plus de 2 500 uu du centre du terrain côté son but, vitesse après ≥ 1 500, éloignement ≥ 1 000.
 pub const CLEAR_MIN_OWN_Y: f32 = 2500.0;
 pub const CLEAR_MIN_SPEED: f32 = 1500.0;
