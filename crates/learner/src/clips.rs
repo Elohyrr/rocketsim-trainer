@@ -872,9 +872,9 @@ mod tests {
                 .map(|e| e.id)
                 .collect()
         };
-        assert_eq!(by("aerial_save"), [a.id.clone()]);
-        assert_eq!(by("air_roll_shot"), [a.id.clone()]);
-        assert_eq!(by("power_shot"), [b.id.clone()]);
+        assert_eq!(by("aerial_save"), std::slice::from_ref(&a.id));
+        assert_eq!(by("air_roll_shot"), std::slice::from_ref(&a.id));
+        assert_eq!(by("power_shot"), std::slice::from_ref(&b.id));
         assert!(by("flick").is_empty());
         // La liste et le classement renvoient les étiquettes et le combo ; l'ancien clip reste sans liste.
         let list = get("/clips");
