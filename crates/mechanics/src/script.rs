@@ -1325,3 +1325,28 @@ pub fn cases() -> Vec<Case> {
     all.extend(crate::script_collision::cases());
     all
 }
+
+/// Coup d'envoi simultané (voir `script_collision`), pour les tests d'intégration.
+pub fn kickoff_two_touch_frames(rest: bool) -> Vec<Frame> {
+    crate::script_collision::kickoff_two_touch(rest)
+}
+
+/// Coup d'envoi gagné seul : balle posée au centre, un seul toucher, elle part vers le but adverse (y > 0).
+pub fn kickoff_won_frames() -> Vec<Frame> {
+    let mut car = car_on_ground();
+    car.vel = [0.0; 3];
+    car.pos = [0.0, -300.0, 17.0];
+    let mut s = Script::new(
+        car,
+        BallTick {
+            pos: [0.0, 0.0, 93.0],
+            vel: [0.0; 3],
+        },
+    );
+    s.hold(30).once(|c, b| {
+        hit(c);
+        b.vel = [0.0, 1800.0, 200.0];
+    });
+    s.hold(20);
+    s.frames()
+}

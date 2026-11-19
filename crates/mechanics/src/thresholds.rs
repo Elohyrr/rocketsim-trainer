@@ -340,3 +340,18 @@ pub const SQUISHY_PRESS_MIN_VZ: f32 = -1000.0;
 pub const CLEAR_MIN_OWN_Y: f32 = 2500.0;
 pub const CLEAR_MIN_SPEED: f32 = 1500.0;
 pub const CLEAR_MIN_AWAY: f32 = 1000.0;
+
+// --- Save : vitesse de balle d'avant la séquence de contacts ; coup d'envoi.
+/// Un toucher de l'autre voiture à au plus ce nombre de ticks du toucher jugé (avant ou après) fait partie de la
+/// même séquence de contacts : la vitesse « avant » se lit avant le tout premier contact.
+pub const SAVE_SEQUENCE_TICKS: u64 = 20;
+/// Écart (ticks) entre les deux lectures qui doivent toutes deux montrer la balle filant vers son but.
+pub const SAVE_STABLE_TICKS: u64 = 8;
+/// Vitesse minimale de la balle vers son but avant la séquence (uu/s) : une balle posée au centre n'est pas un tir.
+pub const SAVE_MIN_TOWARD: f32 = 500.0;
+/// Taille de l'historique de balle (ticks, puissance de 2 > fenêtre + marge).
+pub const BALL_HISTORY: usize = 64;
+/// Phase de coup d'envoi : jusqu'à ce nombre de ticks (1,5 s) après le premier toucher de la balle.
+pub const KICKOFF_PHASE_TICKS: u64 = 180;
+/// `kickoff_won` : vitesse de balle vers le but adverse après le premier toucher (uu/s).
+pub const KICKOFF_WON_MIN_TOWARD: f32 = 1200.0;

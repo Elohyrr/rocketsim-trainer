@@ -81,6 +81,10 @@ fn mode_v1_garde_l_ancien_comportement() {
 fn chaque_mecanique_a_un_positif_et_un_negatif() {
     let cases = script::cases();
     for m in Mechanic::ALL {
+        // `kickoff_won` n'existe qu'en phase de coup d'envoi : tests dédiés ci-dessous.
+        if m == Mechanic::KickoffWon {
+            continue;
+        }
         assert!(
             cases.iter().any(|c| c.mechanic == m && c.positive),
             "{m:?} sans cas positif"
@@ -243,4 +247,78 @@ fn anciens_cas_et_catalogue_etendu() {
             "double_touch→backboard_double"
         ]
     );
+}
+
+/// Rejoue des images comme un épisode de coup d'envoi (`Detector::begin_kickoff`).
+fn replay_kickoff(frames: &[Frame]) -> Counts {
+    let mut det = Detector::new();
+    det.begin_kickoff();
+    let mut counts = Counts::default();
+    for (c, b) in frames {
+        det.tick(c, b, &mut counts);
+    }
+    counts
+}
+
+fn case_frames(name: &str) -> Vec<Frame> {
+    script::cases()
+        .into_iter()
+        .find(|c| c.name == name)
+        .unwrap_or_else(|| panic!("cas inconnu {name}"))
+        .frames
+}
+
+#[test]
+fn kickoff_simultane_pas_de_save() {
+    // Clip 1795095498-save-2038 : balle posée au centre, deux touchers à 1 tick d'écart.
+    let f = mechanics::script::kickoff_two_touch_frames(true);
+    assert_eq!(script::replay(&f).get(Mechanic::Save), 0);
+    assert_eq!(replay_kickoff(&f).get(Mechanic::Save), 0);
+    assert_eq!(replay_kickoff(&f).get(Mechanic::KickoffWon), 0);
+}
+
+#[test]
+fn vrai_save_sur_tir_adverse() {
+    let f = case_frames("save");
+    assert_eq!(script::replay(&f).get(Mechanic::Save), 1);
+}
+
+#[test]
+fn phase_de_kickoff_ne_garde_que_le_propre_au_kickoff() {
+    // Le power shot est refusé pendant le kickoff, accepté sinon.
+    let f = case_frames("power_shot");
+    assert_eq!(script::replay(&f).get(Mechanic::PowerShot), 1);
+    assert_eq!(replay_kickoff(&f).get(Mechanic::PowerShot), 0);
+    // Speed flip et car pinch survivent.
+    let f = case_frames("speed_flip");
+    assert_eq!(replay_kickoff(&f).get(Mechanic::SpeedFlip), 1);
+    let f = case_frames("car_pinch_kickoff");
+    assert_eq!(replay_kickoff(&f).get(Mechanic::Pinch), 1);
+}
+
+#[test]
+fn kickoff_won_sur_premier_toucher_seul() {
+    let f = mechanics::script::kickoff_won_frames();
+    assert_eq!(replay_kickoff(&f).get(Mechanic::KickoffWon), 1);
+    // Hors coup d'envoi : jamais.
+    assert_eq!(script::replay(&f).get(Mechanic::KickoffWon), 0);
+}
+
+#[test]
+fn phase_de_kickoff_finit_apres_le_premier_toucher() {
+    // 1,5 s après le premier toucher, les mécaniques ordinaires reviennent.
+    let mut det = Detector::new();
+    det.begin_kickoff();
+    let mut counts = Counts::default();
+    let f = mechanics::script::kickoff_won_frames();
+    for (c, b) in &f {
+        det.tick(c, b, &mut counts);
+    }
+    assert!(det.in_kickoff());
+    let (mut c, b) = *f.last().unwrap();
+    for _ in 0..200 {
+        c.tick += 1;
+        det.tick(&c, &b, &mut counts);
+    }
+    assert!(!det.in_kickoff());
 }

@@ -83,6 +83,29 @@ struct Dodge {
     speed_before: f32,
 }
 
+/// Historique de la balle sur les `BALL_HISTORY` derniers ticks (lecture de la vitesse d'avant un contact).
+#[derive(Clone, Copy, Debug)]
+struct BallHist([BallTick; BALL_HISTORY]);
+
+impl Default for BallHist {
+    fn default() -> Self {
+        Self([BallTick::default(); BALL_HISTORY])
+    }
+}
+
+impl BallHist {
+    #[inline]
+    fn push(&mut self, n: u64, b: &BallTick) {
+        self.0[n as usize % BALL_HISTORY] = *b;
+    }
+
+    /// Balle au tick interne `t` (le tick doit dater de moins de `BALL_HISTORY` ticks et avoir existé).
+    #[inline]
+    fn at(&self, t: u64) -> BallTick {
+        self.0[t as usize % BALL_HISTORY]
+    }
+}
+
 /// Détecteur pour **une** voiture. Appeler [`Detector::tick`] à chaque tick de physique, et
 /// [`Detector::reset`] à chaque nouvel épisode ou téléportation.
 #[derive(Clone, Debug, Default)]
@@ -147,6 +170,11 @@ pub struct Detector {
     other_hit_seen: Option<u64>,
     prev_other_vel: [f32; 3],
     prev_other_demoed: bool,
+    // Historique de balle, et phase de coup d'envoi (annoncée par l'environnement) : tick du premier toucher
+    // (n'importe quelle voiture).
+    ball_hist: BallHist,
+    kick_begun: bool,
+    kick_first: Option<u64>,
     g_hit: crate::ext_hit::Group,
     g_carry: crate::ext_carry::Group,
     g_move: crate::ext_move::Group,
@@ -245,6 +273,23 @@ impl Detector {
             details: self.details,
             ..Self::default()
         };
+    }
+
+    /// L'épisode qui commence est un coup d'envoi (à appeler juste après [`Detector::reset`]) : du début jusqu'à
+    /// 1,5 s après le premier toucher, seules les mécaniques propres au kickoff sont comptées (speed flip,
+    /// wave dash, car pinch, `kickoff_won`, simple toucher) ; les autres sont ignorées.
+    pub fn begin_kickoff(&mut self) {
+        self.kick_begun = true;
+        self.kick_first = None;
+    }
+
+    /// Vrai pendant la phase de coup d'envoi (voir [`Detector::begin_kickoff`]).
+    #[inline]
+    pub fn in_kickoff(&self) -> bool {
+        self.kick_begun
+            && self
+                .kick_first
+                .is_none_or(|f| self.n <= f + KICKOFF_PHASE_TICKS)
     }
 
     /// Dernier détail (valeur, support) de la mécanique `m` ; nul tant qu'elle n'a pas été vue.
@@ -364,6 +409,12 @@ impl Detector {
         {
             self.shared_last = Some(n);
         }
+        if self.kick_begun
+            && self.kick_first.is_none()
+            && (raw_hit_now || self.other_touch_n == Some(n))
+        {
+            self.kick_first = Some(n);
+        }
         if taint_now {
             self.taint_last = Some(n);
             // Un dodge en cours (wave dash, speed flip, half flip) et un flick en attente sont jugés sur des
@@ -374,7 +425,8 @@ impl Detector {
         let tainted = within(self.taint_last, n, COLLISION_WINDOW_TICKS)
             || within(self.shared_last, n, COLLISION_WINDOW_TICKS);
         // Sauvegarde des compteurs, records et détails pour annuler les mécaniques invalidées (fenêtre seulement).
-        let backup = tainted.then(|| (counts.0, counts.1.clone(), self.details));
+        let kick = self.in_kickoff();
+        let backup = (tainted || kick).then(|| (counts.0, counts.1.clone(), self.details));
         if bump {
             counts.inc(Mechanic::Bump);
             self.note(counts, Mechanic::Bump, 0.0);
@@ -812,6 +864,10 @@ impl Detector {
                 other_dist: car
                     .other
                     .map_or(f32::MAX, |o| norm2(sub(o.pos, ball.pos)).sqrt()),
+                pre: BallTick::default(),
+                pre_old: BallTick::default(),
+                pre_valid: false,
+                kickoff_first: false,
             });
         } else if let Some(h) = self.hit_pending.as_mut() {
             let sp = norm2(ball.vel).sqrt();
@@ -825,6 +881,18 @@ impl Detector {
                 self.hit_pending = None;
                 h.tainted = tainted;
                 h.shared = within(self.shared_last, n, COLLISION_WINDOW_TICKS);
+                // Balle d'avant la séquence de contacts : avant le premier toucher de l'autre voiture s'il est
+                // proche de celui-ci (avant ou après), sinon juste avant le nôtre.
+                let t0 = match self.other_touch_n {
+                    Some(m) if m + SAVE_SEQUENCE_TICKS >= h.tick && m <= n => m.min(h.tick),
+                    _ => h.tick,
+                };
+                if t0 > SAVE_STABLE_TICKS + 1 && n - t0 < BALL_HISTORY as u64 - SAVE_STABLE_TICKS {
+                    h.pre = self.ball_hist.at(t0 - 1);
+                    h.pre_old = self.ball_hist.at(t0 - 1 - SAVE_STABLE_TICKS);
+                    h.pre_valid = true;
+                }
+                h.kickoff_first = self.kick_begun && self.kick_first == Some(h.tick);
                 Some(h)
             }
             _ => None,
@@ -869,7 +937,7 @@ impl Detector {
 
         // Mécaniques invalidées : le mouvement ou la vitesse de balle viennent d'un choc, pas de la voiture.
         if let Some((c0, r0, d0)) = backup {
-            self.invalidate(counts, &c0, &r0, &d0);
+            self.invalidate(counts, &c0, &r0, &d0, tainted, kick);
         }
 
         self.events = Events(ev);
@@ -884,13 +952,24 @@ impl Detector {
         c0: &[u64; crate::MECH_COUNT],
         r0: &Records,
         d0: &Details,
+        tainted: bool,
+        kick: bool,
     ) {
         for m in Mechanic::ALL {
             let i = m.index();
-            if m.collision_sensitive()
-                && counts.0[i] > c0[i]
-                && !(m == Mechanic::Pinch && self.details.0[i].support == Support::Car)
-            {
+            let car_pinch = m == Mechanic::Pinch && self.details.0[i].support == Support::Car;
+            // Collision : on garde le car pinch. Phase de kickoff : on garde seulement le propre au kickoff.
+            let drop = (tainted && m.collision_sensitive() && !car_pinch)
+                || (kick
+                    && !car_pinch
+                    && !matches!(
+                        m,
+                        Mechanic::Touch
+                            | Mechanic::SpeedFlip
+                            | Mechanic::WaveDash
+                            | Mechanic::KickoffWon
+                    ));
+            if drop && counts.0[i] > c0[i] {
                 counts.0[i] = c0[i];
                 counts.1.0[i] = r0.0[i];
                 self.details.0[i] = d0.0[i];
@@ -930,6 +1009,7 @@ impl Detector {
     ) {
         self.prev_car = *car;
         self.prev_ball = *ball;
+        self.ball_hist.push(self.n, ball);
         self.prev = Prev {
             on_ground: car.on_ground,
             on_terrain,

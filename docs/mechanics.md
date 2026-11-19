@@ -91,7 +91,7 @@ retour au sol), `recovery` (le vol retourné par un choc ne compte pas), `stall`
 | Annulées (vitesse de balle) | `power_shot`, `reset_shot`, `pinch` (hors support `car`), `kuxir_pinch`, `flick` + variantes (45, 90, musty, delayed, breezi), `wall_shot`, `redirect`, `air_roll_shot`, `cushion`, `half_volley` | jugées sur la vitesse de balle après le toucher : un choc à deux la gonfle |
 | Conservées | `touch`, `aerial_touch`, `air_dribble`, `flip_reset`, `ceiling_shot`, `double_touch`, `backboard_*`, `dribble`, `*_dribble`, `reset_shot`, `double_reset`, `ceiling_reset`, `wall_to_air_dribble`, `fast_aerial`, `bump`, `demo` | état ou intention du joueur (position, drapeaux, commandes), pas une vitesse subie |
 
-**Nouvelles mécaniques** (ajoutées en fin de catalogue : 48 au total avec les arrêts) :
+**Nouvelles mécaniques** (ajoutées en fin de catalogue : 49 au total avec les arrêts et `kickoff_won`) :
 
 - *car pinch / kickoff pinch* : pas de nouvelle entrée, c'est un `pinch` de **support `car`** : toucher simultané,
   gain de vitesse de balle ≥ 1 500, vitesse après ≥ 2 000, autre voiture à < 350 uu de la balle. Exclusif avec
@@ -102,7 +102,7 @@ retour au sol), `recovery` (le vol retourné par un choc ne compte pas), `stall`
 
 **Clips et qualité** : une méca invalidée n'est pas comptée, donc ne déclenche aucun clip. `QualityTracker::observe_with`
 ignore la vitesse de balle des ticks où `Detector::tainted()` est vrai (le but dans les 3 s compte toujours) : une
-vitesse due à un choc à deux ne gonfle pas le score. Les clips portent `detector = 3` (la page web traite `≥ 2` comme v2).
+vitesse due à un choc à deux ne gonfle pas le score. Les clips portent `detector = 4` depuis la phase de coup d'envoi (3 : collisions ; la page web traite `≥ 2` comme v2).
 
 ## Catalogue v1 (seuils : `crates/mechanics/src/thresholds.rs`)
 
@@ -171,7 +171,7 @@ le toucher (uu/s, jugée sur les 4 ticks qui suivent) ; la colonne « record » 
 | `tornado_spin` | b | \|ω·haut\| > 4 rad/s ≥ 0,3 s en l'air | |
 | `recovery` | b | atterrissage à plat après ≥ 0,6 s en l'air dont un moment renversé/de côté, en gardant ≥ 60 % de la vitesse | |
 
-Séries Prometheus : `trainer_mechanic_total{mechanic,context}` = 48 × 2 ; `trainer_mechanic_record{mechanic}` = 16 ; le
+Séries Prometheus : `trainer_mechanic_total{mechanic,context}` = 49 × 2 ; `trainer_mechanic_record{mechanic}` = 16 ; le
 total reste très sous les 500 séries (test `series_stay_far_below_the_cap`). Les nouvelles mécaniques ne rapportent
 **aucun bonus** en drill (`base_bonus` → 0) : à décider. Clips : toutes sauf `touch` ; la mécanique la plus précieuse
 du pas gagne (`Mechanic::clip_priority`), le clip porte `detail = {value, support}` (vitesse de balle, support du pinch)
@@ -256,6 +256,40 @@ car un squish dévie souvent de peu), vitesse vers son but ≥ 500 avant, rédui
 écrasée : support de pinch, ou poussée vers le sol (z < 350, vz après < −1 000, voiture au-dessus). `clear` : hors
 save, toucher dans son tiers défensif (côté but à > 2 500 uu du centre), balle à ≥ 1 500 après, s'éloignant de son
 but à ≥ 1 000 uu/s alors qu'elle n'y fonçait pas déjà.
+
+**Save : vitesse d'avant la séquence de contacts** (correctif des faux saves de coup d'envoi). Le toucher est jugé
+4 ticks après coup, et « avant » était la vitesse au tick précédent : si l'autre voiture avait touché la balle 1-2 ticks
+plus tôt (coup d'envoi symétrique), cette vitesse était déjà celle de SON toucher (balle lancée vers notre but) et le
+nôtre la renvoyait : faux `save`. Maintenant le détecteur garde 64 ticks d'historique de balle et lit la balle
+**avant le tout premier contact** (celui de l'autre voiture s'il est à ≤ 20 ticks du nôtre, avant ou après) ; un `save`
+exige que cette balle file vers son but à ≥ 500 uu/s, avec une trajectoire entrant dans le but lue **deux fois à 8 ticks
+d'écart** (stable), puis que le toucher la détourne. Une balle posée au centre (vitesse 0) n'est donc jamais un tir. Les
+séquences scriptées de save démarrent après 11 ticks de balle lancée.
+
+## Phase de coup d'envoi
+
+L'env sait qu'un épisode est un coup d'envoi (`KICKOFF_PROB`, `reset_kickoff` : positions officielles) et appelle
+`Detector::begin_kickoff()` juste après `reset()`. De ce moment et jusqu'à 1,5 s (180 ticks) après le premier toucher de
+la balle (par n'importe quelle voiture), **seules** les mécaniques propres au kickoff sont comptées : `speed_flip`,
+`wave_dash`, `pinch` de support `car`, `kickoff_won` et le simple `touch` ; tout le reste (save, power shot, bump, demo,
+squishy, clear…) est annulé comme une mécanique invalidée (compteur, record et détail restaurés). Les dodges (flip avant /
+diagonal) restent des événements `Events`, pas des mécaniques du catalogue. `Detector::in_kickoff()` dit si la phase
+court. Garde-fou : aucun `save`/`aerial_save` pendant la phase, donc tant que la balle n'a pas été touchée et que le
+contact du kickoff n'est pas fini.
+
+`kickoff_won` (nouvelle étiquette, index 48) : premier toucher du kickoff, ni partagé ni dans la fenêtre d'un choc
+(`tainted`), balle envoyée vers le but adverse à ≥ 1 200 uu/s. Jamais clippée par défaut.
+
+**Clips** : pendant la phase, l'env ne déclenche et ne note que `speed_flip` et le car pinch **exceptionnel** (balle ≥ 3 000
+uu/s après ; les pinchs de kickoff ordinaires mesurent 2 300–2 950). `--kickoff-clips` (ou `KICKOFF_CLIPS=1`,
+`EnvConfig::kickoff_clips`) rend tous les clips de la phase.
+
+**Validation prod** (`GET /clips`, trajectoires rejouées, 185 lisibles sur 200) : **21 clips de coup d'envoi** (balle
+immobile au centre à l'image 0, voitures sur leurs positions) = 11 % : 9 `save`
+premier toucher : jamais des saves), 6 `power_shot` (vitesse due au toucher partagé), 6 `pinch` (car, 2 356–2 955 uu/s).
+Avec la phase : les 9 saves et 6 power shots disparaissent ; les 6 pinchs ne sont plus clippés (aucun ≥ 3 000). Clip
+d'origine `1795095498-save-2038` : déjà évincé du serveur (404) ; `1795096185-save-2308` (même cas) est rejoué par le
+test `rl-env/tests/kickoff_save.rs` (fixture `tests/data/kickoff-save-2308.json`) : 0 save avec ou sans phase annoncée.
 
 Clips réels (rejeu RocketSim, `audit_collisions`) : `1795074459-redirect-311` : balle à (−767, −4114, 214) à
 (1578, −733, 267), la voiture (z = 368) la plaque au sol, elle repart à (903, 597, −1588) puis rebondit : vitesse vers

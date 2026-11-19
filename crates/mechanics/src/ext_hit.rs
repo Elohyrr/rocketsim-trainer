@@ -23,6 +23,10 @@
 //!   après, et balle écrasée : support de pinch, ou poussée vers le sol (z < 350, vz après < −1 000, voiture
 //!   au-dessus) ; valeur = vitesse retirée. `clear` : hors save, toucher dans son tiers défensif (|y| > 2 500 côté
 //!   but), balle à ≥ 1 500 après, s'éloignant de son but à ≥ 1 000 uu/s alors qu'elle n'y fonçait pas déjà.
+//! - `save` (v. coup d'envoi) : la balle d'avant la séquence de contacts (avant le toucher adverse s'il date de
+//!   ≤ 20 ticks) doit filer vers son but à ≥ 500 uu/s, lu deux fois à 8 ticks d'écart (stable), sinon pas de save.
+//! - `kickoff_won` : premier toucher de la phase de coup d'envoi, ni partagé ni après un choc, balle envoyée vers
+//!   le but adverse à ≥ 1 200 uu/s.
 //! - `kuxir_pinch` : un pinch (compté aussi comme `pinch`) contre un mur latéral, du fond ou un coin, la voiture
 //!   ayant dodgé ≤ 0,35 s avant le toucher, balle envoyée vers le but adverse à > 1 500 uu/s (`attack_neg`).
 //!   La position de départ (mur défensif) n'est pas exigée. Valeur = vitesse après.
@@ -197,13 +201,27 @@ impl Group {
         let own = if cx.attack_neg { 1.0 } else { -1.0 };
         let toward_before = h.v_before[1] * own;
         let toward_after = h.v_after[1] * own;
-        let is_save = enters_own_goal(h.ball.pos, h.v_before, own)
+        // La balle doit foncer vers son but AVANT tout contact de la séquence, de façon stable (deux lectures à
+        // 8 ticks d'écart), à vitesse de tir : ni balle posée (coup d'envoi) ni vitesse déjà faussée par un
+        // toucher adverse 1-2 ticks plus tôt.
+        let was_shot = h.pre_valid
+            && h.pre.vel[1] * own >= SAVE_MIN_TOWARD
+            && enters_own_goal(h.pre.pos, h.pre.vel, own)
+            && enters_own_goal(h.pre_old.pos, h.pre_old.vel, own);
+        let is_save = was_shot
+            && enters_own_goal(h.ball.pos, h.v_before, own)
             && !enters_own_goal(h.ball.pos, h.v_after, own);
         if is_save {
             out.emit(Mechanic::Save, after, Support::None);
             if !h.car.on_ground {
                 out.emit(Mechanic::AerialSave, after, Support::None);
             }
+        }
+
+        // --- Kickoff won : premier toucher du coup d'envoi, seul (ni toucher simultané ni choc), balle envoyée
+        // vers le but adverse.
+        if h.kickoff_first && !h.tainted && !h.shared && -toward_after >= KICKOFF_WON_MIN_TOWARD {
+            out.emit(Mechanic::KickoffWon, after, Support::None);
         }
 
         // --- Squishy save : la balle, qui menaçait le but (ou le frôlait : marge `SQUISHY_GOAL_MARGIN_X`), est

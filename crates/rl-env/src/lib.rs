@@ -240,6 +240,8 @@ pub struct EnvConfig {
     pub record_clips: bool,
     /// Garde les règles d'origine (v1) du détecteur de mécaniques au lieu des règles strictes (v2).
     pub detector_v1: bool,
+    /// Garde aussi les clips de coup d'envoi ordinaires (sinon seuls le speed flip et le car pinch en font un).
+    pub kickoff_clips: bool,
     /// Part des épisodes qui sont des drills de mécaniques (0 = désactivé ; sans effet quand `end_on_touch`).
     /// Voir `docs/drills.md` : sans adversaire actif, exclus des stats de curriculum, bonus de méca seulement ici.
     pub drill_prob: f32,
@@ -297,6 +299,7 @@ impl Default for EnvConfig {
             detect_mechanics: true,
             record_clips: false,
             detector_v1: false,
+            kickoff_clips: false,
             drill_prob: 0.0,
             drill_weights: Drill::DEFAULT_WEIGHTS,
             drill_clips: false,
@@ -391,6 +394,9 @@ pub const KICKOFF_PROB: f32 = 0.4;
 /// Poids de la récompense de ramassage de boost aux paliers 5 et 6 : une grosse prise à vide vaut 0,2 (un
 /// toucher vaut 1 au palier 5), une petite prise à vide ≈ 0,07, une petite prise à 33 de boost ≈ 0,02.
 pub const BOOST_REWARD: f32 = 0.2;
+/// Un car pinch de coup d'envoi ne fait un clip qu'au-dessus de cette vitesse de balle (uu/s) : les pinchs
+/// ordinaires (2 300–2 950 mesurés en prod, ~3 % des clips) ne le sont pas.
+const KICKOFF_PINCH_CLIP_SPEED: f32 = 3000.0;
 /// Durée maximale d'un kickoff (décisions, 6 s).
 pub const KICKOFF_MAX_STEPS: u32 = 90;
 /// Décisions jouées après le premier toucher (2 s) avant de juger le kickoff.
@@ -614,7 +620,7 @@ impl Env {
         let q = self.quality.take();
         if let (Some(mut c), Some(t)) = (self.clip_wait.take(), q) {
             let q = t.quality();
-            c.detector = if self.cfg.detector_v1 { 1 } else { 3 };
+            c.detector = if self.cfg.detector_v1 { 1 } else { 4 };
             c.detail = self.clip_detail.take();
             c.quality = Some(clip::ClipQuality {
                 ball_speed_to_goal: q.speed,
@@ -888,6 +894,9 @@ impl Env {
         // Pads, balle, invalidation des touchers ; les voitures sont replacées ensuite (par id).
         self.sim.reset_kickoff(seed);
         self.sim.reset_ball([0.0, 0.0, BALL_REST_Z], [0.0; 3]);
+        // Le détecteur sait que l'épisode est un coup d'envoi : phase propre au kickoff (voir docs/mechanics.md).
+        self.detector.reset();
+        self.detector.begin_kickoff();
         let jitter = |rng: &mut Rng| {
             (
                 rng.range(-50.0, 50.0),
@@ -1019,18 +1028,32 @@ impl Env {
                 self.mech.add(&seen);
             }
             if recording {
+                // Pendant la phase de coup d'envoi : pas de clip sauf speed flip ou car pinch exceptionnel (balle
+                // à ≥ `KICKOFF_PINCH_CLIP_SPEED` ; `--kickoff-clips` réactive tous les clips).
+                let kick = self.detector.in_kickoff() && !self.cfg.kickoff_clips;
+                let clippable = |m: mechanics::Mechanic| {
+                    !kick
+                        || m == mechanics::Mechanic::SpeedFlip
+                        || (m == mechanics::Mechanic::Pinch && {
+                            let d = self.detector.detail(m);
+                            d.support == mechanics::Support::Car
+                                && d.value >= KICKOFF_PINCH_CLIP_SPEED
+                        })
+                };
                 // Tout sauf le simple toucher (trop fréquent) ; la plus rare des mécaniques vues ce pas.
                 let rarest = mechanics::Mechanic::ALL
                     .into_iter()
                     .filter(|&m| {
                         !matches!(m, mechanics::Mechanic::Touch | mechanics::Mechanic::Bump)
                             && seen.get(m) > 0
+                            && clippable(m)
                     })
                     .max_by_key(|m| (m.clip_priority(), m.index()));
                 // Le clip garde toutes les mécaniques vues dans sa fenêtre (même sans déclenchement).
                 for m in mechanics::Mechanic::ALL {
                     if !matches!(m, mechanics::Mechanic::Touch | mechanics::Mechanic::Bump)
                         && seen.get(m) > 0
+                        && clippable(m)
                     {
                         self.rec.note(m.label());
                     }
