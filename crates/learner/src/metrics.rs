@@ -443,7 +443,9 @@ mod tests {
     fn mechanic_records_are_exposed() {
         let mut m = Metrics::default();
         m.mechanics.1.observe(mechanics::Mechanic::Pinch, 4200.0);
-        m.drill_mechanics.1.observe(mechanics::Mechanic::Pinch, 4800.0);
+        m.drill_mechanics
+            .1
+            .observe(mechanics::Mechanic::Pinch, 4800.0);
         let t = m.render();
         assert!(t.contains("trainer_mechanic_record{mechanic=\"pinch\"} 4800"));
         assert!(t.contains("trainer_mechanic_record{mechanic=\"power_shot\"} 0"));

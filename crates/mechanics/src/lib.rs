@@ -22,9 +22,9 @@ mod script_hit;
 mod script_move;
 pub mod thresholds;
 
-pub use detector::{Detector, Events, Mode};
 pub use ctx::{Base, Ctx, DodgeInfo, Hit};
 pub use detail::{Detail, Records, Support};
+pub use detector::{Detector, Events, Mode};
 pub use quality::{Quality, QualityTracker};
 
 /// Nombre de mécaniques du catalogue.

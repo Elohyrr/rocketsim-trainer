@@ -60,7 +60,12 @@ fn main() {
                 .map(|(m, k)| {
                     let d = det.detail(m);
                     if d.value > 0.0 || d.support != mechanics::Support::None {
-                        format!("{}×{k} ({:.0} uu/s {})", m.label(), d.value, d.support.label())
+                        format!(
+                            "{}×{k} ({:.0} uu/s {})",
+                            m.label(),
+                            d.value,
+                            d.support.label()
+                        )
                     } else {
                         format!("{}×{k}", m.label())
                     }
