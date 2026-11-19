@@ -227,6 +227,17 @@ fn main() {
         .or_else(|| std::env::var("BOOST_REWARD").ok())
         .and_then(|s| s.parse().ok())
         .map(|c: f32| c.clamp(0.0, 1.0));
+    // `--ball-goal-reward W` (ou BALL_GOAL_REWARD) : récompense dense de vitesse de balle vers le but adverse ;
+    // `--hit-speed-reward W` (ou HIT_SPEED_REWARD) : gain de vitesse vers le but au toucher. 0 = coupées (défaut),
+    // seulement aux paliers de match (≥ 2). Voir docs/rewards.md.
+    let coef = |flag: &str, var: &str| -> f32 {
+        arg(flag)
+            .or_else(|| std::env::var(var).ok())
+            .and_then(|s| s.parse().ok())
+            .map_or(0.0, |c: f32| c.clamp(0.0, 1.0))
+    };
+    let ball_goal_reward = coef("--ball-goal-reward", "BALL_GOAL_REWARD");
+    let hit_speed_reward = coef("--hit-speed-reward", "HIT_SPEED_REWARD");
     let fixed_boost = std::env::args().any(|a| a == "--fixed-boost");
     // `--drill-weights label=poids,…` (ou DRILL_WEIGHTS) : poids de tirage des drills, par-dessus les défauts
     // (`scenarios::Drill::DEFAULT_WEIGHTS`) ; ex. `dribble_turn=5,keeper=0`.
@@ -278,6 +289,16 @@ fn main() {
             boost_reward: boost_reward.map_or(c.boost_reward, |b| {
                 if c.boost_reward > 0.0 { b } else { 0.0 }
             }),
+            ball_goal_reward: if c.goal_reward > 0.0 {
+                ball_goal_reward
+            } else {
+                0.0
+            },
+            hit_speed_reward: if c.goal_reward > 0.0 {
+                hit_speed_reward
+            } else {
+                0.0
+            },
             random_start_boost: c.random_start_boost && !fixed_boost,
             kickoff_prob: if c.kickoff_prob > 0.0 {
                 kp.unwrap_or(c.kickoff_prob)
@@ -633,6 +654,10 @@ fn main() {
             if s.boost.steps > 0 {
                 m.boost_mean = s.boost.boost_sum / s.boost.steps as f64;
                 m.boost_empty_fraction = s.boost.empty_steps as f64 / s.boost.steps as f64;
+            }
+            m.hit_speed_record = m.hit_speed_record.max(s.boost.hit_speed_max);
+            if s.boost.hits > 0 {
+                m.hit_speed_mean = s.boost.hit_speed_sum / s.boost.hits as f64;
             }
             m.drill_success = drill_total.success;
             m.drill_dribble_goal = drill_total.dribble_goal;
