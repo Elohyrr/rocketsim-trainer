@@ -287,3 +287,19 @@ même acteur de prod agrandi automatiquement : buts / (buts + buts contre son ca
 après l'échauffement du critique : bruit d'un essai court, pas de chute) ; réussites par famille du même ordre
 (`dribble_turn` 87/252 = 35 %, `shot_roll` 42 %, `shot_bounce` 38 %, `shot_lob` 32 %, `shot_cross` 28 %) ; gardien
 (900–2200 uu/s) toujours 0 arrêt sur 221 épisodes avec cet acteur.
+
+### Essai drills v3 (acteur de prod, palier 5, récompenses de vitesse de balle de la prod)
+
+`--stage 5 --init-actor … --critic-warmup 20 --hit-speed-reward 0.5 --ball-goal-reward 0.02 --no-clips`, 2 vCPU partagés.
+
+- **Non-régression** : buts / (buts + buts contre son camp) en match **0,811** avec `--drill-prob 0.3` (10 min, 1,36 M pas : 668 / 156)
+  contre **0,814** sans drill (4 min, 0,78 M pas : 564 / 129), même binaire et mêmes réglages : pas de régression. (Les 0,92 des
+  essais v2 ci-dessus étaient sans les récompenses de vitesse de balle : non comparables.)
+- **Réussite des nouveaux drills** (10 min, épisodes → réussis) : `flip_shot` 37 % (80/215, surtout des buts : le tir au sol
+  marche déjà sans flip), `turnaround` 66 % (88/133 : critère rempli en roulant, voir les mesures), `flick` 35 % (47/136),
+  `rings` : 31 anneaux traversés sur 101 épisodes, réussite 0 (aucun parcours complet).
+- **Mécaniques** : `half_flip` et `flip_shot` **jamais vus** (0 en drill comme en match) avec l'acteur de prod : c'est le
+  constat d'Elohyrr, et le bonus ne peut payer que ce qui arrive ; c'est à l'apprentissage de les découvrir. Bonus payés :
+  wall_shot 9, dribble 6, flip_reset 1.
+- Limites : essai court, un seul tirage, pas de décision statistique ; le barème de `turnaround` est réglé sur un script de half flip
+  qui ne bat pas le demi-tour en roulant (voir plus haut).
