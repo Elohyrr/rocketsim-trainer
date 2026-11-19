@@ -1053,7 +1053,7 @@ mod tests {
             let t = sample(Drill::Turnaround, &mut u);
             let to = yaw_towards(t.car_pos, t.ball_pos);
             let d = (t.car_yaw - to).sin().atan2((t.car_yaw - to).cos()).abs();
-            assert!(d >= 2.6 && d <= PI + 1e-3, "{d}");
+            assert!((2.6..=PI + 1e-3).contains(&d), "{d}");
             // Flip shot : balle basse, devant la voiture.
             let f = sample(Drill::FlipShot, &mut u);
             assert!(f.ball_pos[2] <= 260.0);
