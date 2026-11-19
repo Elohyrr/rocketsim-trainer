@@ -93,6 +93,11 @@ fn main() {
                 *gained.entry(x.label()).or_default() += 1;
             }
         }
+        let all: Vec<_> = Mechanic::ALL
+            .into_iter()
+            .filter(|x| *x != Mechanic::Touch && c1.get(*x) > 0)
+            .map(|x| x.label())
+            .collect();
         if b && !a {
             r.rejected += 1;
             if !others.is_empty() {
@@ -101,8 +106,8 @@ fn main() {
         }
         if verbose {
             println!(
-                "{id:<34} {label:<14} avant {} après {} choc {} touchers-simultanés {} +{:?} ({ticks} ticks)",
-                b as u8, a as u8, coll as u8, shared as u8, others
+                "{id:<34} {label:<14} avant {} après {} choc {} touchers-simultanés {} +{:?} toutes {:?} ({ticks} ticks)",
+                b as u8, a as u8, coll as u8, shared as u8, others, all
             );
         }
     }

@@ -91,7 +91,7 @@ retour au sol), `recovery` (le vol retourné par un choc ne compte pas), `stall`
 | Annulées (vitesse de balle) | `power_shot`, `reset_shot`, `pinch` (hors support `car`), `kuxir_pinch`, `flick` + variantes (45, 90, musty, delayed, breezi), `wall_shot`, `redirect`, `air_roll_shot`, `cushion`, `half_volley` | jugées sur la vitesse de balle après le toucher : un choc à deux la gonfle |
 | Conservées | `touch`, `aerial_touch`, `air_dribble`, `flip_reset`, `ceiling_shot`, `double_touch`, `backboard_*`, `dribble`, `*_dribble`, `reset_shot`, `double_reset`, `ceiling_reset`, `wall_to_air_dribble`, `fast_aerial`, `bump`, `demo` | état ou intention du joueur (position, drapeaux, commandes), pas une vitesse subie |
 
-**Nouvelles mécaniques** (ajoutées en fin de catalogue : 44) :
+**Nouvelles mécaniques** (ajoutées en fin de catalogue : 48 au total avec les arrêts) :
 
 - *car pinch / kickoff pinch* : pas de nouvelle entrée, c'est un `pinch` de **support `car`** : toucher simultané,
   gain de vitesse de balle ≥ 1 500, vitesse après ≥ 2 000, autre voiture à < 350 uu de la balle. Exclusif avec
@@ -171,7 +171,7 @@ le toucher (uu/s, jugée sur les 4 ticks qui suivent) ; la colonne « record » 
 | `tornado_spin` | b | \|ω·haut\| > 4 rad/s ≥ 0,3 s en l'air | |
 | `recovery` | b | atterrissage à plat après ≥ 0,6 s en l'air dont un moment renversé/de côté, en gardant ≥ 60 % de la vitesse | |
 
-Séries Prometheus : `trainer_mechanic_total{mechanic,context}` = 44 × 2 ; `trainer_mechanic_record{mechanic}` = 16 ; le
+Séries Prometheus : `trainer_mechanic_total{mechanic,context}` = 48 × 2 ; `trainer_mechanic_record{mechanic}` = 16 ; le
 total reste très sous les 500 séries (test `series_stay_far_below_the_cap`). Les nouvelles mécaniques ne rapportent
 **aucun bonus** en drill (`base_bonus` → 0) : à décider. Clips : toutes sauf `touch` ; la mécanique la plus précieuse
 du pas gagne (`Mechanic::clip_priority`), le clip porte `detail = {value, support}` (vitesse de balle, support du pinch)
@@ -247,12 +247,21 @@ ceiling shot comptent aussi leurs `touch` et `aerial_touch` ; flick compte aussi
   `NO_DETECT=1` pour couper) : 25,9 k pas/s sans, 25,2–25,3 k avec (≈ −3 %, dans le bruit de la machine), pour l'env
   seul ; l'apprentissage occupant ≈ 2/3 d'une itération, l'effet sur le débit de bout en bout est inférieur à 1 %.
 
-## Arrêts : `save`, `aerial_save`, `squishy_save`
+## Arrêts : `save`, `aerial_save`, `squishy_save`, `clear`
 
 `save` : avant le toucher, la trajectoire balistique de la balle (gravité 650, rebond au sol à 60 %, sans murs, 2 s)
 entre dans le but de la voiture ; avec la vitesse après le toucher, non. `aerial_save` : en plus, voiture en l'air.
-`squishy_save` : en plus, balle coincée (même support que `pinch`, sans bond de vitesse exigé) et vitesse vers son
-but ≥ 500 avant, réduite d'au moins 70 % ou inversée après (exemple : clip 1795074459-redirect-311, voir rapport).
+`squishy_save` (indépendant de `save`) : la balle menaçait le but (trajectoire à < 2 500 uu du centre à la ligne,
+car un squish dévie souvent de peu), vitesse vers son but ≥ 500 avant, réduite d'au moins 70 % ou inversée après, et balle
+écrasée : support de pinch, ou poussée vers le sol (z < 350, vz après < −1 000, voiture au-dessus). `clear` : hors
+save, toucher dans son tiers défensif (côté but à > 2 500 uu du centre), balle à ≥ 1 500 après, s'éloignant de son
+but à ≥ 1 000 uu/s alors qu'elle n'y fonçait pas déjà.
+
+Clips réels (rejeu RocketSim, `audit_collisions`) : `1795074459-redirect-311` : balle à (−767, −4114, 214) à
+(1578, −733, 267), la voiture (z = 368) la plaque au sol, elle repart à (903, 597, −1588) puis rebondit : vitesse vers
+son but −733 → +597, mais la trajectoire d'avant passait à x ≈ +1 400, hors des poteaux (±893) : **pas un save, un vrai
+squishy save** ; la première version exigeait un save et le ratait, corrigé. Détecté maintenant : redirect +
+squishy_save + clear. `1795076757-air_roll_shot-310` : air_roll_shot + save + aerial_save.
 
 ## Validation sur les clips de prod (199 clips, `examples/audit_collisions`)
 
