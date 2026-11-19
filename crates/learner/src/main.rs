@@ -260,6 +260,10 @@ fn main() {
     // `--detector-v1` ou `DETECTOR_V1=1` : règles d'origine du détecteur de mécaniques (sinon v2, strictes).
     let detector_v1 = std::env::args().any(|a| a == "--detector-v1")
         || std::env::var("DETECTOR_V1").is_ok_and(|v| v == "1");
+    // `--kickoff-clips` ou `KICKOFF_CLIPS=1` : garde aussi les clips de coups d'envoi (sinon seulement speed flip
+    // et car pinch).
+    let kickoff_clips = std::env::args().any(|a| a == "--kickoff-clips")
+        || std::env::var("KICKOFF_CLIPS").is_ok_and(|v| v == "1");
     let mut clip_store = want_clips
         .then(|| {
             let max = arg("--clips-max")
@@ -282,6 +286,7 @@ fn main() {
         EnvConfig {
             record_clips,
             detector_v1,
+            kickoff_clips,
             drill_prob: if c.end_on_touch { 0.0 } else { drill_prob },
             drill_weights,
             drill_clips,

@@ -115,16 +115,50 @@ fn save_seq(
     let mut car = if aerial { air_car() } else { car_on_ground() };
     car.vel = [0.0; 3];
     car.pos = [0.0, -3000.0, car_z];
+    // La balle file déjà depuis 12 ticks (tir stable) et arrive en y = −3000 au toucher.
     let mut s = Script::new(
         car,
         BallTick {
-            pos: [0.0, -3000.0, ball_z],
+            pos: [0.0, -3000.0 - v_before_y * 0.1, ball_z],
             vel: [0.0, v_before_y, 0.0],
         },
     );
-    s.hold(1).once(|c, b| {
+    s.hold(11).once(|c, b| {
         hit(c);
         b.vel = v_after;
+    });
+    s.hold(20);
+    s.frames()
+}
+
+/// Coup d'envoi simultané (clip de prod 1795095498-save-2038) : balle posée au centre, l'autre voiture la touche
+/// au tick 12 (elle part vers le but bleu, y < 0), la nôtre 1 tick plus tard (elle repart vers le camp orange).
+/// `rest` faux : la balle roulait déjà vers notre but avant (vrai tir) et le toucher adverse l'accélère.
+pub(crate) fn kickoff_two_touch(rest: bool) -> Vec<Frame> {
+    let mut car = car_on_ground();
+    car.vel = [0.0; 3];
+    car.pos = [0.0, -300.0, 17.0];
+    let v0: f32 = if rest { 0.0 } else { -1500.0 };
+    let mut s = Script::new(
+        car,
+        BallTick {
+            pos: [0.0, -(v0.abs()) * 0.1, 93.0],
+            vel: [0.0, v0, 0.0],
+        },
+    );
+    s.car.other = Some(other([0.0, 300.0, 17.0]));
+    s.hold(11).once(|c, b| {
+        let mut o = other([0.0, 300.0, 17.0]);
+        o.ball_hit_tick = Some(c.tick);
+        c.other = Some(o);
+        b.vel = [0.0, -1800.0, 0.0];
+    });
+    s.once(|c, b| {
+        hit(c);
+        let mut o = other([0.0, 300.0, 17.0]);
+        o.ball_hit_tick = Some(c.tick - 1);
+        c.other = Some(o);
+        b.vel = [0.0, 2500.0, 300.0];
     });
     s.hold(20);
     s.frames()
@@ -302,6 +336,13 @@ pub(crate) fn cases() -> Vec<Case> {
             Clear,
             false,
             clear_seq(1800.0, 2400.0),
+            &[(Touch, 1)],
+        ),
+        case(
+            "save_negatif_coup_d_envoi_simultane",
+            Save,
+            false,
+            kickoff_two_touch(true),
             &[(Touch, 1)],
         ),
         case(

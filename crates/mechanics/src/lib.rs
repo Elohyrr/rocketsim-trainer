@@ -29,12 +29,12 @@ pub use detector::{Detector, Events, Mode};
 pub use quality::{Quality, QualityTracker};
 
 /// Nombre de mécaniques du catalogue.
-pub const MECH_COUNT: usize = 48;
+pub const MECH_COUNT: usize = 49;
 
 /// Fréquence de la physique (ticks par seconde).
 pub const TICK_HZ: f32 = 120.0;
 
-/// Catalogue fermé des mécaniques détectées (48, ordre de [`Mechanic::ALL`] = index des compteurs).
+/// Catalogue fermé des mécaniques détectées (49, ordre de [`Mechanic::ALL`] = index des compteurs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Mechanic {
     Touch,
@@ -85,6 +85,7 @@ pub enum Mechanic {
     AerialSave,
     SquishySave,
     Clear,
+    KickoffWon,
 }
 
 impl Mechanic {
@@ -137,6 +138,7 @@ impl Mechanic {
         Mechanic::AerialSave,
         Mechanic::SquishySave,
         Mechanic::Clear,
+        Mechanic::KickoffWon,
     ];
 
     /// Valeur du label Prometheus `mechanic`.
@@ -190,6 +192,7 @@ impl Mechanic {
             Mechanic::AerialSave => "aerial_save",
             Mechanic::SquishySave => "squishy_save",
             Mechanic::Clear => "clear",
+            Mechanic::KickoffWon => "kickoff_won",
         }
     }
 
@@ -477,7 +480,8 @@ mod tests {
                 "save",
                 "aerial_save",
                 "squishy_save",
-                "clear"
+                "clear",
+                "kickoff_won"
             ]
         );
     }

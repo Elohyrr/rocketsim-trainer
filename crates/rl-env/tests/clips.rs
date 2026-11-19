@@ -20,8 +20,8 @@ fn check(clip: &Clip) {
         "agent bleu puis adversaire orange"
     );
     assert!(clip.steps.len() >= 2 && clip.trigger_step < clip.steps.len() as u32);
-    // Détecteur v3 (collisions) par défaut, qualité jointe au clip (vitesse de balle vers le but adverse, but dans les 3 s).
-    assert_eq!(clip.detector, 3);
+    // Détecteur v4 (coup d'envoi) par défaut, qualité jointe au clip (vitesse de balle vers le but adverse, but dans les 3 s).
+    assert_eq!(clip.detector, 4);
     // Étiquettes multiples : la principale est dans la liste, ordre chronologique, instants dans le clip, combo
     // cohérent avec la liste ; ni `touch` ni `bump`.
     assert!(

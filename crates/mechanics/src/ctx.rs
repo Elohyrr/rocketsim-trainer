@@ -46,6 +46,13 @@ pub struct Hit {
     pub shared: bool,
     /// Distance de l'autre voiture à la balle au toucher (uu ; `f32::MAX` sans autre voiture).
     pub other_dist: f32,
+    /// Balle juste avant le tout premier contact de la séquence (celui de l'autre voiture s'il a précédé de peu),
+    /// et 8 ticks plus tôt ; `pre_valid` faux si l'historique est trop court (début d'épisode).
+    pub pre: BallTick,
+    pub pre_old: BallTick,
+    pub pre_valid: bool,
+    /// Premier toucher du coup d'envoi (phase de kickoff active).
+    pub kickoff_first: bool,
 }
 
 /// Résultats des automates de base (v1/v2) à ce tick, pour s'y appuyer.

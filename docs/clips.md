@@ -21,7 +21,7 @@ fenêtre (`mechanic`, `step`, `t` en s) ; absent des anciens clips (étiquette u
 familles distinctes (`Mechanic::family`) à moins de 2 s ; la note de qualité gagne 0,1 (plafond 1). `/clips` et
 `/clips/top` renvoient ces champs ; `/clips/top?mechanic=` inclut les clips dont une étiquette correspond ; la
 trajectoire renvoie `labels[{mechanic,t}]` et `combo` ; la page affiche des puces et un repère par mécanique.
-`detector` = 3 (collisions).
+`detector` = 4 (phase de coup d'envoi : pas de clip de kickoff sauf speed flip ou car pinch ≥ 3 000 uu/s, `--kickoff-clips` pour tout garder) ; 3 = collisions.
 
 ## Rejeu et tolérance
 
