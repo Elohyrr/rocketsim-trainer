@@ -1978,7 +1978,11 @@ mod tests {
     fn opponent_block_is_zero_without_opponent_and_view_is_mirrored() {
         assert!(setup());
         let mut e = Env::new(EnvConfig::for_stage(2), 4).unwrap();
-        assert!(e.observe()[OBS_DIM_V1..OBS_DIM_V2].iter().all(|x| *x == 0.0));
+        assert!(
+            e.observe()[OBS_DIM_V1..OBS_DIM_V2]
+                .iter()
+                .all(|x| *x == 0.0)
+        );
         e.set_config(EnvConfig::for_stage(6));
         e.reset();
         let (a, b) = (e.observe(), e.observe_opponent());
