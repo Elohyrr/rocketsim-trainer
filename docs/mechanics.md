@@ -251,10 +251,19 @@ ceiling shot comptent aussi leurs `touch` et `aerial_touch` ; flick compte aussi
 
 `save` : avant le toucher, la trajectoire balistique de la balle (gravité 650, rebond au sol à 60 %, sans murs, 2 s)
 entre dans le but de la voiture ; avec la vitesse après le toucher, non. `aerial_save` : en plus, voiture en l'air.
-`squishy_save` (indépendant de `save`) : la balle menaçait le but (trajectoire à < 2 500 uu du centre à la ligne,
-car un squish dévie souvent de peu), vitesse vers son but ≥ 500 avant, réduite d'au moins 70 % ou inversée après, et balle
-écrasée : support de pinch, ou poussée vers le sol (z < 350, vz après < −1 000, voiture au-dessus). `clear` : hors
-save, toucher dans son tiers défensif (côté but à > 2 500 uu du centre), balle à ≥ 1 500 après, s'éloignant de son
+`squishy_save` : défini par la trajectoire de la VOITURE, pas par une balle plaquée (aucune condition de surface sur la
+balle ; correctif du faux positif du clip 2800 : une voiture qui monte le mur du fond HORS du but). (1) La voiture avait
+les roues sur l'intérieur de SON but (fond du filet, parois ou plafond du but : au-delà de la ligne, |x| dans la
+largeur des poteaux, haut de la voiture avec up.z < 0,7 — le sol du but ne compte pas), flip encore disponible à ce
+moment ; (2) elle en est partie et est restée en l'air jusqu'au toucher, en ≤ 2 s ; (3) elle a utilisé un dodge
+dans l'air, après avoir quitté la surface, au plus 0,5 s avant le toucher ; (4) elle touche la balle ; (5) la balle
+menaçait le but (trajectoire d'avant le 1er contact de la séquence, stable, vitesse ≥ 500 vers le but) et n'y va plus.
+Pour (5), même critère que `save` mais avec une marge de 1 600 uu (poteaux à 893) sur la ligne de but : le clip validé
+redirect-311 (voiture partie de la paroi intérieure de son but, ≈ 1,8 s en l'air, dodge, balle à −733 uu/s dont la
+trajectoire coupait la ligne à x ≈ +1 410) n'est PAS un save strict ; la trajectoire de la voiture suffit ici à
+lever l'ambiguïté. L'ancienne logique « balle plaquée » (sol, poteau, barre, mur) a été supprimée.
+
+`clear` : hors save, toucher dans son tiers défensif (côté but à > 2 500 uu du centre), balle à ≥ 1 500 après, s'éloignant de son
 but à ≥ 1 000 uu/s alors qu'elle n'y fonçait pas déjà.
 
 **Save : vitesse d'avant la séquence de contacts** (correctif des faux saves de coup d'envoi). Le toucher est jugé
@@ -292,10 +301,12 @@ d'origine `1795095498-save-2038` : déjà évincé du serveur (404) ; `179509618
 test `rl-env/tests/kickoff_save.rs` (fixture `tests/data/kickoff-save-2308.json`) : 0 save avec ou sans phase annoncée.
 
 Clips réels (rejeu RocketSim, `audit_collisions`) : `1795074459-redirect-311` : balle à (−767, −4114, 214) à
-(1578, −733, 267), la voiture (z = 368) la plaque au sol, elle repart à (903, 597, −1588) puis rebondit : vitesse vers
-son but −733 → +597, mais la trajectoire d'avant passait à x ≈ +1 400, hors des poteaux (±893) : **pas un save, un vrai
-squishy save** ; la première version exigeait un save et le ratait, corrigé. Détecté maintenant : redirect +
-squishy_save + clear. `1795076757-air_roll_shot-310` : air_roll_shot + save + aerial_save.
+(1578, −733, 267) ; la voiture, partie de la paroi intérieure de son but (x = −878, y = −5 404, haut vers +x), est restée
+≈ 1,8 s en l'air, a dodgé et touche à z = 368 ; la balle repart à (903, 597, −1588) : vitesse vers son but −733 → +597,
+mais la trajectoire d'avant passait à x ≈ +1 400, hors des poteaux (±893). Avec la définition par la voiture c'est
+bien un **squishy save** (conditions 1-4), mais pas un save strict (5 : d'où la marge de 1 600 uu). Détecté :
+redirect + squishy_save. `1795107331-squishy_save-2800` (faux positif) : la voiture monte le mur du fond à x ≈ −1 600,
+hors du but, la balle roule vers le coin sans viser le but : plus détecté. `1795076757-air_roll_shot-310` : air_roll_shot + save + aerial_save.
 
 ## Validation sur les clips de prod (199 clips, `examples/audit_collisions`)
 
