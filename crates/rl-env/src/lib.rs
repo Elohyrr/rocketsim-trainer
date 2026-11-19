@@ -1925,21 +1925,38 @@ mod tests {
     }
 
     #[test]
-    fn keeper_scores_a_save_when_the_car_blocks_the_ball() {
+    fn keeper_scores_saves_when_the_car_charges_the_ball() {
         assert!(setup());
         let cfg = EnvConfig {
             drill_prob: 1.0,
             ..EnvConfig::for_stage(6)
         };
         let mut e = Env::new(cfg, 6).unwrap();
-        e.reset_drill_with(Drill::Keeper);
-        assert_eq!(e.max_steps(), (6.0 * 120.0 / 8.0) as u32);
-        // La balle est posée dans la voiture, vitesse nulle : aucune menace, donc pas d'arrêt.
-        for _ in 0..10 {
-            e.step(0);
+        assert_eq!(
+            {
+                e.reset_drill_with(Drill::Keeper);
+                e.max_steps()
+            },
+            (6.0 * 120.0 / 8.0) as u32
+        );
+        // Le fonceur scripté (cap vers la balle, gaz, boost) croise souvent la trajectoire : des arrêts doivent
+        // être comptés, et la réussite = arrêt sans but encaissé.
+        for _ in 0..80 {
+            e.reset_drill_with(Drill::Keeper);
+            for _ in 0..e.max_steps() {
+                let s = e.sim.snapshot();
+                let a = e.expert_action(charger_steer(&s, e.car));
+                let info = e.step(a);
+                if info.terminated || info.truncated {
+                    break;
+                }
+            }
         }
         e.reset();
-        assert_eq!(e.take_drill_report().success[Drill::Keeper.index()], 0);
+        let rep = e.take_drill_report();
+        assert!(rep.saves > 0, "aucun arrêt en 80 épisodes");
+        // Réussite = arrêt sans but encaissé ensuite : jamais plus que d'arrêts.
+        assert!(rep.success[Drill::Keeper.index()] <= rep.saves);
     }
 
     #[test]

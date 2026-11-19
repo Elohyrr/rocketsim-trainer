@@ -616,7 +616,7 @@ pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
                 -5120.0,
                 range(unit, 100.0, 600.0),
             ];
-            s.ball_vel = aim(s.ball_pos, target, range(unit, 1300.0, 2600.0));
+            s.ball_vel = aim(s.ball_pos, target, range(unit, 900.0, 2200.0));
             loop {
                 s.car_pos = [
                     range(unit, -1500.0, 1500.0),

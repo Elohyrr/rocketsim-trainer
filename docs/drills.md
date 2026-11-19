@@ -47,7 +47,7 @@ pénalise de tenter une occasion avec peu de boost.
 | `shot_bounce` (1,5) | attaquant | balle à 400–1000 uu qui descend (−300 à +200) et avance vers le but, voiture 700–2200 derrière | but |
 | `shot_cross` (1,5) | attaquant | centre : balle à 2600–3600 du centre, lancée vers le devant du but (balistique), voiture dans l'axe | but |
 | `shot_lob` (1) | attaquant | balle à 500–1300 uu qui avance vers le but, voiture au sol derrière | but |
-| `keeper` (2,5) | gardien | balle tirée vers SA cage (largeur du but, 1300–2600 uu/s, balistique) depuis (±3000, −3500…0), voiture en y −4600…−2200 (devant sa cage), cap vers la balle ; **6 s** | arrêt sans but encaissé |
+| `keeper` (2,5) | gardien | balle tirée vers SA cage (largeur du but, 900–2200 uu/s, balistique) depuis (±3000, −3500…0), voiture en y −4600…−2200 (devant sa cage), cap vers la balle ; **6 s** | arrêt sans but encaissé |
 | `aerial_high` (1) | aérien | balle à 900–1700 uu en mouvement, voiture au sol à 800–2200 | toucher en l'air (balle > 300) |
 | `wall_run` (1) | mur | balle qui longe et monte le mur latéral (x 3700–3980, +600–1600 en Y), voiture au pied du mur | but |
 | `rebound` (1,5) | récupération | balle repartie du mur du fond (y 3800–4900, −500 à −1800 uu/s), voiture à mi-terrain | but |
