@@ -29,12 +29,12 @@ pub use detector::{Detector, Events, Mode};
 pub use quality::{Quality, QualityTracker};
 
 /// Nombre de mécaniques du catalogue.
-pub const MECH_COUNT: usize = 47;
+pub const MECH_COUNT: usize = 48;
 
 /// Fréquence de la physique (ticks par seconde).
 pub const TICK_HZ: f32 = 120.0;
 
-/// Catalogue fermé des mécaniques détectées (47, ordre de [`Mechanic::ALL`] = index des compteurs).
+/// Catalogue fermé des mécaniques détectées (48, ordre de [`Mechanic::ALL`] = index des compteurs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Mechanic {
     Touch,
@@ -84,6 +84,7 @@ pub enum Mechanic {
     Save,
     AerialSave,
     SquishySave,
+    Clear,
 }
 
 impl Mechanic {
@@ -135,6 +136,7 @@ impl Mechanic {
         Mechanic::Save,
         Mechanic::AerialSave,
         Mechanic::SquishySave,
+        Mechanic::Clear,
     ];
 
     /// Valeur du label Prometheus `mechanic`.
@@ -187,6 +189,7 @@ impl Mechanic {
             Mechanic::Save => "save",
             Mechanic::AerialSave => "aerial_save",
             Mechanic::SquishySave => "squishy_save",
+            Mechanic::Clear => "clear",
         }
     }
 
@@ -224,7 +227,7 @@ impl Mechanic {
             Pinch | CeilingShot | AerialSave | SquishySave | AirDribble | WallToAirDribble
             | BackboardDouble | DoubleTouch | Flick | Flick45 | Flick90 | MustyFlick
             | DelayedFlick | BreeziFlick | Redirect | AirRollShot => 8,
-            PowerShot | Save | WallShot | SpeedFlip | ChainDash | WallDash | Stall
+            PowerShot | Save | Clear | WallShot | SpeedFlip | ChainDash | WallDash | Stall
             | TornadoSpin | BackboardRead | BounceDribble | WallDribble | CeilingDribble
             | ReverseDribble => 6,
             Touch | Bump => 0,
@@ -473,7 +476,8 @@ mod tests {
                 "demo",
                 "save",
                 "aerial_save",
-                "squishy_save"
+                "squishy_save",
+                "clear"
             ]
         );
     }

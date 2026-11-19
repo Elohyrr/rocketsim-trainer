@@ -18,9 +18,11 @@
 //!   Seul pinch épargné par l'invalidation des collisions.
 //! - `save` : avant le toucher, la trajectoire balistique de la balle (gravité 650, rebond au sol à 60 %, sans murs)
 //!   entre dans SON but en < 2 s ; avec la vitesse après le toucher, non. Valeur = vitesse après. `aerial_save` :
-//!   en plus, voiture en l'air. `squishy_save` : en plus, balle coincée (même support que pinch, sans bond de
-//!   vitesse exigé) et vitesse vers son but ≥ 500 avant, réduite d'au moins 70 % (ou inversée) après ; valeur =
-//!   vitesse retirée.
+//!   en plus, voiture en l'air. `squishy_save` (indépendant de `save`) : la balle menaçait le but (trajectoire à
+//!   moins de 2 500 uu du centre du but), vitesse vers son but ≥ 500 avant, réduite d'au moins 70 % (ou inversée)
+//!   après, et balle écrasée : support de pinch, ou poussée vers le sol (z < 350, vz après < −1 000, voiture
+//!   au-dessus) ; valeur = vitesse retirée. `clear` : hors save, toucher dans son tiers défensif (|y| > 2 500 côté
+//!   but), balle à ≥ 1 500 après, s'éloignant de son but à ≥ 1 000 uu/s alors qu'elle n'y fonçait pas déjà.
 //! - `kuxir_pinch` : un pinch (compté aussi comme `pinch`) contre un mur latéral, du fond ou un coin, la voiture
 //!   ayant dodgé ≤ 0,35 s avant le toucher, balle envoyée vers le but adverse à > 1 500 uu/s (`attack_neg`).
 //!   La position de départ (mur défensif) n'est pas exigée. Valeur = vitesse après.
@@ -118,6 +120,18 @@ fn car_support(h: &Hit) -> Support {
 /// Vrai si la balle, lancée de `pos` à `vel`, franchit la ligne de but de son camp (`own_sign` : −1 = but en
 /// y < 0) entre les poteaux et sous la barre en moins de [`SAVE_HORIZON_TICKS`] (gravité, rebond au sol, sans murs).
 pub(crate) fn enters_own_goal(pos: [f32; 3], vel: [f32; 3], own_sign: f32) -> bool {
+    crosses_own_goal_line(pos, vel, own_sign, GOAL_HALF_WIDTH, GOAL_HEIGHT)
+}
+
+/// Comme [`enters_own_goal`] avec des limites de largeur (`half_w`) et de hauteur (`max_z`) au choix : sert à
+/// repérer une menace qui frôle le but (squishy save).
+pub(crate) fn crosses_own_goal_line(
+    pos: [f32; 3],
+    vel: [f32; 3],
+    own_sign: f32,
+    half_w: f32,
+    max_z: f32,
+) -> bool {
     // Rejet rapide : la balle doit aller vers son but.
     if vel[1] * own_sign <= 0.0 {
         return false;
@@ -135,7 +149,7 @@ pub(crate) fn enters_own_goal(pos: [f32; 3], vel: [f32; 3], own_sign: f32) -> bo
             v[2] = -v[2] * BALL_GROUND_RESTITUTION;
         }
         if p[1] * own_sign > GOAL_LINE_Y {
-            return p[0].abs() < GOAL_HALF_WIDTH && p[2] < GOAL_HEIGHT;
+            return p[0].abs() < half_w && p[2] < max_z;
         }
         t += SAVE_STEP_TICKS;
     }
@@ -179,24 +193,44 @@ impl Group {
         let gain = after - h.speed_before;
 
         // --- Save : sans ce toucher la balle entrait dans son but en moins de 2 s ; après, non.
-        // Sous-types : aerial_save (voiture en l'air), squishy_save (balle écrasée contre une surface, vitesse
-        // vers son but réduite d'au moins 70 % ou inversée).
+        // Sous-type aerial_save : voiture en l'air.
         let own = if cx.attack_neg { 1.0 } else { -1.0 };
-        if enters_own_goal(h.ball.pos, h.v_before, own)
-            && !enters_own_goal(h.ball.pos, h.v_after, own)
-        {
+        let toward_before = h.v_before[1] * own;
+        let toward_after = h.v_after[1] * own;
+        let is_save = enters_own_goal(h.ball.pos, h.v_before, own)
+            && !enters_own_goal(h.ball.pos, h.v_after, own);
+        if is_save {
             out.emit(Mechanic::Save, after, Support::None);
             if !h.car.on_ground {
                 out.emit(Mechanic::AerialSave, after, Support::None);
             }
-            let toward_before = h.v_before[1] * own;
-            let toward_after = h.v_after[1] * own;
-            if toward_before > SQUISHY_MIN_SPEED_TOWARD
-                && toward_after < SQUISHY_KEEP_RATIO * toward_before
-                && let Some(sup) = pinch_support(h.ball.pos, h.car.pos)
-            {
+        }
+
+        // --- Squishy save : la balle, qui menaçait le but (ou le frôlait : marge `SQUISHY_GOAL_MARGIN_X`), est
+        // écrasée entre la voiture et une surface (support de pinch, ou poussée vers le sol par une voiture
+        // au-dessus), sa vitesse vers son but réduite d'au moins 70 % ou inversée. Pas besoin d'un vrai save.
+        if toward_before > SQUISHY_MIN_SPEED_TOWARD
+            && toward_after < SQUISHY_KEEP_RATIO * toward_before
+            && crosses_own_goal_line(h.ball.pos, h.v_before, own, SQUISHY_GOAL_MARGIN_X, f32::MAX)
+        {
+            let pressed = h.ball.pos[2] < SQUISHY_PRESS_MAX_Z
+                && h.v_after[2] < SQUISHY_PRESS_MIN_VZ
+                && h.car.pos[2] > h.ball.pos[2];
+            let sup = pinch_support(h.ball.pos, h.car.pos).or(pressed.then_some(Support::Ground));
+            if let Some(sup) = sup {
                 out.emit(Mechanic::SquishySave, toward_before - toward_after, sup);
             }
+        }
+
+        // --- Clear : dégagement depuis son tiers défensif, sans que ce soit un arrêt : la balle part vite loin
+        // de son but.
+        if !is_save
+            && h.ball.pos[1] * own > CLEAR_MIN_OWN_Y
+            && after >= CLEAR_MIN_SPEED
+            && toward_after < -CLEAR_MIN_AWAY
+            && toward_before > -CLEAR_MIN_AWAY
+        {
+            out.emit(Mechanic::Clear, after, Support::None);
         }
 
         // --- Car pinch : balle coincée entre deux voitures qui la touchent ensemble (kickoff compris) ; reste un

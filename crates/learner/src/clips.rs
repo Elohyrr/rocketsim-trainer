@@ -829,6 +829,66 @@ mod tests {
         assert_eq!(s2.top.mechanics["dribble"].len(), 3);
     }
 
+    fn labelled(primary: &str, others: &[&str], score: f32, combo: bool) -> Clip {
+        let mut c = scored(primary, score, 100.0);
+        c.mechanics = std::iter::once(primary)
+            .chain(others.iter().copied())
+            .enumerate()
+            .map(|(i, m)| ClipLabel {
+                mechanic: m.into(),
+                step: i as u32,
+                t: i as f32 * 0.0667,
+            })
+            .collect();
+        c.combo = combo;
+        c
+    }
+
+    #[test]
+    fn multi_label_clip_is_found_by_any_label() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = ClipStore::open_with(d.path(), 100, u64::MAX, false, 5).unwrap();
+        s.min_gap = Duration::ZERO;
+        let a = s
+            .add(labelled("air_roll_shot", &["aerial_save"], 0.8, false), 0)
+            .unwrap()
+            .unwrap();
+        let b = s
+            .add(labelled("save", &["power_shot"], 0.6, true), 0)
+            .unwrap()
+            .unwrap();
+        let old = s.add(scored("dribble", 0.4, 1.0), 0).unwrap().unwrap(); // ancien clip : sans liste
+        assert!(a.has_label("aerial_save") && a.has_label("air_roll_shot") && !a.has_label("save"));
+        assert!(old.has_label("dribble") && old.mechanics.is_empty() && !old.combo);
+        assert_eq!(a.label_names(), ["air_roll_shot", "aerial_save"]);
+        let get = |p: &str| {
+            let r = route(&format!("GET {p} HTTP/1.1\r\n\r\n"), Some(d.path())).unwrap();
+            serde_json::from_slice::<Vec<Entry>>(&r.2).unwrap()
+        };
+        // Filtre du hall par mécanique : l'étiquette secondaire suffit.
+        let by = |m: &str| -> Vec<String> {
+            get(&format!("/clips/top?mechanic={m}"))
+                .into_iter()
+                .map(|e| e.id)
+                .collect()
+        };
+        assert_eq!(by("aerial_save"), [a.id.clone()]);
+        assert_eq!(by("air_roll_shot"), [a.id.clone()]);
+        assert_eq!(by("power_shot"), [b.id.clone()]);
+        assert!(by("flick").is_empty());
+        // La liste et le classement renvoient les étiquettes et le combo ; l'ancien clip reste sans liste.
+        let list = get("/clips");
+        let eb = list.iter().find(|e| e.id == b.id).unwrap();
+        assert!(eb.combo && eb.mechanics.len() == 2 && eb.mechanics[1].mechanic == "power_shot");
+        let eo = list.iter().find(|e| e.id == old.id).unwrap();
+        assert!(eo.mechanics.is_empty() && !eo.combo);
+        assert_eq!(get("/clips/top")[0].id, a.id);
+        // Persistance : un redémarrage relit les étiquettes depuis l'index.
+        drop(s);
+        let s2 = ClipStore::open_with(d.path(), 100, u64::MAX, false, 5).unwrap();
+        assert!(s2.entries().iter().any(|e| e.id == b.id && e.combo));
+    }
+
     #[test]
     fn top_routes() {
         let d = tempfile::tempdir().unwrap();

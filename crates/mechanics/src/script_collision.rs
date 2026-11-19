@@ -130,6 +130,59 @@ fn save_seq(
     s.frames()
 }
 
+/// Reconstitution du clip de prod 1795074459-redirect-311 : balle à (−767, −4114, 214) à (1578, −733, 267),
+/// voiture en l'air à 368 de haut qui l'écrase : elle repart à (903, 597, −1588).
+fn squish_311() -> Vec<Frame> {
+    let mut car = air_car();
+    car.vel = [0.0; 3];
+    car.pos = [-748.0, -4172.0, 368.0];
+    let mut s = Script::new(
+        car,
+        BallTick {
+            pos: [-767.0, -4114.0, 214.0],
+            vel: [1578.0, -733.0, 267.0],
+        },
+    );
+    s.car.pos = [-748.0, -4172.0, 368.0];
+    s.ball.pos = [-767.0, -4114.0, 214.0];
+    s.hold(1).once(|c, b| {
+        hit(c);
+        b.vel = [903.0, 597.0, -1588.0];
+    });
+    s.hold(20);
+    s.frames()
+}
+
+/// Même écrasement mais au milieu du terrain (la balle ne menace pas le but).
+fn squish_far() -> Vec<Frame> {
+    let mut f = squish_311();
+    for (c, b) in f.iter_mut() {
+        c.pos[1] += 3500.0;
+        b.pos[1] += 3500.0;
+    }
+    f
+}
+
+/// Dégagement au sol depuis le tiers défensif : balle à y = −3500, `vy_before` avant, 2 400 uu/s après.
+fn clear_seq(vy_before: f32, after: f32) -> Vec<Frame> {
+    let mut car = car_on_ground();
+    car.vel = [0.0; 3];
+    car.pos = [0.0, -3600.0, 17.0];
+    let mut s = Script::new(
+        car,
+        BallTick {
+            pos: [0.0, -3500.0, 120.0],
+            vel: [0.0, vy_before, 0.0],
+        },
+    );
+    s.hold(1).once(|c, b| {
+        hit(c);
+        b.vel = [0.0, after, 0.0];
+    });
+    s.hold(20);
+    s.frames()
+}
+
 pub(crate) fn cases() -> Vec<Case> {
     use Mechanic::*;
     vec![
@@ -222,6 +275,34 @@ pub(crate) fn cases() -> Vec<Case> {
             false,
             save_seq(300.0, 17.0, false, -1500.0, [0.0, -100.0, 0.0]),
             &[(Touch, 1), (Cushion, 1), (Save, 1)],
+        ),
+        case(
+            "squishy_save_clip_redirect_311",
+            SquishySave,
+            true,
+            squish_311(),
+            &[(Touch, 1), (Redirect, 1), (SquishySave, 1)],
+        ),
+        case(
+            "squishy_save_negatif_balle_loin_du_but",
+            SquishySave,
+            false,
+            squish_far(),
+            &[(Touch, 1), (Redirect, 1)],
+        ),
+        case(
+            "clear",
+            Clear,
+            true,
+            clear_seq(-200.0, 2400.0),
+            &[(Touch, 1), (Clear, 1)],
+        ),
+        case(
+            "clear_negatif_balle_deja_partie",
+            Clear,
+            false,
+            clear_seq(1800.0, 2400.0),
+            &[(Touch, 1)],
         ),
         case(
             "bump",

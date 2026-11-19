@@ -20,8 +20,28 @@ fn check(clip: &Clip) {
         "agent bleu puis adversaire orange"
     );
     assert!(clip.steps.len() >= 2 && clip.trigger_step < clip.steps.len() as u32);
-    // Détecteur v2 par défaut, qualité jointe au clip (vitesse de balle vers le but adverse, but dans les 3 s).
-    assert_eq!(clip.detector, 2);
+    // Détecteur v3 (collisions) par défaut, qualité jointe au clip (vitesse de balle vers le but adverse, but dans les 3 s).
+    assert_eq!(clip.detector, 3);
+    // Étiquettes multiples : la principale est dans la liste, ordre chronologique, instants dans le clip, combo
+    // cohérent avec la liste ; ni `touch` ni `bump`.
+    assert!(
+        clip.mechanics.iter().any(|l| l.mechanic == clip.mechanic),
+        "étiquette principale absente de {:?}",
+        clip.mechanics
+    );
+    assert!(clip.mechanics.windows(2).all(|w| w[0].step <= w[1].step));
+    assert!(
+        clip.mechanics
+            .iter()
+            .all(|l| l.step < clip.steps.len() as u32
+                && l.mechanic != "touch"
+                && l.mechanic != "bump")
+    );
+    let window = sim_core::clip::COMBO_WINDOW_TICKS / clip.tick_skip;
+    assert_eq!(
+        clip.combo,
+        sim_core::clip::is_combo(&clip.mechanics, window)
+    );
     let q = clip.quality.expect("qualité jointe au clip");
     assert!(
         q.ball_speed_to_goal >= 0.0 && (0.0..=1.0).contains(&q.score),

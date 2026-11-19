@@ -331,3 +331,12 @@ pub const BALL_GROUND_Z: f32 = 93.0;
 /// moins 70 % (ou inversée).
 pub const SQUISHY_MIN_SPEED_TOWARD: f32 = 500.0;
 pub const SQUISHY_KEEP_RATIO: f32 = 0.3;
+/// Squishy save : la trajectoire frôle le but (à moins de 2 500 uu du centre à la ligne) ; balle poussée vers le
+/// sol : z < 350 et vitesse verticale après < −1 000 uu/s.
+pub const SQUISHY_GOAL_MARGIN_X: f32 = 2500.0;
+pub const SQUISHY_PRESS_MAX_Z: f32 = 350.0;
+pub const SQUISHY_PRESS_MIN_VZ: f32 = -1000.0;
+/// Clear : balle à plus de 2 500 uu du centre du terrain côté son but, vitesse après ≥ 1 500, éloignement ≥ 1 000.
+pub const CLEAR_MIN_OWN_Y: f32 = 2500.0;
+pub const CLEAR_MIN_SPEED: f32 = 1500.0;
+pub const CLEAR_MIN_AWAY: f32 = 1000.0;
