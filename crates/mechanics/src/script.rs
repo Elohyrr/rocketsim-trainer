@@ -1322,5 +1322,6 @@ pub fn cases() -> Vec<Case> {
     all.extend(crate::script_hit::cases());
     all.extend(crate::script_carry::cases());
     all.extend(crate::script_move::cases());
+    all.extend(crate::script_collision::cases());
     all
 }

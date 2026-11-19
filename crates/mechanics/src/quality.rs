@@ -39,9 +39,15 @@ impl QualityTracker {
 
     /// À appeler à chaque tick après le déclenchement. Vrai quand la fenêtre de 3 s est écoulée.
     pub fn observe(&mut self, ball: &BallTick) -> bool {
+        self.observe_with(ball, false)
+    }
+
+    /// Comme [`QualityTracker::observe`] ; `tainted` (collision ou toucher simultané récent, voir
+    /// [`crate::Detector::tainted`]) : la vitesse de balle de ce tick n'est pas imputable à la mécanique.
+    pub fn observe_with(&mut self, ball: &BallTick, tainted: bool) -> bool {
         self.ticks += 1;
         let s = if self.attack_neg { -1.0 } else { 1.0 };
-        if self.ticks <= QUALITY_SPEED_TICKS {
+        if self.ticks <= QUALITY_SPEED_TICKS && !tainted {
             self.q.speed = self.q.speed.max(s * ball.vel[1]);
         }
         if s * ball.pos[1] > GOAL_LINE_Y {
@@ -82,6 +88,14 @@ mod tests {
         assert!(t.observe(&ball(5200.0, 0.0)));
         assert!(t.quality().goal);
         assert!((t.quality().score() - (0.5 * 2000.0 / 3000.0 + 0.5)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn vitesse_ignoree_pendant_un_choc() {
+        let mut t = QualityTracker::start(true);
+        t.observe_with(&ball(0.0, 2400.0), true);
+        t.observe_with(&ball(0.0, 900.0), false);
+        assert_eq!(t.quality().speed, 900.0);
     }
 
     #[test]

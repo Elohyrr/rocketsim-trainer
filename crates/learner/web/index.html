@@ -44,6 +44,9 @@
   .row + .row { margin-top:8px; }
   #bar { position:relative; flex:1; min-width:120px; }
   #seek { width:100%; margin:0; height:32px; }
+  .chip { display:inline-block; background:#ffffff1a; border-radius:9px; padding:1px 7px; margin:0 4px 2px 0; font-size:.85em; }
+  .chip.combo { background:var(--orange); color:#000; }
+  .mk { position:absolute; top:0; width:2px; height:9px; background:#6cf; pointer-events:none; }
   #trig { position:absolute; top:0; width:2px; height:6px; background:var(--orange); pointer-events:none; display:none; }
   #time { font-variant-numeric:tabular-nums; color:var(--dim); min-width:84px; text-align:right; }
   .grow { flex:1; }
@@ -87,7 +90,7 @@
   <div class="wrap">
     <main>
       <div id="view"></div>
-      <div id="hud"><div class="g"><div class="b" id="hudl"></div><div id="ballhud"></div></div><div class="g r" id="gauges"></div></div>
+      <div id="hud"><div id="tags" style="position:absolute;top:34px;left:8px;z-index:2;pointer-events:none"></div><div class="g"><div class="b" id="hudl"></div><div id="ballhud"></div></div><div class="g r" id="gauges"></div></div>
       <div id="adv"></div>
       <div id="msg">Choisis un clip dans la liste.</div>
     </main>
@@ -260,6 +263,9 @@ function place(obj, a, b, k, f) { // a, b : images voisines ; k : fraction ; f :
 /* ---------- Données ---------- */
 let list = [], top = [], showTop = false, filter = '', v2only = false, newest = true, cur = null, traj = null;
 const labels = m => m.replace(/_/g, ' ');
+// Étiquettes d'un clip : la principale, puis les autres mécaniques validées (anciens clips : la seule principale).
+const tagsOf = c => [...new Set([c.mechanic, ...(c.mechanics || []).map(l => l.mechanic)])];
+const chips = c => tagsOf(c).map(m => `<span class="chip">${labels(m)}</span>`).join('') + (c.combo ? '<span class="chip combo">combo</span>' : '');
 const fmtDate = u => new Date(u * 1000).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 
 async function loadList() {
@@ -273,7 +279,7 @@ async function loadList() {
   if (id) select(id); else if (list.length) $('list').classList.add('open');
 }
 function renderList() {
-  const counts = {}; for (const c of list) counts[c.mechanic] = (counts[c.mechanic] || 0) + 1;
+  const counts = {}; for (const c of list) for (const m of tagsOf(c)) counts[m] = (counts[m] || 0) + 1;
   const f = $('filters'); f.innerHTML = '';
   const mk = (key, text) => { const b = document.createElement('button'); b.textContent = text; if (!showTop && filter === key) b.className = 'on'; b.onclick = () => { showTop = false; filter = key; renderList(); }; f.appendChild(b); };
   const mkTop = () => { const b = document.createElement('button'); b.textContent = `🏆 Top ${top.length}`; if (showTop) b.className = 'on'; b.onclick = () => { showTop = true; renderList(); }; f.appendChild(b); };
@@ -289,21 +295,21 @@ function renderList() {
     top.forEach((c, i) => {
       const q = c.quality || {};
       const d = document.createElement('div'); d.className = 'item' + (c.id === cur ? ' cur' : '');
-      d.innerHTML = `<b>#${i + 1} ${labels(c.mechanic)}</b><span>${Math.round((q.score || 0) * 100)} % · ${Math.round(q.ball_speed_to_goal || 0)} uu/s · but : ${q.goal_3s ? 'oui' : 'non'} · ${fmtDate(c.created_unix)}</span>`;
+      d.innerHTML = `<b>#${i + 1} ${labels(c.mechanic)}</b><span>${chips(c)}<br>${Math.round((q.score || 0) * 100)} % · ${Math.round(q.ball_speed_to_goal || 0)} uu/s · but : ${q.goal_3s ? 'oui' : 'non'} · ${fmtDate(c.created_unix)}</span>`;
       d.onclick = () => { location.hash = c.id; };
       it.appendChild(d);
     });
     return;
   }
   $('sort').style.display = '';
-  let rows = list.filter(c => !v2only || (c.detector || 1) >= 2).filter(c => !filter || c.mechanic === filter).sort((a, b) => (newest ? b.created_unix - a.created_unix : a.created_unix - b.created_unix));
+  let rows = list.filter(c => !v2only || (c.detector || 1) >= 2).filter(c => !filter || tagsOf(c).includes(filter)).sort((a, b) => (newest ? b.created_unix - a.created_unix : a.created_unix - b.created_unix));
   $('n').textContent = `${rows.length} clip${rows.length > 1 ? 's' : ''}`;
   $('count').textContent = list.length ? `· ${list.length}` : '';
   $('sort').textContent = newest ? 'Plus récents' : 'Plus anciens';
   const it = $('items'); it.innerHTML = '';
   for (const c of rows) {
     const d = document.createElement('div'); d.className = 'item' + (c.id === cur ? ' cur' : '');
-    d.innerHTML = `<b>${labels(c.mechanic)}</b><span>${fmtDate(c.created_unix)} · ${c.seconds.toFixed(1)} s${c.detail && c.detail.value ? ` · ${Math.round(c.detail.value)} uu/s` : ''}${c.detail && c.detail.support && c.detail.support !== 'none' ? ` · ${c.detail.support}` : ''}${(c.detector || 1) < 2 ? ' · v1' : c.quality ? ` · ${Math.round(c.quality.score * 100)} %${c.quality.goal_3s ? ' · but' : ''}` : ''}</span>`;
+    d.innerHTML = `<b>${labels(c.mechanic)}</b><span>${chips(c)}<br>${fmtDate(c.created_unix)} · ${c.seconds.toFixed(1)} s${c.detail && c.detail.value ? ` · ${Math.round(c.detail.value)} uu/s` : ''}${c.detail && c.detail.support && c.detail.support !== 'none' ? ` · ${c.detail.support}` : ''}${(c.detector || 1) < 2 ? ' · v1' : c.quality ? ` · ${Math.round(c.quality.score * 100)} %${c.quality.goal_3s ? ' · but' : ''}` : ''}</span>`;
     d.onclick = () => { location.hash = c.id; };
     it.appendChild(d);
   }
@@ -341,6 +347,11 @@ function setTraj(t) {
   $('hudl').textContent = `${fmtDate(t.created_unix)} · pas ${t.train_step}`;
   const end = (t.frames - 1) * t.dt;
   $('trig').style.left = `${(t.trigger_time / end) * 100}%`; $('trig').style.display = 'block';
+  // Un repère par mécanique validée (instant de sa reconnaissance), étiquettes en puces sous le titre.
+  document.querySelectorAll('#bar .mk').forEach(e => e.remove());
+  for (const l of t.labels || []) { const m = document.createElement('div'); m.className = 'mk'; m.title = labels(l.mechanic); m.style.left = `${(l.t / end) * 100}%`; $('bar').appendChild(m); }
+  $('hudl').title = (t.labels || []).map(l => `${l.t.toFixed(1)} s ${labels(l.mechanic)}`).join(' · ');
+  $('tags').innerHTML = (t.labels || []).map(l => `<span class="chip">${labels(l.mechanic)} ${l.t.toFixed(1)} s</span>`).join('') + (t.combo ? '<span class="chip combo">combo</span>' : '');
   time = 0; playing = true; $('play').textContent = '⏸';
   if (camMode === 'free') { orbit.target.set(0, 300, 0); camera.position.set(0, 3800, 7600); }
 }

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rl_env::clip::{Clip, Trajectory};
 use serde::{Deserialize, Serialize};
-use sim_core::clip::{ClipDetail, ClipQuality};
+use sim_core::clip::{ClipDetail, ClipLabel, ClipQuality};
 use sim_core::{Sim, SimError};
 
 pub const DIR: &str = "clips";
@@ -53,6 +53,31 @@ pub struct Entry {
     /// Valeur et support de la mécanique (vitesse de balle d'un pinch, son support…).
     #[serde(default)]
     pub detail: Option<ClipDetail>,
+    /// Toutes les mécaniques validées dans la fenêtre du clip, avec leur instant (vide pour les anciens clips :
+    /// l'étiquette est alors `mechanic` seule). `mechanic` reste l'étiquette principale.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mechanics: Vec<ClipLabel>,
+    /// Enchaînement de mécaniques de familles distinctes en moins de 2 s.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub combo: bool,
+}
+
+impl Entry {
+    /// Le clip porte-t-il cette étiquette (principale ou secondaire) ?
+    pub fn has_label(&self, m: &str) -> bool {
+        self.mechanic == m || self.mechanics.iter().any(|l| l.mechanic == m)
+    }
+
+    /// Toutes les étiquettes distinctes (la principale d'abord).
+    pub fn label_names(&self) -> Vec<&str> {
+        let mut v = vec![self.mechanic.as_str()];
+        for l in &self.mechanics {
+            if !v.contains(&l.mechanic.as_str()) {
+                v.push(&l.mechanic);
+            }
+        }
+        v
+    }
 }
 
 fn v1() -> u32 {
@@ -232,6 +257,8 @@ impl ClipStore {
             detector: clip.detector.max(1),
             quality: clip.quality,
             detail: clip.detail.clone(),
+            mechanics: clip.mechanics.clone(),
+            combo: clip.combo,
         };
         self.last.insert(clip.mechanic, now);
         self.entries.push(e.clone());
@@ -305,10 +332,13 @@ impl ClipStore {
             global: ranked.iter().take(self.top_n).cloned().collect(),
             mechanics: BTreeMap::new(),
         };
+        // Un clip à plusieurs étiquettes concourt dans chacune de ses mécaniques.
         for e in &ranked {
-            let v = t.mechanics.entry(e.mechanic.clone()).or_default();
-            if v.len() < self.top_per_mechanic {
-                v.push(e.clone());
+            for name in e.label_names() {
+                let v = t.mechanics.entry(name.to_string()).or_default();
+                if v.len() < self.top_per_mechanic {
+                    v.push(e.clone());
+                }
             }
         }
         let keep: HashSet<&str> = t
@@ -424,9 +454,18 @@ struct TrajectoryReply<'a> {
     seconds: f32,
     dt: f32,
     trigger_time: f32,
+    /// Étiquettes (mécaniques validées dans le clip) et instant de chacune ; `combo` si enchaînement.
+    labels: Vec<LabelAt>,
+    combo: bool,
     agent: usize,
     #[serde(flatten)]
     t: &'a Trajectory,
+}
+
+#[derive(Serialize)]
+struct LabelAt {
+    mechanic: String,
+    t: f32,
 }
 
 /// JSON de la trajectoire de `<clips>/<id>.json` à `hz`, d'après le cache ou un rejeu à la demande.
@@ -456,6 +495,21 @@ fn trajectory_json(clips: &Path, id: &str, hz: u32) -> Option<Result<Arc<[u8]>, 
             clip.seconds(),
             clip.trigger_step,
         );
+        let combo = clip.combo;
+        let labels: Vec<LabelAt> = if clip.mechanics.is_empty() {
+            vec![LabelAt {
+                mechanic: clip.mechanic.clone(),
+                t: clip.trigger_step as f32 * clip.tick_skip as f32 / sim_core::TICK_RATE as f32,
+            }]
+        } else {
+            clip.mechanics
+                .iter()
+                .map(|l| LabelAt {
+                    mechanic: l.mechanic.clone(),
+                    t: l.t,
+                })
+                .collect()
+        };
         let t = sim.trajectory(clip, hz).map_err(|_| Fail::Bad)?;
         let reply = TrajectoryReply {
             id,
@@ -467,6 +521,8 @@ fn trajectory_json(clips: &Path, id: &str, hz: u32) -> Option<Result<Arc<[u8]>, 
             seconds: meta.5,
             dt: 1.0 / hz as f32,
             trigger_time: meta.6 as f32 * meta.3 as f32 / sim_core::TICK_RATE as f32,
+            labels,
+            combo,
             agent: 0,
             t: &t,
         };
@@ -570,6 +626,8 @@ mod tests {
             detector: 2,
             quality: None,
             detail: None,
+            mechanics: vec![],
+            combo: false,
         }
     }
 
@@ -769,6 +827,66 @@ mod tests {
         let s2 = ClipStore::open_with(d.path(), 100, u64::MAX, false, 1).unwrap();
         assert_eq!(s2.top(), [first]);
         assert_eq!(s2.top.mechanics["dribble"].len(), 3);
+    }
+
+    fn labelled(primary: &str, others: &[&str], score: f32, combo: bool) -> Clip {
+        let mut c = scored(primary, score, 100.0);
+        c.mechanics = std::iter::once(primary)
+            .chain(others.iter().copied())
+            .enumerate()
+            .map(|(i, m)| ClipLabel {
+                mechanic: m.into(),
+                step: i as u32,
+                t: i as f32 * 0.0667,
+            })
+            .collect();
+        c.combo = combo;
+        c
+    }
+
+    #[test]
+    fn multi_label_clip_is_found_by_any_label() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = ClipStore::open_with(d.path(), 100, u64::MAX, false, 5).unwrap();
+        s.min_gap = Duration::ZERO;
+        let a = s
+            .add(labelled("air_roll_shot", &["aerial_save"], 0.8, false), 0)
+            .unwrap()
+            .unwrap();
+        let b = s
+            .add(labelled("save", &["power_shot"], 0.6, true), 0)
+            .unwrap()
+            .unwrap();
+        let old = s.add(scored("dribble", 0.4, 1.0), 0).unwrap().unwrap(); // ancien clip : sans liste
+        assert!(a.has_label("aerial_save") && a.has_label("air_roll_shot") && !a.has_label("save"));
+        assert!(old.has_label("dribble") && old.mechanics.is_empty() && !old.combo);
+        assert_eq!(a.label_names(), ["air_roll_shot", "aerial_save"]);
+        let get = |p: &str| {
+            let r = route(&format!("GET {p} HTTP/1.1\r\n\r\n"), Some(d.path())).unwrap();
+            serde_json::from_slice::<Vec<Entry>>(&r.2).unwrap()
+        };
+        // Filtre du hall par mécanique : l'étiquette secondaire suffit.
+        let by = |m: &str| -> Vec<String> {
+            get(&format!("/clips/top?mechanic={m}"))
+                .into_iter()
+                .map(|e| e.id)
+                .collect()
+        };
+        assert_eq!(by("aerial_save"), std::slice::from_ref(&a.id));
+        assert_eq!(by("air_roll_shot"), std::slice::from_ref(&a.id));
+        assert_eq!(by("power_shot"), std::slice::from_ref(&b.id));
+        assert!(by("flick").is_empty());
+        // La liste et le classement renvoient les étiquettes et le combo ; l'ancien clip reste sans liste.
+        let list = get("/clips");
+        let eb = list.iter().find(|e| e.id == b.id).unwrap();
+        assert!(eb.combo && eb.mechanics.len() == 2 && eb.mechanics[1].mechanic == "power_shot");
+        let eo = list.iter().find(|e| e.id == old.id).unwrap();
+        assert!(eo.mechanics.is_empty() && !eo.combo);
+        assert_eq!(get("/clips/top")[0].id, a.id);
+        // Persistance : un redémarrage relit les étiquettes depuis l'index.
+        drop(s);
+        let s2 = ClipStore::open_with(d.path(), 100, u64::MAX, false, 5).unwrap();
+        assert!(s2.entries().iter().any(|e| e.id == b.id && e.combo));
     }
 
     #[test]

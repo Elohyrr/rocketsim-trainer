@@ -18,6 +18,7 @@ mod ext_move;
 mod quality;
 pub mod script;
 mod script_carry;
+mod script_collision;
 mod script_hit;
 mod script_move;
 pub mod thresholds;
@@ -28,12 +29,12 @@ pub use detector::{Detector, Events, Mode};
 pub use quality::{Quality, QualityTracker};
 
 /// Nombre de mécaniques du catalogue.
-pub const MECH_COUNT: usize = 42;
+pub const MECH_COUNT: usize = 48;
 
 /// Fréquence de la physique (ticks par seconde).
 pub const TICK_HZ: f32 = 120.0;
 
-/// Catalogue fermé des mécaniques détectées (42, ordre de [`Mechanic::ALL`] = index des compteurs).
+/// Catalogue fermé des mécaniques détectées (48, ordre de [`Mechanic::ALL`] = index des compteurs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Mechanic {
     Touch,
@@ -78,6 +79,12 @@ pub enum Mechanic {
     Recovery,
     HalfVolley,
     DribbleTurn,
+    Bump,
+    Demo,
+    Save,
+    AerialSave,
+    SquishySave,
+    Clear,
 }
 
 impl Mechanic {
@@ -124,6 +131,12 @@ impl Mechanic {
         Mechanic::Recovery,
         Mechanic::HalfVolley,
         Mechanic::DribbleTurn,
+        Mechanic::Bump,
+        Mechanic::Demo,
+        Mechanic::Save,
+        Mechanic::AerialSave,
+        Mechanic::SquishySave,
+        Mechanic::Clear,
     ];
 
     /// Valeur du label Prometheus `mechanic`.
@@ -171,6 +184,12 @@ impl Mechanic {
             Mechanic::Recovery => "recovery",
             Mechanic::HalfVolley => "half_volley",
             Mechanic::DribbleTurn => "dribble_turn",
+            Mechanic::Bump => "bump",
+            Mechanic::Demo => "demo",
+            Mechanic::Save => "save",
+            Mechanic::AerialSave => "aerial_save",
+            Mechanic::SquishySave => "squishy_save",
+            Mechanic::Clear => "clear",
         }
     }
 
@@ -205,13 +224,69 @@ impl Mechanic {
         use Mechanic::*;
         match self {
             FlipReset | ResetShot | DoubleReset | CeilingReset | KuxirPinch => 9,
-            Pinch | CeilingShot | AirDribble | WallToAirDribble | BackboardDouble | DoubleTouch
-            | Flick | Flick45 | Flick90 | MustyFlick | DelayedFlick | BreeziFlick | Redirect
-            | AirRollShot => 8,
-            PowerShot | WallShot | SpeedFlip | ChainDash | WallDash | Stall | TornadoSpin
-            | BackboardRead | BounceDribble | WallDribble | CeilingDribble | ReverseDribble => 6,
-            Touch => 0,
+            Pinch | CeilingShot | AerialSave | SquishySave | AirDribble | WallToAirDribble
+            | BackboardDouble | DoubleTouch | Flick | Flick45 | Flick90 | MustyFlick
+            | DelayedFlick | BreeziFlick | Redirect | AirRollShot => 8,
+            PowerShot | Save | Clear | WallShot | SpeedFlip | ChainDash | WallDash | Stall
+            | TornadoSpin | BackboardRead | BounceDribble | WallDribble | CeilingDribble
+            | ReverseDribble => 6,
+            Touch | Bump => 0,
             _ => 3,
+        }
+    }
+
+    /// Mécaniques jugées sur une vitesse, une rotation ou une vitesse de balle : invalidées pendant la fenêtre
+    /// d'une collision voiture-voiture ou d'un toucher simultané (le mouvement subi ne compte pas).
+    /// Le `pinch` de support `car` y échappe. Voir `docs/mechanics.md`, « Collisions ».
+    pub fn collision_sensitive(self) -> bool {
+        use Mechanic::*;
+        matches!(
+            self,
+            PowerShot
+                | Pinch
+                | KuxirPinch
+                | Flick
+                | Flick45
+                | Flick90
+                | MustyFlick
+                | DelayedFlick
+                | BreeziFlick
+                | WallShot
+                | Redirect
+                | AirRollShot
+                | Cushion
+                | HalfVolley
+                | ResetShot
+                | SpeedFlip
+                | WaveDash
+                | HalfFlip
+                | ChainDash
+                | WallDash
+                | Stall
+                | TornadoSpin
+                | Recovery
+                | DribbleTurn
+        )
+    }
+
+    /// Famille : les mécaniques d'une même famille sont des variantes ou des conséquences naturelles l'une de
+    /// l'autre (flick et flick_45, save et aerial_save…) ; deux familles distinctes dans un clip = un enchaînement
+    /// (combo). Renvoie la mécanique représentante.
+    pub fn family(self) -> Mechanic {
+        use Mechanic::*;
+        match self {
+            AerialTouch | FastAerial => AerialTouch,
+            AirDribble | WallToAirDribble => AirDribble,
+            FlipReset | ResetShot | DoubleReset | CeilingReset => FlipReset,
+            DoubleTouch | BackboardDouble | BackboardRead => DoubleTouch,
+            Flick | Flick45 | Flick90 | MustyFlick | DelayedFlick | BreeziFlick => Flick,
+            Dribble | BounceDribble | HoodDribble | ReverseDribble | WallDribble
+            | CeilingDribble | DribbleTurn => Dribble,
+            SpeedFlip | WaveDash | HalfFlip | ChainDash | WallDash => WaveDash,
+            Pinch | KuxirPinch => Pinch,
+            Save | AerialSave | SquishySave => Save,
+            Bump | Demo => Bump,
+            m => m,
         }
     }
 
@@ -257,6 +332,23 @@ pub struct CarTick {
     pub ball_hit_tick: Option<u64>,
     /// Temps en l'air (s), utilisé seulement pour initialiser le détecteur après un `reset`.
     pub air_time: f32,
+    /// Contact voiture-voiture enregistré par RocketSim (`car_contact.other_car_id` ≠ 0) et sa temporisation (s).
+    pub contact_other: bool,
+    pub contact_cooldown: f32,
+    /// Cette voiture est démolie.
+    pub demoed: bool,
+    /// Voiture adverse la plus proche (None s'il n'y en a pas).
+    pub other: Option<OtherCar>,
+}
+
+/// Ce que le détecteur sait de la voiture la plus proche (adversaire ou coéquipier).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct OtherCar {
+    pub pos: [f32; 3],
+    pub vel: [f32; 3],
+    /// Tick du dernier toucher balle de cette voiture.
+    pub ball_hit_tick: Option<u64>,
+    pub demoed: bool,
 }
 
 /// État de la balle à un tick.
@@ -379,7 +471,13 @@ mod tests {
                 "tornado_spin",
                 "recovery",
                 "half_volley",
-                "dribble_turn"
+                "dribble_turn",
+                "bump",
+                "demo",
+                "save",
+                "aerial_save",
+                "squishy_save",
+                "clear"
             ]
         );
     }

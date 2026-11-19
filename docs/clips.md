@@ -14,6 +14,15 @@ que `rst watch --clip` rejoue sur n'importe quelle machine.
 - Durée : jusqu'à 45 décisions avant la reconnaissance (+ jusqu'à 20 pour tomber sur un état avec pads) et 15 après.
   Un clip pèse ≈ 30 Kio (JSON non compressé).
 
+## Étiquettes multiples et combos
+
+`mechanic` reste l'étiquette principale (nom, id). `mechanics[]` liste toutes les mécaniques validées dans la
+fenêtre (`mechanic`, `step`, `t` en s) ; absent des anciens clips (étiquette unique). `combo` : ≥ 2 mécaniques de
+familles distinctes (`Mechanic::family`) à moins de 2 s ; la note de qualité gagne 0,1 (plafond 1). `/clips` et
+`/clips/top` renvoient ces champs ; `/clips/top?mechanic=` inclut les clips dont une étiquette correspond ; la
+trajectoire renvoie `labels[{mechanic,t}]` et `combo` ; la page affiche des puces et un repère par mécanique.
+`detector` = 3 (collisions).
+
 ## Rejeu et tolérance
 
 RocketSim est déterministe à état et entrées identiques, **mais** garde des états internes que `CarState` ne contient

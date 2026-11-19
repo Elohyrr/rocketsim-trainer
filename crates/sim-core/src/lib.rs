@@ -140,6 +140,8 @@ fn v(x: rocketsim_rs::math::Vec3) -> V3 {
 /// Simulation soccar à 120 Hz.
 pub struct Sim {
     arena: cxx::UniquePtr<Arena>,
+    /// Ids des voitures ajoutées (pour trouver l'autre voiture sans réinterroger l'arène à chaque tick).
+    car_ids: Vec<u32>,
 }
 
 impl Sim {
@@ -150,12 +152,15 @@ impl Sim {
         }
         Ok(Self {
             arena: Arena::default_standard(),
+            car_ids: Vec::new(),
         })
     }
 
     pub fn add_car(&mut self, blue: bool) -> u32 {
         let team = if blue { Team::Blue } else { Team::Orange };
-        self.arena.pin_mut().add_car(team, CarConfig::octane())
+        let id = self.arena.pin_mut().add_car(team, CarConfig::octane());
+        self.car_ids.push(id);
+        id
     }
 
     pub fn set_controls(&mut self, car: u32, c: CarControls) -> Result<(), SimError> {
@@ -336,6 +341,34 @@ impl Sim {
     /// État d'une voiture pour le détecteur de mécaniques (lecture à chaque tick de physique).
     pub fn car_tick(&mut self, id: u32) -> mechanics::CarTick {
         let tick = self.arena.get_tick_count();
+        // Autre voiture la plus proche (jamais d'indexation par position : on filtre sur l'id).
+        let me = self.arena.pin_mut().get_car(id);
+        let my_pos = me.pos;
+        let mut other: Option<(f32, mechanics::OtherCar)> = None;
+        for k in 0..self.car_ids.len() {
+            let oid = self.car_ids[k];
+            if oid == id {
+                continue;
+            }
+            let o = self.arena.pin_mut().get_car(oid);
+            let d = (o.pos.x - my_pos.x).powi(2)
+                + (o.pos.y - my_pos.y).powi(2)
+                + (o.pos.z - my_pos.z).powi(2);
+            if other.is_none_or(|(best, _)| d < best) {
+                other = Some((
+                    d,
+                    mechanics::OtherCar {
+                        pos: v(o.pos),
+                        vel: v(o.vel),
+                        ball_hit_tick: o
+                            .ball_hit_info
+                            .is_valid
+                            .then_some(o.ball_hit_info.tick_count_when_hit),
+                        demoed: o.is_demoed,
+                    },
+                ));
+            }
+        }
         let c = self.arena.pin_mut().get_car(id);
         mechanics::CarTick {
             tick,
@@ -364,6 +397,10 @@ impl Sim {
                 .is_valid
                 .then_some(c.ball_hit_info.tick_count_when_hit),
             air_time: c.air_time,
+            contact_other: c.car_contact.other_car_id != 0,
+            contact_cooldown: c.car_contact.cooldown_timer,
+            demoed: c.is_demoed,
+            other: other.map(|(_, o)| o),
         }
     }
 

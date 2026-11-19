@@ -206,7 +206,7 @@ pub struct Clip {
     pub keyframes: Vec<Keyframe>,
     /// `steps[s][voiture]` : contrôles tenus pendant `tick_skip` ticks.
     pub steps: Vec<Vec<Ctl>>,
-    /// Version du détecteur de mécaniques qui a déclenché le clip (1 = règles d'origine, 2 = strictes ; 0 =
+    /// Version du détecteur de mécaniques qui a déclenché le clip (1 = règles d'origine, 2 = strictes, 3 = strictes + collisions ; 0 =
     /// absent des anciens fichiers, à lire comme 1).
     #[serde(default)]
     pub detector: u32,
@@ -216,6 +216,49 @@ pub struct Clip {
     /// Valeur (vitesse de balle après toucher, uu/s) et support de la mécanique (pinch : sol, mur, coin…).
     #[serde(default)]
     pub detail: Option<ClipDetail>,
+    /// Toutes les mécaniques validées dans la fenêtre du clip, dans l'ordre chronologique (vide dans les anciens
+    /// clips : la seule étiquette est alors `mechanic`). `mechanic` reste l'étiquette principale (nom, id).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mechanics: Vec<ClipLabel>,
+    /// Enchaînement : ≥ 2 mécaniques de familles distinctes à moins de 2 s l'une de l'autre.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub combo: bool,
+}
+
+/// Une mécanique validée dans un clip et son instant.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ClipLabel {
+    pub mechanic: String,
+    /// Décision (relative au début du clip) pendant laquelle elle a été reconnue.
+    pub step: u32,
+    /// Instant (s) depuis le début du clip (début de la décision).
+    pub t: f32,
+}
+
+/// Vrai si `labels` contient deux mécaniques de familles distinctes à moins de 2 s (`max_gap` décisions).
+pub fn is_combo(labels: &[ClipLabel], max_gap: u32) -> bool {
+    let fam = |l: &ClipLabel| {
+        mechanics::Mechanic::ALL
+            .iter()
+            .find(|m| m.label() == l.mechanic)
+            .map(|m| m.family())
+    };
+    labels.iter().enumerate().any(|(i, a)| {
+        labels[i + 1..]
+            .iter()
+            .any(|b| fam(a) != fam(b) && a.step.abs_diff(b.step) < max_gap)
+    })
+}
+
+impl Clip {
+    /// Étiquettes du clip : la liste, ou à défaut l'étiquette principale seule (anciens clips).
+    pub fn labels(&self) -> Vec<String> {
+        if self.mechanics.is_empty() {
+            vec![self.mechanic.clone()]
+        } else {
+            self.mechanics.iter().map(|l| l.mechanic.clone()).collect()
+        }
+    }
 }
 
 /// Détail d'une occurrence (métadonnées d'un clip) : mesure propre à la mécanique et support.
@@ -598,6 +641,9 @@ impl Sim {
     }
 }
 
+/// Deux mécaniques de familles distinctes à moins de 2 s (240 ticks) = un combo.
+pub const COMBO_WINDOW_TICKS: u32 = 240;
+
 struct Pending {
     mechanic: &'static str,
     trigger: u32,
@@ -614,6 +660,8 @@ pub struct ClipRecorder {
     cars: usize,
     ctl_first: u32,
     pending: Option<Pending>,
+    /// Mécaniques reconnues (décision, libellé) depuis le début de la fenêtre conservée.
+    events: Vec<(u32, &'static str)>,
     quiet_until: u32,
     /// Silence (décisions) après un clip, pour ne pas enregistrer deux fois la même action.
     pub cooldown: u32,
@@ -629,6 +677,7 @@ impl ClipRecorder {
             cars: 0,
             ctl_first: 0,
             pending: None,
+            events: Vec::new(),
             quiet_until: 0,
             cooldown: 150,
         }
@@ -641,7 +690,20 @@ impl ClipRecorder {
         self.ctl.clear();
         self.ctl_first = 0;
         self.pending = None;
+        self.events.clear();
         self.quiet_until = 0;
+    }
+
+    /// Note une mécanique reconnue pendant la décision en cours (même sans déclenchement : un clip garde toutes
+    /// les mécaniques de sa fenêtre). Un libellé n'est noté qu'une fois par décision.
+    pub fn note(&mut self, mechanic: &'static str) {
+        if !self
+            .events
+            .iter()
+            .any(|&(s, m)| s == self.step && m == mechanic)
+        {
+            self.events.push((self.step, mechanic));
+        }
     }
 
     /// À appeler avant d'appliquer les contrôles d'une décision (`ctls` dans l'ordre des ids triés).
@@ -692,6 +754,7 @@ impl ClipRecorder {
             .pending
             .as_ref()
             .map_or(self.step.saturating_sub(LEAD_STEPS), |p| p.start);
+        self.events.retain(|e| e.0 >= keep_from);
         // Le premier état clé garde toujours ses pads : un clip démarre dessus.
         if let Some(j) = self
             .keys
@@ -757,10 +820,23 @@ impl ClipRecorder {
                 .map(|&i| sim.arena.get_car_team(i) == rocketsim_rs::sim::Team::Blue)
                 .collect()
         };
+        let mechanics: Vec<ClipLabel> = self
+            .events
+            .iter()
+            .filter(|e| e.0 >= start && e.0 < end)
+            .map(|&(s, m)| ClipLabel {
+                mechanic: m.to_string(),
+                step: s - start,
+                t: (s - start) as f32 * self.tick_skip as f32 / crate::TICK_RATE as f32,
+            })
+            .collect();
+        let combo = is_combo(&mechanics, COMBO_WINDOW_TICKS / self.tick_skip.max(1));
         Some(Clip {
             version: CLIP_VERSION,
             id: String::new(),
             mechanic: p.mechanic.to_string(),
+            mechanics,
+            combo,
             created_unix: 0,
             train_step: 0,
             tick_skip: self.tick_skip,
@@ -772,5 +848,29 @@ impl ClipRecorder {
             quality: None,
             detail: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod combo_tests {
+    use super::*;
+
+    fn l(m: &str, step: u32) -> ClipLabel {
+        ClipLabel {
+            mechanic: m.into(),
+            step,
+            t: 0.0,
+        }
+    }
+
+    #[test]
+    fn combo_familles_distinctes_et_proches() {
+        assert!(is_combo(&[l("wall_to_air_dribble", 2), l("flick", 10)], 30));
+        assert!(is_combo(&[l("save", 5), l("power_shot", 5)], 30));
+        // Même famille : pas un combo ; trop éloignées : non plus.
+        assert!(!is_combo(&[l("save", 5), l("aerial_save", 5)], 30));
+        assert!(!is_combo(&[l("flick", 1), l("flick_45", 2)], 30));
+        assert!(!is_combo(&[l("flick", 0), l("save", 40)], 30));
+        assert!(!is_combo(&[l("flick", 0)], 30));
     }
 }

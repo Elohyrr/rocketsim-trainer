@@ -40,6 +40,12 @@ pub struct Hit {
     /// Dernier rebond de la balle sur un mur latéral (`false`) ou du fond (`true`) et son âge.
     pub ball_bounce_back: bool,
     pub ball_bounce_age: Option<u64>,
+    /// Toucher simultané des deux voitures, ou collision dans la fenêtre d'invalidation, au moment du jugement.
+    pub tainted: bool,
+    /// L'autre voiture a aussi touché la balle (≤ `SHARED_TOUCH_TICKS`).
+    pub shared: bool,
+    /// Distance de l'autre voiture à la balle au toucher (uu ; `f32::MAX` sans autre voiture).
+    pub other_dist: f32,
 }
 
 /// Résultats des automates de base (v1/v2) à ce tick, pour s'y appuyer.
@@ -98,4 +104,6 @@ pub struct Ctx<'a> {
     pub base: Base,
     /// Sens d'attaque : vrai si la voiture attaque vers y < 0 (équipe orange).
     pub attack_neg: bool,
+    /// Collision voiture-voiture ou toucher simultané dans les `COLLISION_WINDOW_TICKS` derniers ticks.
+    pub tainted: bool,
 }

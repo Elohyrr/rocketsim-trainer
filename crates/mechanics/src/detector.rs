@@ -3,7 +3,7 @@
 use crate::ctx::{Base, Ctx, DodgeInfo, Hit};
 use crate::detail::{Details, Out};
 use crate::thresholds::*;
-use crate::{BallTick, CarTick, Counts, Detail, Mechanic, Support};
+use crate::{BallTick, CarTick, Counts, Detail, Mechanic, Records, Support};
 
 /// Événements discrets d'un tick (masque de bits, spec §4.1). La direction d'un dodge est donnée à part par
 /// [`Detector::dodge_sector`].
@@ -138,6 +138,15 @@ pub struct Detector {
     bounce: Option<(u64, bool)>,
     hit_pending: Option<Hit>,
     details: Details,
+    // Collisions voiture-voiture : dernier choc subi, dernier toucher simultané, suivi de l'autre voiture.
+    coll_last: Option<u64>,
+    taint_last: Option<u64>,
+    shared_last: Option<u64>,
+    own_touch_n: Option<u64>,
+    other_touch_n: Option<u64>,
+    other_hit_seen: Option<u64>,
+    prev_other_vel: [f32; 3],
+    prev_other_demoed: bool,
     g_hit: crate::ext_hit::Group,
     g_carry: crate::ext_carry::Group,
     g_move: crate::ext_move::Group,
@@ -300,8 +309,79 @@ impl Detector {
             if on_wall {
                 self.wall_last = Some(n);
             }
+            self.other_hit_seen = car.other.and_then(|o| o.ball_hit_tick);
+            self.prev_other_vel = car.other.map_or([0.0; 3], |o| o.vel);
+            self.prev_other_demoed = car.other.is_some_and(|o| o.demoed);
             self.save_prev(car, ball, on_terrain, on_wall, on_ceiling, hspeed, head);
             return;
+        }
+
+        // --- Collisions voiture-voiture et touchers simultanés (invalidation des mécaniques subies).
+        let raw_hit_now =
+            car.ball_hit_tick.is_some() && car.ball_hit_tick != self.prev.ball_hit_tick;
+        let (mut taint_now, mut bump, mut demo) = (false, false, false);
+        if let Some(o) = car.other {
+            let dv = norm2(sub(car.vel, self.prev_car.vel)).sqrt();
+            let dw = norm2(sub(car.ang_vel, self.prev_car.ang_vel)).sqrt();
+            let odv = norm2(sub(o.vel, self.prev_other_vel)).sqrt();
+            let near = norm2(sub(o.pos, car.pos)) < COLLISION_NEAR_DIST * COLLISION_NEAR_DIST;
+            let contact = (car.contact_other
+                && (!self.prev_car.contact_other
+                    || car.contact_cooldown > self.prev_car.contact_cooldown))
+                || (near
+                    && dv
+                        > if raw_hit_now {
+                            COLLISION_MIN_DV_TOUCH
+                        } else {
+                            COLLISION_MIN_DV
+                        });
+            if contact {
+                self.coll_last = Some(n);
+                // Choc subi : la vitesse ou la rotation de cette voiture a changé nettement.
+                taint_now = dv >= COLLISION_TAINT_DV || dw >= COLLISION_TAINT_DW;
+                bump = odv >= BUMP_MIN_OTHER_DV && odv > dv;
+            }
+            if o.demoed && !self.prev_other_demoed && within(self.coll_last, n, DEMO_CONTACT_TICKS)
+            {
+                demo = true;
+            }
+            if o.ball_hit_tick.is_some() && o.ball_hit_tick != self.other_hit_seen {
+                self.other_touch_n = Some(n);
+            }
+            self.other_hit_seen = o.ball_hit_tick;
+            self.prev_other_vel = o.vel;
+            self.prev_other_demoed = o.demoed;
+        }
+        if car.demoed {
+            taint_now = true;
+        }
+        if raw_hit_now {
+            self.own_touch_n = Some(n);
+        }
+        if let (Some(a), Some(b)) = (self.own_touch_n, self.other_touch_n)
+            && (a == n || b == n)
+            && a.abs_diff(b) <= SHARED_TOUCH_TICKS
+        {
+            self.shared_last = Some(n);
+        }
+        if taint_now {
+            self.taint_last = Some(n);
+            // Un dodge en cours (wave dash, speed flip, half flip) et un flick en attente sont jugés sur des
+            // vitesses que le choc a faussées.
+            self.dodge = None;
+            self.fl_dodge = None;
+        }
+        let tainted = within(self.taint_last, n, COLLISION_WINDOW_TICKS)
+            || within(self.shared_last, n, COLLISION_WINDOW_TICKS);
+        // Sauvegarde des compteurs, records et détails pour annuler les mécaniques invalidées (fenêtre seulement).
+        let backup = tainted.then(|| (counts.0, counts.1.clone(), self.details));
+        if bump {
+            counts.inc(Mechanic::Bump);
+            self.note(counts, Mechanic::Bump, 0.0);
+        }
+        if demo {
+            counts.inc(Mechanic::Demo);
+            self.note(counts, Mechanic::Demo, 0.0);
         }
 
         let p = self.prev;
@@ -727,6 +807,11 @@ impl Detector {
                 ceiling_age: self.ceil_seen.map(|t| n - t),
                 ball_bounce_back: self.bounce.is_some_and(|(_, b)| b),
                 ball_bounce_age: self.bounce.map(|(t, _)| n - t),
+                tainted: false,
+                shared: false,
+                other_dist: car
+                    .other
+                    .map_or(f32::MAX, |o| norm2(sub(o.pos, ball.pos)).sqrt()),
             });
         } else if let Some(h) = self.hit_pending.as_mut() {
             let sp = norm2(ball.vel).sqrt();
@@ -736,8 +821,10 @@ impl Detector {
             }
         }
         let judged = match self.hit_pending {
-            Some(h) if n - h.tick >= HIT_JUDGE_TICKS => {
+            Some(mut h) if n - h.tick >= HIT_JUDGE_TICKS => {
                 self.hit_pending = None;
+                h.tainted = tainted;
+                h.shared = within(self.shared_last, n, COLLISION_WINDOW_TICKS);
                 Some(h)
             }
             _ => None,
@@ -770,6 +857,7 @@ impl Detector {
             dodge_now: dodge,
             base,
             attack_neg: self.attack_neg,
+            tainted,
         };
         let mut out = Out {
             counts,
@@ -779,8 +867,43 @@ impl Detector {
         self.g_carry.tick(&cx, &mut out);
         self.g_move.tick(&cx, &mut out);
 
+        // Mécaniques invalidées : le mouvement ou la vitesse de balle viennent d'un choc, pas de la voiture.
+        if let Some((c0, r0, d0)) = backup {
+            self.invalidate(counts, &c0, &r0, &d0);
+        }
+
         self.events = Events(ev);
         self.save_prev(car, ball, on_terrain, on_wall, on_ceiling, hspeed, head);
+    }
+
+    /// Annule les occurrences de ce tick des mécaniques sensibles aux collisions (sauf le car pinch).
+    #[cold]
+    fn invalidate(
+        &mut self,
+        counts: &mut Counts,
+        c0: &[u64; crate::MECH_COUNT],
+        r0: &Records,
+        d0: &Details,
+    ) {
+        for m in Mechanic::ALL {
+            let i = m.index();
+            if m.collision_sensitive()
+                && counts.0[i] > c0[i]
+                && !(m == Mechanic::Pinch && self.details.0[i].support == Support::Car)
+            {
+                counts.0[i] = c0[i];
+                counts.1.0[i] = r0.0[i];
+                self.details.0[i] = d0.0[i];
+            }
+        }
+    }
+
+    /// Vrai si une collision voiture-voiture ou un toucher simultané date de moins de
+    /// `COLLISION_WINDOW_TICKS` : la vitesse de balle mesurée maintenant n'est pas le fait de cette voiture seule.
+    #[inline]
+    pub fn tainted(&self) -> bool {
+        within(self.taint_last, self.n, COLLISION_WINDOW_TICKS)
+            || within(self.shared_last, self.n, COLLISION_WINDOW_TICKS)
     }
 
     /// Enregistre valeur et record d'une mécanique de base (compteur déjà incrémenté).

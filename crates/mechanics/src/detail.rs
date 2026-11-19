@@ -15,6 +15,8 @@ pub enum Support {
     /// Coin (deux murs, ou mur et sol près d'un coin).
     Corner,
     Ceiling,
+    /// Balle coincée entre deux voitures (kickoff pinch, car pinch).
+    Car,
 }
 
 impl Support {
@@ -26,6 +28,7 @@ impl Support {
             Support::BackWall => "backwall",
             Support::Corner => "corner",
             Support::Ceiling => "ceiling",
+            Support::Car => "car",
         }
     }
 }

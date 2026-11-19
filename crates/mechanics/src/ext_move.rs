@@ -92,6 +92,8 @@ pub(crate) struct Group {
     ts_done: bool,
     // Recovery : ticks en l'air, min up.z, vitesse horizontale au début de la phase.
     rc_air: u32,
+    /// Un choc a eu lieu pendant ce vol (la recovery ne compte pas).
+    rc_hit: bool,
     rc_min_up: f32,
     rc_start: Option<f32>,
 }
@@ -141,6 +143,11 @@ impl Group {
         }
 
         // --- Chain dash : deux wave dashes rapprochés.
+        if cx.tainted {
+            self.wd_last = None;
+            self.cd_counted = true;
+            self.wdash = None;
+        }
         if cx.base.wave_dash {
             if within(self.wd_last, n, CHAIN_DASH_MAX_GAP_TICKS) {
                 if !self.cd_counted {
@@ -211,7 +218,7 @@ impl Group {
 
         // --- Stall : dodge latéral/arrière avec roulis (ou voiture inversée) qui tue l'élan.
         if let Some((t, before)) = self.st_dodge {
-            if n - t > STALL_WINDOW_TICKS || cx.touch || cx.on_terrain {
+            if n - t > STALL_WINDOW_TICKS || cx.touch || cx.on_terrain || cx.tainted {
                 self.st_dodge = None;
             } else if speed(car.vel) < STALL_MAX_SPEED_RATIO * before {
                 out.emit(Mechanic::Stall, 0.0, Support::None);
@@ -234,6 +241,10 @@ impl Group {
         if cx.on_terrain {
             self.ts_run = 0;
             self.ts_done = false;
+        } else if cx.tainted {
+            // Rotation subie (choc, toucher simultané) : ne compte ni maintenant ni plus tard dans ce vol.
+            self.ts_run = 0;
+            self.ts_done = true;
         } else if cx.air_ticks >= TORNADO_MIN_AIR_TICKS {
             let w = car.ang_vel;
             let spin = (w[0] * car.up[0] + w[1] * car.up[1] + w[2] * car.up[2]).abs();
@@ -258,6 +269,7 @@ impl Group {
                         && car.wheels_contact >= 3
                         && cx.hspeed >= RECOVERY_MIN_SPEED
                         && cx.hspeed >= RECOVERY_MIN_KEEP * start
+                        && !self.rc_hit
                     {
                         out.emit(Mechanic::Recovery, 0.0, Support::Ground);
                     }
@@ -265,7 +277,10 @@ impl Group {
             }
             self.rc_start = None;
             self.rc_air = 0;
+            self.rc_hit = false;
         } else {
+            // Retournée par un choc : le vol ne compte pas comme recovery.
+            self.rc_hit |= cx.tainted;
             if self.rc_start.is_none() {
                 self.rc_start = Some(hspeed(cx.prev_car.vel));
                 self.rc_min_up = car.up[2];
