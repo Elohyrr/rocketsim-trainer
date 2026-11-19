@@ -554,7 +554,7 @@ mod tests {
             t.lines()
                 .filter(|l| l.starts_with("trainer_mechanic_total{"))
                 .count(),
-            24
+            mechanics::MECH_COUNT * 2
         );
     }
 
