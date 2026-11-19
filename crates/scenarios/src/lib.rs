@@ -85,7 +85,8 @@ impl Drill {
     /// Poids de tirage par défaut (même ordre que [`Drill::ALL`]) : les drills de la v1 pèsent 1, les nouvelles
     /// familles davantage (dribble de virage 3, gardien 2,5, tirs 1,5).
     pub const DEFAULT_WEIGHTS: [f32; DRILL_COUNT] = [
-        1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3.0, 1.5, 1.5, 1.5, 1.0, 2.5, 1.0, 1.0, 1.5, 3.0, 2.0, 2.0, 1.5,
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3.0, 1.5, 1.5, 1.5, 1.0, 2.5, 1.0, 1.0, 1.5, 3.0, 2.0,
+        2.0, 1.5,
     ];
 
     pub fn label(self) -> &'static str {
@@ -714,11 +715,7 @@ pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
                     range(unit, 110.0, 260.0)
                 },
             ];
-            let goal = [
-                range(unit, -800.0, 800.0) + 0.0,
-                5120.0,
-                300.0,
-            ];
+            let goal = [range(unit, -800.0, 800.0) + 0.0, 5120.0, 300.0];
             let to_goal = yaw_towards(s.ball_pos, goal);
             let h = heading(to_goal);
             if unit() < 0.5 {
@@ -785,11 +782,7 @@ pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
             let opp = loop {
                 let d = range(unit, 1200.0, 2600.0);
                 let a = yaw + range(unit, -0.6, 0.6);
-                let p = clamp_xy([
-                    s.car_pos[0] + a.cos() * d,
-                    s.car_pos[1] + a.sin() * d,
-                    17.0,
-                ]);
+                let p = clamp_xy([s.car_pos[0] + a.cos() * d, s.car_pos[1] + a.sin() * d, 17.0]);
                 if dist_xy(p, s.car_pos) > 900.0 {
                     break p;
                 }
@@ -803,7 +796,11 @@ pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
         }
         Drill::Rings => {
             s.car_boost = 100.0;
-            s.car_pos = [range(unit, -2500.0, 2500.0), range(unit, -3800.0, 1500.0), 17.0];
+            s.car_pos = [
+                range(unit, -2500.0, 2500.0),
+                range(unit, -3800.0, 1500.0),
+                17.0,
+            ];
             let n = 3 + (unit() * 4.0) as usize % 4;
             let mut dir = yaw_to_goal(unit, 1.2);
             s.car_yaw = dir;
@@ -827,11 +824,18 @@ pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
                 if p[0].abs() > 3700.0 || p[1].abs() > 4600.0 {
                     dir += PI;
                 }
-                s.rings.push(Ring { pos: p, radius: range(unit, 260.0, 380.0) });
+                s.rings.push(Ring {
+                    pos: p,
+                    radius: range(unit, 260.0, 380.0),
+                });
             }
             // Balle (inutile ici : la balle vue par l'agent est le prochain anneau) loin de tout.
             loop {
-                s.ball_pos = [range(unit, -3000.0, 3000.0), range(unit, -4000.0, 4000.0), 93.0];
+                s.ball_pos = [
+                    range(unit, -3000.0, 3000.0),
+                    range(unit, -4000.0, 4000.0),
+                    93.0,
+                ];
                 if dist_xy(s.car_pos, s.ball_pos) > 800.0
                     && s.rings.iter().all(|r| dist_xy(r.pos, s.ball_pos) > 800.0)
                 {

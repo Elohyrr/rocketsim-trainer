@@ -426,7 +426,8 @@ impl EpisodeBonus {
             Drill::Recovery => {}
             Drill::FlipShot => {
                 let toward = speed_toward_goal(e.ball.0, e.ball.1);
-                if e.our_goal || (e.seen.get(Mechanic::FlipShot) > 0 && toward > FLIP_SHOT_USEFUL_SPEED)
+                if e.our_goal
+                    || (e.seen.get(Mechanic::FlipShot) > 0 && toward > FLIP_SHOT_USEFUL_SPEED)
                 {
                     self.success = true;
                 }
@@ -446,10 +447,8 @@ impl EpisodeBonus {
                     }
                     if let Some(secs) = t.step(e) {
                         self.success = true;
-                        reward += ledger.pay_slot(
-                            TURN_SLOT,
-                            TURN_BONUS.min(bonus_cap) * turn_fraction(secs),
-                        );
+                        reward += ledger
+                            .pay_slot(TURN_SLOT, TURN_BONUS.min(bonus_cap) * turn_fraction(secs));
                         done = true;
                     }
                 }
@@ -460,16 +459,15 @@ impl EpisodeBonus {
                     let (crossed, secs) = r.step(e.tick, e.car_pos);
                     for _ in 0..crossed {
                         report.rings += 1;
-                        reward += ledger.pay_slot(
-                            RINGS_SLOT,
-                            (RINGS_TOTAL_BONUS / n).min(bonus_cap),
-                        );
+                        reward +=
+                            ledger.pay_slot(RINGS_SLOT, (RINGS_TOTAL_BONUS / n).min(bonus_cap));
                     }
                     if let Some(secs) = secs {
                         self.success = true;
                         let par = RINGS_PAR_S * n;
                         let f = ((par - secs) / par).clamp(0.0, 1.0);
-                        reward += ledger.pay_slot(RINGS_TIME_SLOT, RINGS_TIME_BONUS.min(bonus_cap) * f);
+                        reward +=
+                            ledger.pay_slot(RINGS_TIME_SLOT, RINGS_TIME_BONUS.min(bonus_cap) * f);
                         done = true;
                     }
                 }
@@ -539,7 +537,11 @@ pub fn dist_point_segment(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> f32 {
     } else {
         ((ac[0] * ab[0] + ac[1] * ab[1] + ac[2] * ab[2]) / l2).clamp(0.0, 1.0)
     };
-    let p = [a[0] + ab[0] * t - c[0], a[1] + ab[1] * t - c[1], a[2] + ab[2] * t - c[2]];
+    let p = [
+        a[0] + ab[0] * t - c[0],
+        a[1] + ab[1] * t - c[1],
+        a[2] + ab[2] * t - c[2],
+    ];
     (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt()
 }
 
@@ -930,7 +932,10 @@ mod tests {
         // À 1 200 : flip shot payé ; à 1 600 : flick payé aussi.
         let ball = ([0.0, 0.0, 300.0], [0.0, 1200.0, 0.0]);
         assert!(b.on_step(&one(Mechanic::FlipShot), 2, ball, cap, &l, &mut r) > 0.4);
-        assert_eq!(b.on_step(&one(Mechanic::Flick), 3, ball, cap, &l, &mut r), 0.0);
+        assert_eq!(
+            b.on_step(&one(Mechanic::Flick), 3, ball, cap, &l, &mut r),
+            0.0
+        );
         let ball = ([0.0, 0.0, 300.0], [0.0, 1600.0, 0.0]);
         assert!(b.on_step(&one(Mechanic::Flick), 4, ball, cap, &l, &mut r) > 0.0);
     }
@@ -951,7 +956,10 @@ mod tests {
         // Dos à la balle : rien.
         e.car_forward = [0.0, -1.0, 0.0];
         e.car_vel = [0.0, 1500.0, 0.0];
-        assert_eq!(b.on_events(Drill::Turnaround, &e, 1.0, &l, &mut r), (0.0, false));
+        assert_eq!(
+            b.on_events(Drill::Turnaround, &e, 1.0, &l, &mut r),
+            (0.0, false)
+        );
         // Face à la balle, vite, en 1,2 s : plein tarif, fin.
         e.car_forward = [0.0, 1.0, 0.0];
         let (rw, done) = b.on_events(Drill::Turnaround, &e, 1.0, &l, &mut r);
@@ -972,9 +980,18 @@ mod tests {
     #[test]
     fn anneaux_dans_l_ordre_et_bonus_plafonne() {
         let rings = vec![
-            Ring { pos: [0.0, 1000.0, 500.0], radius: 300.0 },
-            Ring { pos: [0.0, 2000.0, 600.0], radius: 300.0 },
-            Ring { pos: [500.0, 3000.0, 600.0], radius: 300.0 },
+            Ring {
+                pos: [0.0, 1000.0, 500.0],
+                radius: 300.0,
+            },
+            Ring {
+                pos: [0.0, 2000.0, 600.0],
+                radius: 300.0,
+            },
+            Ring {
+                pos: [500.0, 3000.0, 600.0],
+                radius: 300.0,
+            },
         ];
         let mut t = RingTrack::new(rings.clone(), 0, [0.0, 0.0, 17.0]);
         // Passe en ligne droite à travers le 2e sans avoir fait le 1er (à 800 de l'axe) : rien.

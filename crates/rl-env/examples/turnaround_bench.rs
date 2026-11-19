@@ -7,12 +7,24 @@ const MIN_COS: f32 = 0.866;
 const MAX_TICKS: u32 = 480;
 
 /// Une exécution : renvoie le temps (s) au bout duquel le critère est tenu, ou None.
-fn run(min_speed: f32, v0: f32, yaw_off: f32, boost: f32, mut ctl: impl FnMut(u32, &mut Sim, u32) -> Controls) -> Option<f32> {
+fn run(
+    min_speed: f32,
+    v0: f32,
+    yaw_off: f32,
+    boost: f32,
+    mut ctl: impl FnMut(u32, &mut Sim, u32) -> Controls,
+) -> Option<f32> {
     let mut sim = Sim::new_soccar().unwrap();
     let car = sim.add_car(true);
     let yaw = -std::f32::consts::FRAC_PI_2 + yaw_off; // dos à la cible (+Y)
-    sim.reset_car(car, [0.0, 0.0, 17.0], yaw, [yaw.cos() * v0, yaw.sin() * v0, 0.0], boost)
-        .unwrap();
+    sim.reset_car(
+        car,
+        [0.0, 0.0, 17.0],
+        yaw,
+        [yaw.cos() * v0, yaw.sin() * v0, 0.0],
+        boost,
+    )
+    .unwrap();
     sim.reset_ball([0.0, 4000.0, 93.0], [0.0; 3]);
     for t in 0..MAX_TICKS {
         let c = ctl(t, &mut sim, car);
@@ -30,14 +42,27 @@ fn run(min_speed: f32, v0: f32, yaw_off: f32, boost: f32, mut ctl: impl FnMut(u3
     None
 }
 
-fn roll_turn(steer_gain: f32, boost: bool, handbrake: bool, reverse_first: bool) -> impl FnMut(u32, &mut Sim, u32) -> Controls {
+fn roll_turn(
+    steer_gain: f32,
+    boost: bool,
+    handbrake: bool,
+    reverse_first: bool,
+) -> impl FnMut(u32, &mut Sim, u32) -> Controls {
     // steer > 0 = lacet croissant (sens trigonométrique) ; ang = écart horaire au cap +Y. Près de ±π le sens est
     // imposé (+1) pour ne pas osciller.
     move |t, sim, car| {
         let ct = sim.car_tick(car);
         let ang = ct.forward[0].atan2(ct.forward[1]);
-        let steer = if ang.abs() > 2.9 { 1.0 } else { (ang * steer_gain).clamp(-1.0, 1.0) };
-        let throttle = if reverse_first && t < 20 && ct.forward[1] < 0.0 { -1.0 } else { 1.0 };
+        let steer = if ang.abs() > 2.9 {
+            1.0
+        } else {
+            (ang * steer_gain).clamp(-1.0, 1.0)
+        };
+        let throttle = if reverse_first && t < 20 && ct.forward[1] < 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
         Controls {
             throttle,
             steer,
@@ -49,10 +74,20 @@ fn roll_turn(steer_gain: f32, boost: bool, handbrake: bool, reverse_first: bool)
 }
 
 /// Half flip : saut, dodge arrière, annulation (tangage inverse) avec roulis, boost ; ensuite conduite vers +Y.
-fn half_flip(dodge_at: u32, cancel_at: u32, cancel_len: u32, roll: f32, yaw: f32) -> impl FnMut(u32, &mut Sim, u32) -> Controls {
+fn half_flip(
+    dodge_at: u32,
+    cancel_at: u32,
+    cancel_len: u32,
+    roll: f32,
+    yaw: f32,
+) -> impl FnMut(u32, &mut Sim, u32) -> Controls {
     move |t, sim, car| {
         let ct = sim.car_tick(car);
-        let mut c = Controls { throttle: 1.0, boost: t > dodge_at, ..Default::default() };
+        let mut c = Controls {
+            throttle: 1.0,
+            boost: t > dodge_at,
+            ..Default::default()
+        };
         if t < 2 {
             c.jump = true;
         } else if t == dodge_at {
@@ -83,25 +118,52 @@ fn main() {
         run(700.0, 0.0, 0.0, 100.0, |t, s, c| {
             let ct = s.car_tick(c);
             if t % 30 == 0 {
-                println!("t={t} pos={:?} fwd=({:.2},{:.2}) v=({:.0},{:.0}) ground={}", ct.pos, ct.forward[0], ct.forward[1], ct.vel[0], ct.vel[1], ct.on_ground);
+                println!(
+                    "t={t} pos={:?} fwd=({:.2},{:.2}) v=({:.0},{:.0}) ground={}",
+                    ct.pos, ct.forward[0], ct.forward[1], ct.vel[0], ct.vel[1], ct.on_ground
+                );
             }
             f(t, s, c)
         });
         return;
     }
-    let vmin: f32 = std::env::var("VMIN").ok().and_then(|v| v.parse().ok()).unwrap_or(700.0);
+    let vmin: f32 = std::env::var("VMIN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(700.0);
     println!("vitesse mini vers la cible : {vmin} uu/s");
-    for (label, v0, boost) in [("à l'arrêt", 0.0, 100.0), ("nez dos à la cible, roulant 700 uu/s DANS le sens du nez (s'éloigne)", 700.0, 100.0), ("en marche arrière vers la cible 800 uu/s", -800.0, 100.0), ("en marche arrière vers la cible 1400 uu/s", -1400.0, 100.0), ("en marche arrière 1400 uu/s, boost 0", -1400.0, 0.0), ("à l'arrêt, boost 0", 0.0, 0.0)] {
+    for (label, v0, boost) in [
+        ("à l'arrêt", 0.0, 100.0),
+        (
+            "nez dos à la cible, roulant 700 uu/s DANS le sens du nez (s'éloigne)",
+            700.0,
+            100.0,
+        ),
+        ("en marche arrière vers la cible 800 uu/s", -800.0, 100.0),
+        ("en marche arrière vers la cible 1400 uu/s", -1400.0, 100.0),
+        ("en marche arrière 1400 uu/s, boost 0", -1400.0, 0.0),
+        ("à l'arrêt, boost 0", 0.0, 0.0),
+    ] {
         // Meilleur demi-tour en roulant.
         let mut best_roll: Option<(f32, String)> = None;
         for gain in [1.0f32, 2.0, 4.0] {
             for b in [false, true] {
                 for hb in [false, true] {
                     for rev in [false, true] {
-                        if let Some(t) = run(vmin, v0, 0.0, boost, roll_turn(gain, b && boost > 0.0, hb, rev))
-                            && best_roll.as_ref().is_none_or(|(bt, _)| t < *bt)
+                        if let Some(t) = run(
+                            vmin,
+                            v0,
+                            0.0,
+                            boost,
+                            roll_turn(gain, b && boost > 0.0, hb, rev),
+                        ) && best_roll.as_ref().is_none_or(|(bt, _)| t < *bt)
                         {
-                            best_roll = Some((t, format!("gain {gain} boost {b} frein à main {hb} marche arrière d'abord {rev}")));
+                            best_roll = Some((
+                                t,
+                                format!(
+                                    "gain {gain} boost {b} frein à main {hb} marche arrière d'abord {rev}"
+                                ),
+                            ));
                         }
                     }
                 }
@@ -116,10 +178,20 @@ fn main() {
                     for roll in [-1.0f32, 1.0] {
                         for yaw in [-1.0f32, 0.0, 1.0] {
                             hf_runs += 1;
-                            if let Some(t) = run(vmin, v0, 0.0, boost, half_flip(dodge_at, cancel_at, cancel_len, roll, yaw))
-                                && best_hf.as_ref().is_none_or(|(bt, _)| t < *bt)
+                            if let Some(t) = run(
+                                vmin,
+                                v0,
+                                0.0,
+                                boost,
+                                half_flip(dodge_at, cancel_at, cancel_len, roll, yaw),
+                            ) && best_hf.as_ref().is_none_or(|(bt, _)| t < *bt)
                             {
-                                best_hf = Some((t, format!("dodge t={dodge_at} annulation après {cancel_at} durée {cancel_len} roulis {roll} lacet {yaw}")));
+                                best_hf = Some((
+                                    t,
+                                    format!(
+                                        "dodge t={dodge_at} annulation après {cancel_at} durée {cancel_len} roulis {roll} lacet {yaw}"
+                                    ),
+                                ));
                             }
                         }
                     }
