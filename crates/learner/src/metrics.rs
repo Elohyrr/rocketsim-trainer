@@ -65,6 +65,7 @@ pub struct Metrics {
     pub drill_success: [u64; scenarios::DRILL_COUNT],
     pub drill_dribble_goal: u64,
     pub drill_saves: u64,
+    pub drill_rings: u64,
     /// Clips enregistrés depuis le démarrage (`kind="known"` : mécanique du catalogue ; `novel` : à venir).
     pub clips_saved_known: u64,
     /// Plus bas score de qualité du hall of fame (0 s'il est vide).
@@ -287,11 +288,13 @@ impl Metrics {
         );
         let _ = writeln!(s, "# TYPE trainer_drill_saves_total counter");
         let _ = writeln!(s, "trainer_drill_saves_total {}", self.drill_saves);
+        let _ = writeln!(s, "# TYPE trainer_drill_rings_total counter");
+        let _ = writeln!(s, "trainer_drill_rings_total {}", self.drill_rings);
         let _ = writeln!(s, "# TYPE trainer_drill_bonus_total counter");
         // Seules les mécaniques qui peuvent recevoir un bonus ont une série (budget de séries, voir ci-dessus).
         for m in mechanics::Mechanic::ALL
             .into_iter()
-            .filter(|m| rl_env::drill::base_bonus(*m) > 0.0)
+            .filter(|m| rl_env::drill::base_bonus(*m) > 0.0 || *m == mechanics::Mechanic::HalfFlip)
         {
             let _ = writeln!(
                 s,
@@ -637,7 +640,7 @@ mod tests {
             t.lines()
                 .filter(|l| l.starts_with("trainer_drill_"))
                 .count(),
-            DRILL_COUNT * 2 + 9 + 4 + 2
+            DRILL_COUNT * 2 + 11 + 4 + 2 + 1
         );
     }
 

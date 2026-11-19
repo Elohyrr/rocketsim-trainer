@@ -91,7 +91,7 @@ fn main() {
     }
     let vmin: f32 = std::env::var("VMIN").ok().and_then(|v| v.parse().ok()).unwrap_or(700.0);
     println!("vitesse mini vers la cible : {vmin} uu/s");
-    for (label, v0, boost) in [("à l'arrêt", 0.0, 100.0), ("roulant 700 uu/s (dos à la cible)", 700.0, 100.0), ("roulant 1400 uu/s", 1400.0, 100.0), ("à l'arrêt, boost 0", 0.0, 0.0)] {
+    for (label, v0, boost) in [("à l'arrêt", 0.0, 100.0), ("nez dos à la cible, roulant 700 uu/s DANS le sens du nez (s'éloigne)", 700.0, 100.0), ("en marche arrière vers la cible 800 uu/s", -800.0, 100.0), ("en marche arrière vers la cible 1400 uu/s", -1400.0, 100.0), ("en marche arrière 1400 uu/s, boost 0", -1400.0, 0.0), ("à l'arrêt, boost 0", 0.0, 0.0)] {
         // Meilleur demi-tour en roulant.
         let mut best_roll: Option<(f32, String)> = None;
         for gain in [1.0f32, 2.0, 4.0] {
