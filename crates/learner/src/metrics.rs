@@ -60,6 +60,8 @@ pub struct Metrics {
     pub boost_empty_fraction: f64,
     /// Clips enregistrés depuis le démarrage (`kind="known"` : mécanique du catalogue ; `novel` : à venir).
     pub clips_saved_known: u64,
+    /// Plus bas score de qualité du hall of fame (0 s'il est vide).
+    pub clips_top_score: f64,
     pub goals_scored_total: u64,
     pub goals_conceded_total: u64,
     /// Fraction d'épisodes finis par un but marqué (fenêtre glissante du curriculum).
@@ -302,6 +304,8 @@ impl Metrics {
         for (kind, n) in [("known", self.clips_saved_known), ("novel", 0)] {
             let _ = writeln!(s, "trainer_clips_saved_total{{kind=\"{kind}\"}} {n}");
         }
+        let _ = writeln!(s, "# TYPE trainer_clips_top_score gauge");
+        let _ = writeln!(s, "trainer_clips_top_score {}", self.clips_top_score);
         let _ = writeln!(s, "# TYPE trainer_goals_total counter");
         let _ = writeln!(
             s,

@@ -30,6 +30,12 @@ pas (suspension, contacts de Bullet). Mesuré (`crates/sim-core/tests/clip_repla
 - `<--out>/clips/<id>.json` + `index.json`, sur le PVC. Anneau borné : `--clips-max` (200) et `--clips-mb` (200) ;
   plein, on retire le plus ancien clip de la mécanique la plus représentée (les mécaniques rares restent).
   20 s minimum entre deux clips de la même mécanique. `--no-clips` coupe tout.
+- **Hall of fame** : `<--out>/clips/top/` (`<id>.json` + `index.json`), hors anneau, donc jamais évincé et conservé
+  au redémarrage. Classement par `quality.score` décroissant, départage par `ball_speed_to_goal`, puis id ; les clips
+  sans qualité (v1) sont exclus. `--clips-top N` (10) : classement général ; en plus, les 3 meilleurs de chaque
+  mécanique (`TOP_PER_MECHANIC`). Mis à jour à chaque clip avec qualité (un meilleur clip chasse le dernier ; fichiers
+  copiés/supprimés dans `top/`) et reconstruit au démarrage depuis `top/` + l'anneau. `--clips-top 0` le coupe.
+  Coût : ≤ 10 + 3 × mécaniques fichiers de ≈ 30 Kio.
 - Le serveur de `--metrics` sert en lecture seule `GET /clips` (liste JSON, du plus récent au plus ancien) et
   `GET /clips/<id>` (id restreint à `[A-Za-z0-9_-]`).
 - `GET /clips/<id>/trajectory[?hz=15|30|60]` (défaut 30) : le learner **rejoue le clip à la demande** avec RocketSim
@@ -54,7 +60,13 @@ pas (suspension, contacts de Bullet). Mesuré (`crates/sim-core/tests/clip_repla
   balle / agent, lecture/pause, vitesse 0,25×–2×, boucle, barre de temps (repère orange = détection), lien
   partageable `/#<id>`. Les URL sont relatives : la page marche sous n'importe quel hôte. Exposée en lecture seule
   par la HTTPRoute `rlclips` (flux-gitops) : `/`, `/index.html`, `/clips`, `/clips/…` seulement.
-- Métrique : `trainer_clips_saved_total{kind="known"|"novel"}` (`novel` reste à 0 jusqu'à la PR de nouveauté).
+- `GET /clips?top=1` (ou `/clips/top`) : classement général (liste d'`Entry`, meilleur en premier) ;
+  `GET /clips/top?mechanic=<nom>` : les 3 meilleurs de la mécanique. `GET /clips/<id>` et `/trajectory` cherchent
+  dans l'anneau puis dans `top/` : un clip du top reste servi après avoir quitté l'anneau.
+- Page web : onglet « 🏆 Top N » en tête (ouvert par défaut) : rang, mécanique, score en %, vitesse de balle (uu/s),
+  but oui/non, date ; clic = lecture. Le score est affiché en % partout dans la liste.
+- Métriques : `trainer_clips_saved_total{kind="known"|"novel"}` (`novel` reste à 0 jusqu'à la PR de nouveauté) ;
+  `trainer_clips_top_score` (score minimal du classement général, 0 s'il est vide).
 
 ## Client
 

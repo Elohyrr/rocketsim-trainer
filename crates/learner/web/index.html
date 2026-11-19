@@ -247,7 +247,7 @@ function place(obj, a, b, k, f) { // a, b : images voisines ; k : fraction ; f :
 }
 
 /* ---------- Données ---------- */
-let list = [], filter = '', v2only = false, newest = true, cur = null, traj = null;
+let list = [], top = [], showTop = false, filter = '', v2only = false, newest = true, cur = null, traj = null;
 const labels = m => m.replace(/_/g, ' ');
 const fmtDate = u => new Date(u * 1000).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 
@@ -255,6 +255,8 @@ async function loadList() {
   try {
     const r = await fetch('clips'); list = await r.json();
   } catch (e) { $('msg').textContent = 'Liste indisponible.'; return; }
+  try { const r = await fetch('clips?top=1'); top = r.ok ? await r.json() : []; } catch (e) { top = []; }
+  showTop = top.length > 0;
   renderList();
   const id = location.hash.slice(1);
   if (id) select(id); else if (list.length) $('list').classList.add('open');
@@ -262,10 +264,27 @@ async function loadList() {
 function renderList() {
   const counts = {}; for (const c of list) counts[c.mechanic] = (counts[c.mechanic] || 0) + 1;
   const f = $('filters'); f.innerHTML = '';
-  const mk = (key, text) => { const b = document.createElement('button'); b.textContent = text; if (filter === key) b.className = 'on'; b.onclick = () => { filter = key; renderList(); }; f.appendChild(b); };
+  const mk = (key, text) => { const b = document.createElement('button'); b.textContent = text; if (!showTop && filter === key) b.className = 'on'; b.onclick = () => { showTop = false; filter = key; renderList(); }; f.appendChild(b); };
+  const mkTop = () => { const b = document.createElement('button'); b.textContent = `🏆 Top ${top.length}`; if (showTop) b.className = 'on'; b.onclick = () => { showTop = true; renderList(); }; f.appendChild(b); };
+  if (top.length) mkTop();
   mk('', `Tout ${list.length}`);
   for (const m of Object.keys(counts).sort((a, b) => counts[b] - counts[a])) mk(m, `${labels(m)} ${counts[m]}`);
   if (list.some(c => (c.detector || 1) < 2)) { const b = document.createElement('button'); b.textContent = 'v2 seulement'; if (v2only) b.className = 'on'; b.onclick = () => { v2only = !v2only; renderList(); }; f.appendChild(b); }
+  if (showTop) {
+    $('n').textContent = `Top ${top.length} · meilleurs scores, jamais évincés`;
+    $('count').textContent = list.length ? `· ${list.length}` : '';
+    $('sort').style.display = 'none';
+    const it = $('items'); it.innerHTML = '';
+    top.forEach((c, i) => {
+      const q = c.quality || {};
+      const d = document.createElement('div'); d.className = 'item' + (c.id === cur ? ' cur' : '');
+      d.innerHTML = `<b>#${i + 1} ${labels(c.mechanic)}</b><span>${Math.round((q.score || 0) * 100)} % · ${Math.round(q.ball_speed_to_goal || 0)} uu/s · but : ${q.goal_3s ? 'oui' : 'non'} · ${fmtDate(c.created_unix)}</span>`;
+      d.onclick = () => { location.hash = c.id; };
+      it.appendChild(d);
+    });
+    return;
+  }
+  $('sort').style.display = '';
   let rows = list.filter(c => !v2only || (c.detector || 1) >= 2).filter(c => !filter || c.mechanic === filter).sort((a, b) => (newest ? b.created_unix - a.created_unix : a.created_unix - b.created_unix));
   $('n').textContent = `${rows.length} clip${rows.length > 1 ? 's' : ''}`;
   $('count').textContent = list.length ? `· ${list.length}` : '';
@@ -273,7 +292,7 @@ function renderList() {
   const it = $('items'); it.innerHTML = '';
   for (const c of rows) {
     const d = document.createElement('div'); d.className = 'item' + (c.id === cur ? ' cur' : '');
-    d.innerHTML = `<b>${labels(c.mechanic)}</b><span>${fmtDate(c.created_unix)} · ${c.seconds.toFixed(1)} s${c.detail && c.detail.value ? ` · ${Math.round(c.detail.value)} uu/s` : ''}${c.detail && c.detail.support && c.detail.support !== 'none' ? ` · ${c.detail.support}` : ''}${(c.detector || 1) < 2 ? ' · v1' : c.quality ? ` · qualité ${Math.round(c.quality.score * 100)} %${c.quality.goal_3s ? ' · but' : ''}` : ''}</span>`;
+    d.innerHTML = `<b>${labels(c.mechanic)}</b><span>${fmtDate(c.created_unix)} · ${c.seconds.toFixed(1)} s${c.detail && c.detail.value ? ` · ${Math.round(c.detail.value)} uu/s` : ''}${c.detail && c.detail.support && c.detail.support !== 'none' ? ` · ${c.detail.support}` : ''}${(c.detector || 1) < 2 ? ' · v1' : c.quality ? ` · ${Math.round(c.quality.score * 100)} %${c.quality.goal_3s ? ' · but' : ''}` : ''}</span>`;
     d.onclick = () => { location.hash = c.id; };
     it.appendChild(d);
   }

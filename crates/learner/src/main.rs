@@ -13,7 +13,7 @@
 //! Détecteur de mécaniques : règles strictes v2 par défaut ; `--detector-v1` (ou `DETECTOR_V1=1`) garde les règles
 //! d'origine. Au premier démarrage v2, l'anneau de clips est vidé une fois (marqueur `clips/detecteur-v2`).
 //! Clips : une mécanique reconnue en match enregistre un clip rejouable dans `<out>/clips` (anneau borné :
-//! `--clips-max N` (200), `--clips-mb M` (200) ; `--no-clips` pour couper), servi par `GET /clips` et `GET /clips/<id>`.
+//! `--clips-max N` (200), `--clips-mb M` (200), `--clips-top N` (10 meilleurs gardés à part) ; `--no-clips` pour couper), servi par `GET /clips` et `GET /clips/<id>`.
 //! Le dossier `--out` reçoit `checkpoint.mpk`, `policy.safetensors`, `stage`, `opponent-obs-v2`, `explore.json`,
 //! `elo.json`, `pool/` (anciennes politiques du self-play) et `refs/` (références d'Elo : `docs/self-play.md`). Le serveur
 //! `--metrics` sert aussi en lecture seule `GET /policy.safetensors` et `GET /policy.json` (palier, taille, date).
@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use learner::best::{self, Best, OPPONENT_OBS_MARKER};
-use learner::clips::{ClipStore, DEFAULT_MAX_CLIPS};
+use learner::clips::{ClipStore, DEFAULT_MAX_CLIPS, DEFAULT_TOP};
 use learner::curriculum::{Curriculum, IterResult, Move};
 use learner::elo;
 use learner::explore::{Explore, Guard, GuardEvent};
@@ -239,7 +239,10 @@ fn main() {
             let mb: u64 = arg("--clips-mb")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(200);
-            ClipStore::open_for(&out, max, mb * 1024 * 1024, !detector_v1)
+            let top = arg("--clips-top")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(DEFAULT_TOP);
+            ClipStore::open_with(&out, max, mb * 1024 * 1024, !detector_v1, top)
                 .inspect_err(|e| eprintln!("clips désactivés : {e}"))
                 .ok()
         })
@@ -612,6 +615,9 @@ fn main() {
                 m.boost_empty_fraction = s.boost.empty_steps as f64 / s.boost.steps as f64;
             }
             m.clips_saved_known = clips_saved;
+            m.clips_top_score = clip_store
+                .as_ref()
+                .map_or(0.0, |c| c.top_min_score() as f64);
             m.goals_scored_total = goals;
             m.goals_conceded_total = own_goals;
             m.goal_rate = goal_rate;
