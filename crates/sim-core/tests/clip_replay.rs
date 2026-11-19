@@ -198,3 +198,53 @@ fn trajectory_samples_the_replay_at_requested_rate() {
     assert_eq!(t60.frames, steps * 4 + 1);
     assert!(t60.cars[0].pose.iter().all(|x| x.is_finite()));
 }
+
+/// Une voiture démarre sur un pad : le rejeu donne la liste des pads, l'état initial, le ramassage (pad
+/// désactivé) et le gain de boost correspondant.
+#[test]
+fn trajectory_reports_pads_and_a_pickup() {
+    init_meshes(&meshes_dir_from_env().expect("meshes")).expect("init meshes");
+    let mut sim = Sim::new_soccar().unwrap();
+    let a = sim.add_car(true);
+    sim.reset_kickoff(7);
+    let pads = sim.pads();
+    let (idx, pad) = pads.iter().enumerate().find(|(_, p)| !p.big).unwrap();
+    sim.reset_car(a, [pad.pos[0], pad.pos[1], 17.0], 0.0, [0.0; 3], 0.0)
+        .unwrap();
+    let go = Controls {
+        throttle: 1.0,
+        ..Controls::default()
+    };
+    let mut rec = ClipRecorder::new(TICK_SKIP);
+    let mut clip = None;
+    for step in 0..40 {
+        rec.begin_step(&mut sim, &[go]);
+        sim.set_controls(a, go).unwrap();
+        sim.step(TICK_SKIP);
+        if step == 2 {
+            rec.trigger("test");
+        }
+        if let Some(c) = rec.end_step(&mut sim) {
+            clip = Some(c);
+            break;
+        }
+    }
+    let mut fresh = Sim::new_soccar().unwrap();
+    let t = fresh.trajectory(clip.expect("clip"), 30).unwrap();
+    assert_eq!(t.pads.pos.len(), 34 * 3);
+    assert_eq!(t.pads.big.len(), 34);
+    assert_eq!(t.pads.big.iter().filter(|&&b| b).count(), 6);
+    assert_eq!(t.pads.active0.len(), 34);
+    assert!(t.pads.active0[idx], "pad actif au départ");
+    let pick = t
+        .pads
+        .events
+        .chunks(3)
+        .find(|e| e[1] as usize == idx && e[2] == 0)
+        .expect("ramassage");
+    assert!(
+        t.cars[0].boost[pick[0] as usize] > t.cars[0].boost[0] || t.cars[0].boost[0] >= 12.0,
+        "le boost monte au ramassage"
+    );
+    assert!(t.cars[0].boost.last().unwrap() >= &12.0);
+}

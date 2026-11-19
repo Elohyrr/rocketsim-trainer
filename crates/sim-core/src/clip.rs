@@ -438,6 +438,19 @@ pub struct CarTrack {
     pub flags: Vec<u8>,
 }
 
+/// Boosts au sol d'un rejeu : liste fixe (une fois) puis changements d'état échantillonnés.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PadTrack {
+    /// Position x y z (uu) de chaque pad, 3 flottants par pad.
+    pub pos: Vec<f32>,
+    /// Gros pad (100 de boost) ou petit (12).
+    pub big: Vec<bool>,
+    /// Actif à l'image 0.
+    pub active0: Vec<bool>,
+    /// Changements, 3 entiers par événement : image, pad, 1 = réactivé / 0 = ramassé.
+    pub events: Vec<u32>,
+}
+
 /// Rejeu échantillonné d'un clip (repère RocketSim : z vers le haut, unités ≈ cm).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Trajectory {
@@ -449,6 +462,9 @@ pub struct Trajectory {
     pub ball: Vec<f32>,
     /// Voitures dans l'ordre du clip ; la 0 est l'agent.
     pub cars: Vec<CarTrack>,
+    /// Pads (absent des réponses d'avant l'ajout du champ).
+    #[serde(default)]
+    pub pads: PadTrack,
 }
 
 fn r1(x: f32) -> f32 {
@@ -487,8 +503,29 @@ impl Sim {
                     flags: Vec::new(),
                 })
                 .collect(),
+            pads: PadTrack::default(),
         };
+        for c in self.pads() {
+            t.pads
+                .pos
+                .extend([r1(c.pos[0]), r1(c.pos[1]), r1(c.pos[2])]);
+            t.pads.big.push(c.big);
+        }
+        let mut prev: Vec<bool> = Vec::new();
         let mut sample = |sim: &mut Sim| {
+            let now: Vec<bool> = sim.pads().iter().map(|p| p.active).collect();
+            if prev.is_empty() {
+                t.pads.active0 = now.clone();
+            } else {
+                for (i, (&a, &b)) in prev.iter().zip(&now).enumerate() {
+                    if a != b {
+                        t.pads
+                            .events
+                            .extend([t.frames as u32, i as u32, u32::from(b)]);
+                    }
+                }
+            }
+            prev = now;
             let b = sim.arena.pin_mut().get_ball();
             push_pose(&mut t.ball, b.pos, b.rot_mat.forward, b.rot_mat.up);
             for (&id, track) in ids.iter().zip(&mut t.cars) {

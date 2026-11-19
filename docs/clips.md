@@ -38,13 +38,19 @@ pas (suspension, contacts de Bullet). Mesuré (`crates/sim-core/tests/clip_repla
   `hz`/`dt`/`frames`, `agent` (index de la voiture de l'agent dans `cars` : toujours 0, bleue), `ball` et
   `cars[].pose` en tableaux plats de 9 flottants par image (x y z en uu, axe avant, axe haut ; repère RocketSim,
   z vers le haut ; la droite = avant × haut), `cars[].boost` (0–100), `cars[].flags` (1 sol, 2 boost, 4 a sauté,
-  8 flip, 16 démolie), `cars[].blue`. Ça pèse ≈ 25 Kio. Cache mémoire de 48 trajectoires ; coût CPU : quelques ms
+  8 flip, 16 démolie), `cars[].blue`. `pads` (rejeu RocketSim ; l'état initial des 34 pads vient du premier état
+  clé du clip) : `pos` (x y z, 3 flottants par pad), `big` (gros = 100, petit = 12), `active0` (actif à l'image 0) et
+  `events` (3 entiers par changement : image, pad, 1 réactivé / 0 ramassé ; seuls les changements, donc léger).
+  Un client qui ignore `pads` marche toujours ; absent (`{}` ou manquant) ⇒ pas de pads affichés. Ça pèse ≈ 25 Kio. Cache mémoire de 48 trajectoires ; coût CPU : quelques ms
   par rejeu, rien en continu. 404 pour un id inconnu ou un `hz` non pris en charge, 503 tant que les meshes ne
   sont pas chargés.
 - Page web : `GET /` (et `/index.html`), embarquée dans le binaire (`crates/learner/web/index.html`, `include_str!`).
   Liste (filtre par mécanique avec compteurs, tri par date), lecteur three.js (v0.160.0 épinglée, jsdelivr) :
   terrain soccar simplifié (sol, murs, buts, lignes ; pas de mesh), balle et son tracé, deux boîtes orientées
-  (agent bleu mis en évidence : contour, repère jaune, jauge de boost), caméras libre (OrbitControls, tactile) /
+  (agent bleu mis en évidence : contour, repère jaune), jauge de boost de chaque voiture dans le HUD (couleur
+  d'équipe), flamme quand la voiture booste (`flags & 2`), les 34 pads (petits disques bas, gros cylindres + sphère
+  flottante, orange-jaune ; grisés une fois ramassés, réactivés au bon moment ; anneau blanc bref au ramassage),
+  caméras libre (OrbitControls, tactile) /
   balle / agent, lecture/pause, vitesse 0,25×–2×, boucle, barre de temps (repère orange = détection), lien
   partageable `/#<id>`. Les URL sont relatives : la page marche sous n'importe quel hôte. Exposée en lecture seule
   par la HTTPRoute `rlclips` (flux-gitops) : `/`, `/index.html`, `/clips`, `/clips/…` seulement.
