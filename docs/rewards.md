@@ -44,3 +44,16 @@ sur un épisode normal. Un `ball_goal_reward` plus fort risque de payer la pouss
 
 `trainer_hit_speed_to_goal_mean` (vitesse de balle vers le but adverse juste après un toucher de l'agent, dernière
 itération) et `trainer_hit_speed_to_goal_record` (record). Mesurées en match même coefficients à 0 (base de comparaison).
+
+## Essai local (5 min par bras, acteur de prod, `--stage 6 --init-actor --critic-warmup 20`, 2 vCPU)
+
+| Bras | pas | buts / contre son camp (self-play) | part de buts | vitesse vers le but au toucher (moy. / record) |
+|---|---|---|---|---|
+| témoin (coefficients 0) | 800 k | 306 / 362 | 45,8 % | 1234 / 2962 uu/s |
+| `--hit-speed-reward 0.5 --ball-goal-reward 0.02` | 548 k | 183 / 199 | 47,9 % | 916 / 2926 uu/s |
+
+Lecture : pas de régression du taux de but (la part de buts reste ≈ 46–48 %, bruit large avec ~380–670 événements ;
+en self-play la part visée est ~50 %). **Aucune hausse de la vitesse de balle au toucher en 5 min** (la moyenne
+est même plus basse, dans le bruit : 548 k pas contre 800 k, un seul essai par bras). Un effet sur les gros tirs
+demande des heures d'entraînement ; ce test ne prouve que l'absence de casse. À surveiller en prod :
+`trainer_hit_speed_to_goal_mean` / `_record`, et le taux de but.
