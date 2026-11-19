@@ -266,6 +266,27 @@ impl Mechanic {
         )
     }
 
+    /// Famille : les mécaniques d'une même famille sont des variantes ou des conséquences naturelles l'une de
+    /// l'autre (flick et flick_45, save et aerial_save…) ; deux familles distinctes dans un clip = un enchaînement
+    /// (combo). Renvoie la mécanique représentante.
+    pub fn family(self) -> Mechanic {
+        use Mechanic::*;
+        match self {
+            AerialTouch | FastAerial => AerialTouch,
+            AirDribble | WallToAirDribble => AirDribble,
+            FlipReset | ResetShot | DoubleReset | CeilingReset => FlipReset,
+            DoubleTouch | BackboardDouble | BackboardRead => DoubleTouch,
+            Flick | Flick45 | Flick90 | MustyFlick | DelayedFlick | BreeziFlick => Flick,
+            Dribble | BounceDribble | HoodDribble | ReverseDribble | WallDribble
+            | CeilingDribble | DribbleTurn => Dribble,
+            SpeedFlip | WaveDash | HalfFlip | ChainDash | WallDash => WaveDash,
+            Pinch | KuxirPinch => Pinch,
+            Save | AerialSave | SquishySave => Save,
+            Bump | Demo => Bump,
+            m => m,
+        }
+    }
+
     /// Position dans [`Mechanic::ALL`] et dans [`Counts`].
     #[inline]
     pub fn index(self) -> usize {

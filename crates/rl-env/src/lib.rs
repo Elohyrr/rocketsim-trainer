@@ -20,6 +20,9 @@ pub use scenarios::Drill;
 pub use sim_core::SimError;
 pub use sim_core::clip;
 
+/// Bonus de la note de qualité d'un clip qui est un enchaînement (combo) ; le score reste ≤ 1.
+pub const COMBO_QUALITY_BONUS: f32 = 0.1;
+
 /// Dimension de l'observation d'avant l'adversaire (checkpoints historiques, voir `docs/curriculum.md`).
 pub const OBS_DIM_V1: usize = 33;
 /// Dimension de l'observation d'avant la v2 : [`OBS_DIM_V1`] + bloc adversaire (position, vitesse, cap, présence).
@@ -583,7 +586,8 @@ impl Env {
             c.quality = Some(clip::ClipQuality {
                 ball_speed_to_goal: q.speed,
                 goal_3s: q.goal,
-                score: q.score(),
+                // Bonus modéré pour un enchaînement ; jamais au-delà de 1.
+                score: (q.score() + if c.combo { COMBO_QUALITY_BONUS } else { 0.0 }).min(1.0),
             });
             self.clips.push(c);
         }
@@ -989,6 +993,14 @@ impl Env {
                             && seen.get(m) > 0
                     })
                     .max_by_key(|m| (m.clip_priority(), m.index()));
+                // Le clip garde toutes les mécaniques vues dans sa fenêtre (même sans déclenchement).
+                for m in mechanics::Mechanic::ALL {
+                    if !matches!(m, mechanics::Mechanic::Touch | mechanics::Mechanic::Bump)
+                        && seen.get(m) > 0
+                    {
+                        self.rec.note(m.label());
+                    }
+                }
                 if let Some(m) = rarest
                     && self.rec.trigger(m.label())
                 {
