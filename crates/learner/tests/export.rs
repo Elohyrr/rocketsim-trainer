@@ -27,7 +27,7 @@ fn exported_policy_matches_burn_and_checkpoint_resumes() {
     let st = dir.join("policy.safetensors");
     tr.export(&st).unwrap();
     let pol = Policy::load(&st).unwrap();
-    assert_eq!((pol.obs_dim(), pol.action_count()), (rl_env::OBS_DIM, 78));
+    assert_eq!((pol.obs_dim(), pol.action_count()), (rl_env::OBS_DIM, 90));
     let obs: Vec<f32> = (0..rl_env::OBS_DIM)
         .map(|i| (i as f32 * 0.37).sin())
         .collect();

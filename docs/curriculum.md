@@ -85,6 +85,8 @@ et 6. Le palier courant est conservé (fichier `stage`) et la reprise est automa
 Les moments d'Adam ne sont pas sauvegardés (inchangé).
 Le `policy.safetensors` exporté a désormais 43 entrées : un consommateur de l'ancien export (33) doit être mis à jour.
 
+Depuis l'observation v3 (89 valeurs, 90 actions), voir `docs/observation.md` : l'export 43/78 reste lisible par les clients.
+
 Les voitures sont identifiées par leur id (`Sim::snapshot` les trie par id) : jusqu'à la correction de novembre 2026,
 `snapshot().cars[0]` était la voiture **orange** dès qu'il y avait deux voitures (ordre d'un `unordered_set` RocketSim),
 si bien qu'aux paliers 5 et 6 l'agent observait l'adversaire immobile à la place de sa propre voiture et que la

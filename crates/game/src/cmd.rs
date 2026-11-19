@@ -46,18 +46,20 @@ fn fail(msg: &str) -> i32 {
 
 fn bot_cmd(action: &BotAction) -> i32 {
     let dir = game::bot::policy_dir();
-    let (obs, acts) = (rl_env::OBS_DIM, rl_env::ActionTable::rlgym().len());
+    // Formats lisibles : le courant, et celui d'avant l'observation v3 / le frein à main (43 / 78).
+    let obs = [rl_env::OBS_DIM_V2, rl_env::OBS_DIM];
+    let acts = [rl_env::N_ACTIONS_V1, rl_env::ActionTable::rlgym().len()];
     match action {
         BotAction::Pull { url, file } => {
             let r = match file {
-                Some(f) => bot::pull_file(std::path::Path::new(f), &dir, obs, acts),
+                Some(f) => bot::pull_file(std::path::Path::new(f), &dir, &obs, &acts),
                 None => {
                     let url = bot::resolve_url(
                         url.as_deref(),
                         std::env::var(bot::URL_ENV).ok().as_deref(),
                     );
                     println!("Téléchargement de la politique depuis {url} …");
-                    bot::pull(&Curl, &url, &dir, obs, acts)
+                    bot::pull(&Curl, &url, &dir, &obs, &acts)
                 }
             };
             match r {

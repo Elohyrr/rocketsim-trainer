@@ -20,9 +20,8 @@ sont inchangées : un checkpoint de prod se reprend tel quel (aucune remise à z
 Fonctions pures `scenarios::sample(drill, unit)` ; `rl-env` applique l'état (`Env::reset_drill`). Tirage uniforme.
 
 **Boost de départ aléatoire** (tous les drills, `scenarios::random_boost`) : 25 % de 0 à 20, 25 % à 100, 50 % uniforme
-sur 0–100, pour apprendre les mécaniques avec ET sans boost. Hors drill, `start_boost` reste à 33. Aucune
-récompense de boost dans cette PR (la gestion du boost en match, avec les pads dans l'observation, est un autre
-chantier) : les bonus de méca ne dépendent pas du boost restant, donc ne poussent pas à en gaspiller, et rien ne
+sur 0–100, pour apprendre les mécaniques avec ET sans boost. Hors drill, le boost de départ est 33 (ou aléatoire aux paliers 5/6, `docs/observation.md`). Aucune
+récompense de boost en drill (la prime de ramassage ne vaut qu'en match, `docs/observation.md`) : les bonus de méca ne dépendent pas du boost restant, donc ne poussent pas à en gaspiller, et rien ne
 pénalise de tenter une occasion avec peu de boost.
 
 | Drill (`drill=`) | Départ | Mécaniques visées |

@@ -4,6 +4,8 @@
 //! learner [--minutes M] [--envs N] [--threads T] [--out DIR] [--metrics ADDR] [--resume]
 //!         [--checkpoint-minutes N] [--stage S] [--init-actor policy.safetensors [--critic-warmup N]]
 //!         [--elo-minutes N] [--pool-every N] [--drill-prob P]
+//! `--boost-reward C` (ou `BOOST_REWARD`) : prime de ramassage de boost aux paliers 5/6 (0,2 par défaut, 0 = coupée) ;
+//! `--fixed-boost` : boost de départ fixe (33) au lieu d'aléatoire (`docs/observation.md`).
 //! `--drill-prob P` (ou `DRILL_PROB`) : part des épisodes en drill de mécaniques (0 = coupé, défaut ; 0,3 conseillé).
 //! `--minutes 0` = sans limite (mode cluster). `--stage S` fige le palier (pas de promotion automatique).
 //! Variables : `JELLYFIN_URL`, `JELLYFIN_API_KEY` (pause D6, désactivée sans clé), `JELLYFIN_RESUME_MINUTES`
@@ -217,6 +219,13 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0.0f32)
         .clamp(0.0, 0.9);
+    // `--boost-reward C` (ou BOOST_REWARD) : poids de la prime de ramassage de boost (défaut : celui des paliers 5/6,
+    // 0 = coupée) ; `--fixed-boost` : boost de départ fixe (33) au lieu d'aléatoire. Voir docs/observation.md.
+    let boost_reward: Option<f32> = arg("--boost-reward")
+        .or_else(|| std::env::var("BOOST_REWARD").ok())
+        .and_then(|s| s.parse().ok())
+        .map(|c: f32| c.clamp(0.0, 1.0));
+    let fixed_boost = std::env::args().any(|a| a == "--fixed-boost");
     let ledger = std::sync::Arc::new(rl_env::BonusLedger::default());
     let want_clips = !std::env::args().any(|a| a == "--no-clips");
     // `--detector-v1` ou `DETECTOR_V1=1` : règles d'origine du détecteur de mécaniques (sinon v2, strictes).
@@ -243,6 +252,10 @@ fn main() {
             detector_v1,
             drill_prob: if c.end_on_touch { 0.0 } else { drill_prob },
             bonus_ledger: ledger.clone(),
+            boost_reward: boost_reward.map_or(c.boost_reward, |b| {
+                if c.boost_reward > 0.0 { b } else { 0.0 }
+            }),
+            random_start_boost: c.random_start_boost && !fixed_boost,
             kickoff_prob: if c.kickoff_prob > 0.0 {
                 kp.unwrap_or(c.kickoff_prob)
             } else {
@@ -337,6 +350,7 @@ fn main() {
     let (mut steps, mut eps, mut touches) = (0u64, 0u64, 0u64);
     let mut mech_total = mechanics::Counts::default();
     let mut drill_total = rl_env::DrillReport::default();
+    let mut boost_total = rl_env::BoostReport::default();
     let (mut goals, mut own_goals) = (0u64, 0u64);
     let (mut kick_won, mut kick_lost, mut kick_neutral) = (0u64, 0u64, 0u64);
     let mut it = 0;
@@ -590,6 +604,13 @@ fn main() {
             m.drill_bonus = drill_total.bonus.clone();
             m.drill_episodes = drill_total.episodes;
             m.drill_recovery = drill_total.recovery;
+            boost_total.add(&s.boost);
+            m.boost_pickups_small = boost_total.pickups_small;
+            m.boost_pickups_big = boost_total.pickups_big;
+            if s.boost.steps > 0 {
+                m.boost_mean = s.boost.boost_sum / s.boost.steps as f64;
+                m.boost_empty_fraction = s.boost.empty_steps as f64 / s.boost.steps as f64;
+            }
             m.clips_saved_known = clips_saved;
             m.goals_scored_total = goals;
             m.goals_conceded_total = own_goals;

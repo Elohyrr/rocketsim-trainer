@@ -4,7 +4,7 @@
 use burn::module::Module;
 use burn::tensor::{Device, Tensor, TensorData};
 use learner::ppo::{ActorCritic, Mlp, PpoConfig, Trainer};
-use rl_env::{EnvConfig, OBS_DIM, OBS_DIM_V1};
+use rl_env::{EnvConfig, OBS_DIM, OBS_DIM_V1, OBS_DIM_V2};
 
 #[test]
 fn old_format_checkpoint_loads_with_zero_new_weights() {
@@ -46,6 +46,12 @@ fn old_format_checkpoint_loads_with_zero_new_weights() {
         *v = 0.7;
     }
     assert_eq!(tr.policy_logits(&with_opp), got);
+    // Les actions ajoutées (frein à main au sol) démarrent à logit −4 : jamais gloutonnes.
+    assert!(
+        got[78..]
+            .iter()
+            .all(|l| (*l - rl_env::NEW_ACTION_BIAS).abs() < 1e-6)
+    );
     // Et l'entraînement continue (les nouveaux poids deviennent apprenables).
     tr.iteration();
     std::fs::remove_dir_all(&dir).ok();
@@ -70,7 +76,7 @@ fn reset_opponent_inputs_ignores_the_opponent_block_and_keeps_the_rest() {
         *v = 0.0;
     }
     let mut with_opp = obs.clone();
-    for v in &mut with_opp[OBS_DIM_V1..] {
+    for v in &mut with_opp[OBS_DIM_V1..OBS_DIM_V2] {
         *v = 0.7;
     }
     let before = tr.policy_logits(&obs);
@@ -86,4 +92,56 @@ fn reset_opponent_inputs_ignores_the_opponent_block_and_keeps_the_rest() {
     }
     assert_eq!(tr.policy_logits(&with_opp), after);
     tr.iteration();
+}
+
+/// Checkpoint de prod (observation de 43 entrées, 78 actions) : repris sans perte. Mêmes actions gloutonnes sur
+/// 1 000 états aléatoires (même quand les nouvelles entrées — pads, action précédente, flip — sont non nulles),
+/// critique inchangé, et les 12 actions ajoutées ne sont jamais choisies.
+#[test]
+fn v2_checkpoint_keeps_greedy_actions_and_values() {
+    let cfg = PpoConfig {
+        n_envs: 2,
+        threads: 1,
+        horizon: 16,
+        hidden: 64,
+        minibatch: 16,
+        epochs: 1,
+        ..Default::default()
+    };
+    let dir = std::env::temp_dir().join(format!("learner-v2-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let device = Device::flex().autodiff();
+    device.seed(11);
+    let old = ActorCritic {
+        policy: Mlp::new(OBS_DIM_V2, cfg.hidden, 78, &device),
+        value: Mlp::new(OBS_DIM_V2, cfg.hidden, 1, &device),
+    };
+    let ck = dir.join("checkpoint");
+    old.clone().save_file(&ck).unwrap();
+    let mut tr = Trainer::new(cfg, EnvConfig::for_stage(5)).expect("meshes (ROCKETSIM_MESHES_DIR)");
+    tr.load_checkpoint(&ck).unwrap();
+
+    let argmax = |l: &[f32]| (0..l.len()).max_by(|&a, &b| l[a].total_cmp(&l[b])).unwrap();
+    let mut rng = rl_env::Rng::new(3);
+    let mut same = 0;
+    for _ in 0..1000 {
+        let mut obs: Vec<f32> = (0..OBS_DIM).map(|_| rng.range(-1.0, 1.0)).collect();
+        let x = Tensor::<2>::from_data(
+            TensorData::new(obs[..OBS_DIM_V2].to_vec(), [1, OBS_DIM_V2]),
+            &device,
+        );
+        let expected: Vec<f32> = old.policy.forward(x).into_data().try_to_vec().unwrap();
+        let got = tr.policy_logits(&obs);
+        let (a, b) = (argmax(&expected), argmax(&got));
+        assert!(b < 78, "action ajoutée choisie");
+        same += usize::from(a == b);
+        // Les entrées ajoutées n'ont aucun effet.
+        for v in &mut obs[OBS_DIM_V2..] {
+            *v = 0.0;
+        }
+        assert_eq!(tr.policy_logits(&obs)[..78], got[..78]);
+    }
+    assert!(same >= 990, "{same}/1000 actions identiques");
+    tr.iteration();
+    std::fs::remove_dir_all(&dir).ok();
 }
