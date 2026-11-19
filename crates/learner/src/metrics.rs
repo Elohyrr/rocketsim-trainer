@@ -58,6 +58,10 @@ pub struct Metrics {
     pub boost_pickups_big: u64,
     pub boost_mean: f64,
     pub boost_empty_fraction: f64,
+    /// Réussites par drill, buts payés après virage/flick, arrêts du gardien (voir `docs/drills.md`).
+    pub drill_success: [u64; scenarios::DRILL_COUNT],
+    pub drill_dribble_goal: u64,
+    pub drill_saves: u64,
     /// Clips enregistrés depuis le démarrage (`kind="known"` : mécanique du catalogue ; `novel` : à venir).
     pub clips_saved_known: u64,
     pub goals_scored_total: u64,
@@ -261,6 +265,23 @@ impl Metrics {
                 self.drill_episodes[d.index()]
             );
         }
+        let _ = writeln!(s, "# TYPE trainer_drill_success_total counter");
+        for d in scenarios::Drill::ALL {
+            let _ = writeln!(
+                s,
+                "trainer_drill_success_total{{drill=\"{}\"}} {}",
+                d.label(),
+                self.drill_success[d.index()]
+            );
+        }
+        let _ = writeln!(s, "# TYPE trainer_drill_dribble_goal_total counter");
+        let _ = writeln!(
+            s,
+            "trainer_drill_dribble_goal_total {}",
+            self.drill_dribble_goal
+        );
+        let _ = writeln!(s, "# TYPE trainer_drill_saves_total counter");
+        let _ = writeln!(s, "trainer_drill_saves_total {}", self.drill_saves);
         let _ = writeln!(s, "# TYPE trainer_drill_bonus_total counter");
         // Seules les mécaniques qui peuvent recevoir un bonus ont une série (budget de séries, voir ci-dessus).
         for m in mechanics::Mechanic::ALL
@@ -454,8 +475,8 @@ mod tests {
         }
         let n = count_series(&m.render());
         assert!(
-            n < 200,
-            "objectif < 200 séries (plafond dur : 500), obtenu {n}"
+            n < 250,
+            "objectif < 250 séries (plafond dur : 500), obtenu {n}"
         );
         assert!(n < MAX_SERIES);
     }
@@ -589,17 +610,19 @@ mod tests {
         m.drill_episodes[scenarios::Drill::WallBall.index()] = 7;
         m.drill_bonus.0[mechanics::Mechanic::Flick.index()] = 2;
         m.drill_recovery[0] = 4;
+        m.drill_success[scenarios::Drill::Keeper.index()] = 3;
         m.drill_mechanics.0[mechanics::Mechanic::Dribble.index()] = 5;
         let t = m.render();
         assert!(t.contains("trainer_drill_episodes_total{drill=\"wall_ball\"} 7"));
         assert!(t.contains("trainer_drill_bonus_total{mechanic=\"flick\"} 2"));
         assert!(t.contains("trainer_drill_recovery_total{outcome=\"good\"} 4"));
+        assert!(t.contains("trainer_drill_success_total{drill=\"keeper\"} 3"));
         assert!(t.contains("trainer_mechanic_total{mechanic=\"dribble\",context=\"drill\"} 5"));
         assert_eq!(
             t.lines()
                 .filter(|l| l.starts_with("trainer_drill_"))
                 .count(),
-            DRILL_COUNT + 8 + 4
+            DRILL_COUNT * 2 + 9 + 4 + 2
         );
     }
 

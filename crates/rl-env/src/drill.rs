@@ -6,6 +6,7 @@
 //! d'occurrences payées sur la dernière heure : `b0 / √(1 + n/N)`.
 
 use mechanics::{Counts, Mechanic};
+use scenarios::Drill;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -23,8 +24,8 @@ pub const DECAY_N: f32 = 1000.0;
 /// Fenêtre glissante de la décroissance.
 pub const WINDOW: Duration = Duration::from_secs(3600);
 /// Centre du but adverse (+Y), pour la direction de la balle.
-/// Case du registre du bonus de récupération (après les 12 mécaniques).
-pub const RECOVERY_SLOT: usize = 12;
+/// Case du registre du bonus de récupération (après les mécaniques du catalogue).
+pub const RECOVERY_SLOT: usize = mechanics::MECH_COUNT;
 /// Bonus de base de la récupération (plafonné comme les autres à 10 % du but).
 pub const RECOVERY_BONUS: f32 = 0.3;
 const GRAVITY: f32 = 650.0;
@@ -36,6 +37,24 @@ pub const RECOVERY_END_TICKS: u64 = 120;
 pub const RECOVERY_MIN_COS: f32 = 0.5;
 pub const RECOVERY_MIN_SPEED: f32 = 400.0;
 pub const GOAL_CENTER: [f32; 3] = [0.0, 5120.0, 321.0];
+/// Case du registre du bonus « but après un virage ou un flick avec la balle conservée ».
+pub const DRIBBLE_GOAL_SLOT: usize = mechanics::MECH_COUNT + 1;
+/// Case du registre de l'arrêt du gardien.
+pub const KEEPER_SLOT: usize = mechanics::MECH_COUNT + 2;
+/// But marqué dans les [`CARRY_GOAL_WINDOW_TICKS`] suivant un virage de dribble ou un flick : bonus de base.
+pub const DRIBBLE_GOAL_BONUS: f32 = 0.5;
+/// Fenêtre (6 s à 120 Hz) entre le virage / flick et le but.
+pub const CARRY_GOAL_WINDOW_TICKS: u64 = 720;
+/// Virages de dribble payés au plus par épisode.
+pub const MAX_TURNS_PER_EPISODE: u32 = 3;
+/// Arrêt du gardien : bonus de base ; pénalité en plus si but encaissé (en plus de la pénalité de but contre son camp).
+pub const KEEPER_SAVE_BONUS: f32 = 1.0;
+pub const KEEPER_CONCEDE_PENALTY: f32 = 1.0;
+/// La balle menace la cage au-delà de cette vitesse vers elle (uu/s) ; arrêtée en dessous de [`KEEPER_SAVED_SPEED`].
+pub const KEEPER_THREAT_SPEED: f32 = 500.0;
+pub const KEEPER_SAVED_SPEED: f32 = 200.0;
+/// Ticks entre l'arrêt et la fin de l'épisode (1,5 s).
+pub const KEEPER_CLEAR_TICKS: u64 = 180;
 
 /// Bonus de base `b0` (en récompense, pour un but à +10 ; plafonné à 10 % du but). 0 = jamais de bonus.
 pub fn base_bonus(m: Mechanic) -> f32 {
@@ -46,6 +65,8 @@ pub fn base_bonus(m: Mechanic) -> f32 {
         Mechanic::WallShot => 0.5,
         Mechanic::AerialTouch | Mechanic::DoubleTouch => 0.4,
         Mechanic::Dribble => 0.3,
+        // Virage avec la balle conservée : faible, payé tout de suite (≤ 3 par épisode).
+        Mechanic::DribbleTurn => 0.2,
         // Le catalogue étendu (PR catalogue) ne rapporte aucun bonus : à décider avec les drills.
         _ => 0.0,
     }
@@ -63,9 +84,16 @@ pub fn speed_toward_goal(ball_pos: [f32; 3], ball_vel: [f32; 3]) -> f32 {
 }
 
 /// Registre partagé (tous les envs, tous les threads) des bonus payés, pour la décroissance.
-#[derive(Default)]
 pub struct BonusLedger {
-    paid: Mutex<[VecDeque<Instant>; 13]>,
+    paid: Mutex<Vec<VecDeque<Instant>>>,
+}
+
+impl Default for BonusLedger {
+    fn default() -> Self {
+        Self {
+            paid: Mutex::new(vec![VecDeque::new(); mechanics::MECH_COUNT + 3]),
+        }
+    }
 }
 
 impl std::fmt::Debug for BonusLedger {
@@ -80,7 +108,7 @@ impl BonusLedger {
         self.pay_slot_at(m.index(), b0, now)
     }
 
-    /// Comme [`BonusLedger::pay_at`] pour une case du registre (les 12 mécaniques puis [`RECOVERY_SLOT`]).
+    /// Comme [`BonusLedger::pay_at`] pour une case du registre (les mécaniques puis [`RECOVERY_SLOT`]).
     pub fn pay_slot_at(&self, slot: usize, b0: f32, now: Instant) -> f32 {
         if b0 <= 0.0 {
             return 0.0;
@@ -128,6 +156,12 @@ pub struct DrillReport {
     pub recovery: [u64; 4],
     pub mechanics: Counts,
     pub bonus: Counts,
+    /// Réussites par drill (voir [`EpisodeBonus::success`]).
+    pub success: [u64; scenarios::DRILL_COUNT],
+    /// Buts payés après un virage de dribble ou un flick.
+    pub dribble_goal: u64,
+    /// Arrêts du gardien payés.
+    pub saves: u64,
 }
 
 impl DrillReport {
@@ -138,6 +172,11 @@ impl DrillReport {
         for (a, b) in self.recovery.iter_mut().zip(o.recovery) {
             *a += b;
         }
+        for (a, b) in self.success.iter_mut().zip(o.success) {
+            *a += b;
+        }
+        self.dribble_goal += o.dribble_goal;
+        self.saves += o.saves;
         self.mechanics.add(&o.mechanics);
         self.bonus.add(&o.bonus);
     }
@@ -151,6 +190,69 @@ pub struct EpisodeBonus {
     pub paid: u32,
     /// Occurrences vues sans être encore utiles : (mécanique, tick), payées si un but arrive dans la fenêtre.
     pub pending: Vec<(Mechanic, u64)>,
+    /// Le drill est réussi (but, arrêt, toucher aérien… selon la famille : voir [`EpisodeBonus::on_events`]).
+    pub success: bool,
+    /// Dernier virage de dribble ou flick vu (tick) : un but dans les [`CARRY_GOAL_WINDOW_TICKS`] est payé.
+    pub last_carry: Option<u64>,
+    pub turns_paid: u32,
+    pub goal_paid: bool,
+    /// Suivi du gardien (drill `keeper` seulement).
+    pub keeper: Option<KeeperTrack>,
+}
+
+/// Ce qu'un pas de drill a produit, pour [`EpisodeBonus::on_events`].
+#[derive(Clone, Copy, Debug)]
+pub struct StepEvents<'a> {
+    pub tick: u64,
+    pub touched: bool,
+    pub ball: ([f32; 3], [f32; 3]),
+    /// La voiture est en l'air (moins de 3 roues au sol).
+    pub car_airborne: bool,
+    pub our_goal: bool,
+    pub own_goal: bool,
+    pub seen: &'a Counts,
+}
+
+/// Vitesse de la balle vers SA cage (−Y), uu/s.
+pub fn speed_toward_own_goal(ball_pos: [f32; 3], ball_vel: [f32; 3]) -> f32 {
+    speed_toward_goal(
+        [-ball_pos[0], -ball_pos[1], ball_pos[2]],
+        [-ball_vel[0], -ball_vel[1], ball_vel[2]],
+    )
+}
+
+/// Suivi du gardien : un toucher qui arrête une balle qui menaçait la cage est un arrêt ; fin 1,5 s après.
+#[derive(Debug)]
+pub struct KeeperTrack {
+    prev: ([f32; 3], [f32; 3]),
+    pub saved_tick: Option<u64>,
+}
+
+impl KeeperTrack {
+    pub fn new(ball_pos: [f32; 3], ball_vel: [f32; 3]) -> Self {
+        Self {
+            prev: (ball_pos, ball_vel),
+            saved_tick: None,
+        }
+    }
+
+    /// Avance d'une décision : `(arrêt nouveau, épisode fini)`.
+    pub fn step(&mut self, tick: u64, touched: bool, ball: ([f32; 3], [f32; 3])) -> (bool, bool) {
+        let mut saved = false;
+        if touched
+            && self.saved_tick.is_none()
+            && speed_toward_own_goal(self.prev.0, self.prev.1) > KEEPER_THREAT_SPEED
+            && speed_toward_own_goal(ball.0, ball.1) < KEEPER_SAVED_SPEED
+        {
+            self.saved_tick = Some(tick);
+            saved = true;
+        }
+        self.prev = ball;
+        let done = self
+            .saved_tick
+            .is_some_and(|t| tick >= t + KEEPER_CLEAR_TICKS);
+        (saved, done)
+    }
 }
 
 impl EpisodeBonus {
@@ -169,9 +271,22 @@ impl EpisodeBonus {
         self.pending
             .retain(|(_, t)| tick.saturating_sub(*t) <= GOAL_WINDOW_TICKS);
         let useful = speed_toward_goal(ball.0, ball.1) > USEFUL_SPEED;
+        if seen.get(Mechanic::Flick) > 0 || seen.get(Mechanic::DribbleTurn) > 0 {
+            self.last_carry = Some(tick);
+        }
         for m in Mechanic::ALL {
             let b0 = base_bonus(m).min(bonus_cap);
             if b0 <= 0.0 {
+                continue;
+            }
+            if m == Mechanic::DribbleTurn {
+                for _ in 0..seen.get(m) {
+                    if self.turns_paid < MAX_TURNS_PER_EPISODE {
+                        reward += ledger.pay(m, b0);
+                        report.bonus.inc(m);
+                        self.turns_paid += 1;
+                    }
+                }
                 continue;
             }
             for _ in 0..seen.get(m) {
@@ -208,7 +323,66 @@ impl EpisodeBonus {
                 self.paid += 1;
             }
         }
+        if !self.goal_paid
+            && self
+                .last_carry
+                .is_some_and(|t| tick.saturating_sub(t) <= CARRY_GOAL_WINDOW_TICKS)
+        {
+            self.goal_paid = true;
+            reward += ledger.pay_slot(DRIBBLE_GOAL_SLOT, DRIBBLE_GOAL_BONUS.min(bonus_cap));
+            report.dribble_goal += 1;
+        }
         reward
+    }
+
+    /// Réussite de la famille et récompenses propres au gardien. Renvoie `(récompense, épisode fini)`.
+    /// Réussite : but pour les tirs, dribbles, murs, rebonds ; toucher aérien (balle > 300 uu, voiture en l'air)
+    /// pour `aerial_touch`, `air_dribble`, `aerial_high` ; flip reset détecté pour `flip_reset` ; arrêt sans but
+    /// encaissé pour `keeper`. La récupération est jugée par [`RecoveryTrack`].
+    pub fn on_events(
+        &mut self,
+        d: Drill,
+        e: &StepEvents,
+        bonus_cap: f32,
+        ledger: &BonusLedger,
+        report: &mut DrillReport,
+    ) -> (f32, bool) {
+        let mut reward = 0.0;
+        let mut done = false;
+        match d {
+            Drill::Keeper => {
+                if let Some(k) = self.keeper.as_mut() {
+                    let (saved, fin) = k.step(e.tick, e.touched, e.ball);
+                    if saved {
+                        self.success = true;
+                        report.saves += 1;
+                        reward += ledger.pay_slot(KEEPER_SLOT, KEEPER_SAVE_BONUS.min(bonus_cap));
+                    }
+                    done = fin;
+                }
+                if e.own_goal {
+                    self.success = false;
+                    reward -= KEEPER_CONCEDE_PENALTY;
+                }
+            }
+            Drill::AerialTouch | Drill::AirDribble | Drill::AerialHigh => {
+                if e.touched && e.car_airborne && e.ball.0[2] > 300.0 {
+                    self.success = true;
+                }
+            }
+            Drill::FlipReset => {
+                if e.seen.get(Mechanic::FlipReset) > 0 {
+                    self.success = true;
+                }
+            }
+            Drill::Recovery => {}
+            _ => {
+                if e.our_goal {
+                    self.success = true;
+                }
+            }
+        }
+        (reward, done)
     }
 }
 
@@ -406,8 +580,9 @@ mod tests {
         assert!((g2 - 0.3).abs() < 1e-5, "un seul des deux paie : {g2}");
         assert_eq!(e.paid, 2);
         assert_eq!(r.bonus.get(Mechanic::Dribble), 1);
-        // Plus rien en but : plafond atteint.
-        assert_eq!(e.on_goal(220, 1.0, &l, &mut r), 0.0);
+        // Plus de bonus différé en but (plafond atteint) : seul reste le bonus « but après flick ».
+        let g = e.on_goal(220, 1.0, &l, &mut r);
+        assert!((g - DRIBBLE_GOAL_BONUS).abs() < 1e-5, "{g}");
     }
 
     #[test]
@@ -493,6 +668,151 @@ mod tests {
         assert!(t[1] < -0.9);
         let t = recovery_target([0.0, 0.0, 17.0], [0.0, 2000.0, 93.0]);
         assert!(t[1] > 0.9);
+    }
+
+    #[test]
+    fn virage_paye_tout_de_suite_et_but_apres_virage_ou_flick() {
+        let (l, mut r, mut e) = (
+            BonusLedger::default(),
+            DrillReport::default(),
+            EpisodeBonus::default(),
+        );
+        // Balle portée (vitesse vers le but nulle) : le virage est payé quand même, 3 au plus par épisode.
+        let carried = ([0.0, 0.0, 145.0], [0.0, 0.0, 0.0]);
+        let g = e.on_step(&one(Mechanic::DribbleTurn), 100, carried, 1.0, &l, &mut r);
+        assert!((g - 0.2).abs() < 1e-5, "{g}");
+        for t in 101..110 {
+            e.on_step(&one(Mechanic::DribbleTurn), t, carried, 1.0, &l, &mut r);
+        }
+        assert_eq!(r.bonus.get(Mechanic::DribbleTurn), 3);
+        // Un virage ne consomme pas le plafond des autres bonus.
+        assert_eq!(e.paid, 0);
+        // But dans les 6 s : bonus unique ; trop tard : rien.
+        let g = e.on_goal(100 + 600, 1.0, &l, &mut r);
+        assert!((g - DRIBBLE_GOAL_BONUS).abs() < 1e-5, "{g}");
+        assert_eq!(e.on_goal(100 + 610, 1.0, &l, &mut r), 0.0);
+        assert_eq!(r.dribble_goal, 1);
+        let mut e2 = EpisodeBonus::default();
+        e2.on_step(&one(Mechanic::Flick), 100, carried, 1.0, &l, &mut r);
+        assert_eq!(e2.on_goal(100 + 800, 1.0, &l, &mut r), 0.0);
+        // Un simple dribble en ligne droite : seul le bonus différé du dribble (0,3), pas le bonus de virage.
+        let mut e3 = EpisodeBonus::default();
+        e3.on_step(&one(Mechanic::Dribble), 100, carried, 1.0, &l, &mut r);
+        let g = e3.on_goal(150, 1.0, &l, &mut r);
+        assert!((g - 0.3).abs() < 1e-5, "{g}");
+        assert!(!e3.goal_paid);
+    }
+
+    fn ev<'a>(
+        tick: u64,
+        touched: bool,
+        ball: ([f32; 3], [f32; 3]),
+        seen: &'a Counts,
+    ) -> StepEvents<'a> {
+        StepEvents {
+            tick,
+            touched,
+            ball,
+            car_airborne: false,
+            our_goal: false,
+            own_goal: false,
+            seen,
+        }
+    }
+
+    #[test]
+    fn gardien_arret_but_encaisse_et_fin() {
+        let l = BonusLedger::default();
+        let none = Counts::default();
+        // Balle tirée vers sa cage (−Y), arrêtée par un toucher : arrêt payé une fois, fin 1,5 s après.
+        let mut r = DrillReport::default();
+        let mut e = EpisodeBonus {
+            keeper: Some(KeeperTrack::new([0.0, -1000.0, 200.0], [0.0, -2000.0, 0.0])),
+            ..Default::default()
+        };
+        let stopped = ([0.0, -1500.0, 200.0], [0.0, 100.0, 0.0]);
+        let (g, done) = e.on_events(
+            Drill::Keeper,
+            &ev(10, true, stopped, &none),
+            1.0,
+            &l,
+            &mut r,
+        );
+        assert!((g - KEEPER_SAVE_BONUS).abs() < 1e-5 && !done && e.success);
+        assert_eq!(r.saves, 1);
+        let (g, _) = e.on_events(
+            Drill::Keeper,
+            &ev(20, true, stopped, &none),
+            1.0,
+            &l,
+            &mut r,
+        );
+        assert_eq!(g, 0.0);
+        let (_, done) = e.on_events(
+            Drill::Keeper,
+            &ev(10 + KEEPER_CLEAR_TICKS, false, stopped, &none),
+            1.0,
+            &l,
+            &mut r,
+        );
+        assert!(done);
+        // Toucher qui laisse la balle filer vers la cage : pas d'arrêt ; but encaissé : pénalité, échec.
+        let mut e = EpisodeBonus {
+            keeper: Some(KeeperTrack::new([0.0, -1000.0, 200.0], [0.0, -2000.0, 0.0])),
+            ..Default::default()
+        };
+        let still_going = ([0.0, -1500.0, 200.0], [0.0, -1500.0, 0.0]);
+        e.on_events(
+            Drill::Keeper,
+            &ev(10, true, still_going, &none),
+            1.0,
+            &l,
+            &mut r,
+        );
+        assert!(!e.success);
+        let mut conceded = ev(30, false, still_going, &none);
+        conceded.own_goal = true;
+        let (g, _) = e.on_events(Drill::Keeper, &conceded, 1.0, &l, &mut r);
+        assert!((g + KEEPER_CONCEDE_PENALTY).abs() < 1e-5 && !e.success);
+    }
+
+    #[test]
+    fn reussite_par_famille() {
+        let (l, mut r) = (BonusLedger::default(), DrillReport::default());
+        let none = Counts::default();
+        let ball = ([0.0, 0.0, 600.0], [0.0; 3]);
+        // Aérien : toucher en l'air avec la balle haute.
+        let mut e = EpisodeBonus::default();
+        e.on_events(
+            Drill::AerialHigh,
+            &ev(1, true, ball, &none),
+            1.0,
+            &l,
+            &mut r,
+        );
+        assert!(!e.success, "voiture au sol");
+        let mut air = ev(2, true, ball, &none);
+        air.car_airborne = true;
+        e.on_events(Drill::AerialHigh, &air, 1.0, &l, &mut r);
+        assert!(e.success);
+        // Tirs : le but.
+        let mut e = EpisodeBonus::default();
+        e.on_events(Drill::ShotRoll, &ev(1, true, ball, &none), 1.0, &l, &mut r);
+        assert!(!e.success);
+        let mut goal = ev(2, false, ball, &none);
+        goal.our_goal = true;
+        e.on_events(Drill::ShotRoll, &goal, 1.0, &l, &mut r);
+        assert!(e.success);
+        // Flip reset : la méca vue.
+        let mut e = EpisodeBonus::default();
+        e.on_events(
+            Drill::FlipReset,
+            &ev(1, false, ball, &one(Mechanic::FlipReset)),
+            1.0,
+            &l,
+            &mut r,
+        );
+        assert!(e.success);
     }
 
     #[test]

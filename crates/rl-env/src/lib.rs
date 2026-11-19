@@ -217,6 +217,10 @@ pub struct EnvConfig {
     /// Part des épisodes qui sont des drills de mécaniques (0 = désactivé ; sans effet quand `end_on_touch`).
     /// Voir `docs/drills.md` : sans adversaire actif, exclus des stats de curriculum, bonus de méca seulement ici.
     pub drill_prob: f32,
+    /// Poids de tirage des drills (même ordre que [`Drill::ALL`], voir `scenarios::parse_weights`).
+    pub drill_weights: [f32; scenarios::DRILL_COUNT],
+    /// Enregistre aussi les clips des drills de dribble (jamais les autres).
+    pub drill_clips: bool,
     /// Registre partagé des bonus de méca payés (décroissance sur 1 h glissante) ; à partager entre les paliers.
     pub bonus_ledger: Arc<BonusLedger>,
 }
@@ -266,6 +270,8 @@ impl Default for EnvConfig {
             record_clips: false,
             detector_v1: false,
             drill_prob: 0.0,
+            drill_weights: Drill::DEFAULT_WEIGHTS,
+            drill_clips: false,
             bonus_ledger: Arc::default(),
         }
     }
@@ -618,6 +624,9 @@ impl Env {
         self.opp_ctl = Controls::default();
         if let Some((d, bonus)) = self.drill.take() {
             self.drill_report.episodes[d.index()] += 1;
+            if bonus.success {
+                self.drill_report.success[d.index()] += 1;
+            }
             if bonus.recovery.as_ref().is_some_and(|t| t.verdict.is_none()) {
                 self.drill_report.recovery[drill::RecoveryOutcome::None.index()] += 1;
             }
@@ -770,7 +779,7 @@ impl Env {
     /// s'il existe, est garé immobile près de sa cage et ignore la politique adverse : on montre la mécanique sans
     /// opposition (voir `docs/drills.md`).
     pub fn reset_drill(&mut self) -> [f32; OBS_DIM] {
-        let d = Drill::pick(self.rng.unit());
+        let d = Drill::pick_weighted(&self.cfg.drill_weights, self.rng.unit());
         self.reset_drill_with(d)
     }
 
@@ -802,15 +811,15 @@ impl Env {
         self.sim.reset_ball(s.ball_pos, s.ball_vel);
         self.sim.set_controls(self.car, Controls::default()).ok();
         if let Some(opp) = self.opp {
-            let x = self.rng.range(-1500.0, 1500.0);
+            let (pos, yaw, boost) = match &s.opponent {
+                Some(o) => (o.pos, o.yaw, o.boost),
+                None => {
+                    let x = self.rng.range(-1500.0, 1500.0);
+                    ([x, 4600.0, 17.0], -std::f32::consts::FRAC_PI_2, 33.0)
+                }
+            };
             self.sim
-                .reset_car(
-                    opp,
-                    [x, 4600.0, 17.0],
-                    -std::f32::consts::FRAC_PI_2,
-                    [0.0; 3],
-                    33.0,
-                )
+                .reset_car(opp, pos, yaw, [0.0; 3], boost)
                 .expect("voiture adverse connue");
             self.sim.set_controls(opp, Controls::default()).ok();
         }
@@ -823,6 +832,9 @@ impl Env {
                 s.car_pos[2],
                 s.car_vel[2],
             ));
+        }
+        if d == Drill::Keeper {
+            bonus.keeper = Some(drill::KeeperTrack::new(s.ball_pos, s.ball_vel));
         }
         self.drill = Some((d, bonus));
         self.observe_synced()
@@ -921,7 +933,7 @@ impl Env {
                 .as_ref()
                 .filter(|k| k.charger && self.steps >= k.delay)
                 .is_some();
-            let a = if self.drill.is_some() {
+            let a = if self.drill.as_ref().is_some_and(|d| !d.0.active_opponent()) {
                 None
             } else if charging {
                 Some(self.charger_action(opp))
@@ -937,7 +949,10 @@ impl Env {
         }
         let in_drill = self.drill.is_some();
         // Les clips ne montrent que des matchs : une méca provoquée par un état de départ n'est pas une découverte.
-        let recording = self.cfg.detect_mechanics && self.cfg.record_clips && !in_drill;
+        let clip_drill =
+            self.cfg.drill_clips && self.drill.as_ref().is_some_and(|d| d.0.is_dribble());
+        let recording =
+            self.cfg.detect_mechanics && self.cfg.record_clips && (!in_drill || clip_drill);
         let mut seen = mechanics::Counts::default();
         let mut recovery_done = false;
         if recording {
@@ -1029,7 +1044,9 @@ impl Env {
         if own_goal {
             reward -= self.cfg.own_goal_penalty;
         }
-        if let Some((_, bonus)) = self.drill.as_mut() {
+        let mut drill_done = false;
+        if let Some((d, bonus)) = self.drill.as_mut() {
+            let d = *d;
             // Bonus de méca : seulement en drill, plafonné à 10 % d'un but.
             let cap = drill::MAX_FRACTION_OF_GOAL * self.cfg.goal_reward;
             let tick = self.sim.tick_count();
@@ -1059,12 +1076,30 @@ impl Env {
                 if let Some(v) = verdict {
                     self.drill_report.recovery[v.index()] += 1;
                     if v == drill::RecoveryOutcome::Good {
+                        bonus.success = true;
                         reward +=
                             ledger.pay_slot(drill::RECOVERY_SLOT, drill::RECOVERY_BONUS.min(cap));
                     }
                 }
                 recovery_done = done;
             }
+            let (extra, done) = bonus.on_events(
+                d,
+                &drill::StepEvents {
+                    tick,
+                    touched,
+                    ball: (snap.ball.pos, snap.ball.vel),
+                    car_airborne: !car.on_ground,
+                    our_goal,
+                    own_goal,
+                    seen: &seen,
+                },
+                cap,
+                ledger,
+                &mut self.drill_report,
+            );
+            reward += extra;
+            drill_done = done;
         }
         let touch_end = touched && self.cfg.end_on_touch && self.kickoff.is_none();
         let mut kickoff_done = None;
@@ -1153,8 +1188,12 @@ impl Env {
         };
         StepInfo {
             reward,
-            terminated: scored || touch_end || kickoff_done.is_some() || recovery_done,
-            truncated: self.steps >= self.cfg.max_steps,
+            terminated: scored
+                || touch_end
+                || kickoff_done.is_some()
+                || recovery_done
+                || drill_done,
+            truncated: self.steps >= self.max_steps(),
             touched,
             outcome,
             kickoff: kickoff_done,
@@ -1194,6 +1233,20 @@ impl Env {
         self.prev_pads.clear();
         self.prev_pads.extend(snap.pads.iter().map(|p| p.active));
         r
+    }
+
+    /// Horizon de l'épisode en décisions : `max_steps`, raccourci pour les drills courts (gardien 6 s, tirs 8–10 s,
+    /// dribble de virage 20 s).
+    fn max_steps(&self) -> u32 {
+        let secs = match self.drill.as_ref().map(|d| d.0) {
+            Some(Drill::Keeper) => 6.0,
+            Some(Drill::ShotRoll | Drill::ShotBounce | Drill::ShotCross | Drill::Rebound) => 10.0,
+            Some(Drill::ShotLob | Drill::AerialHigh | Drill::WallRun) => 8.0,
+            Some(Drill::DribbleTurn) => 20.0,
+            _ => return self.cfg.max_steps,
+        };
+        let steps = (secs * TICKS_PER_SECOND / self.cfg.tick_skip.max(1) as f32) as u32;
+        steps.min(self.cfg.max_steps)
     }
 
     /// Action de la table qui roule vers l'avant avec boost et direction `steer` (-1 ou 1) ; sert aux tests
@@ -1734,18 +1787,18 @@ mod tests {
         };
         let mut e = Env::new(cfg, 4).unwrap();
         let mut seen = std::collections::HashSet::new();
-        for _ in 0..60 {
+        for _ in 0..300 {
             let o = e.reset();
             assert!(o.iter().all(|x| x.is_finite() && x.abs() <= 1.5), "{o:?}");
             seen.insert(e.drill().expect("drill"));
-            for _ in 0..30 {
+            for _ in 0..3 {
                 let r = e.step(0);
                 assert!(r.reward.is_finite());
             }
         }
         assert_eq!(seen.len(), Drill::ALL.len());
         let rep = e.take_drill_report();
-        assert!(rep.episodes.iter().sum::<u64>() >= 59);
+        assert!(rep.episodes.iter().sum::<u64>() >= 299);
         // Palier de toucher : jamais de drill.
         let cfg = EnvConfig {
             drill_prob: 1.0,
@@ -1799,8 +1852,12 @@ mod tests {
     #[test]
     fn drill_mechanics_are_counted_apart_and_opponent_is_parked() {
         assert!(setup());
+        // Le dribble de virage a un adversaire actif : testé à part.
+        let mut drill_weights = Drill::DEFAULT_WEIGHTS;
+        drill_weights[Drill::DribbleTurn.index()] = 0.0;
         let cfg = EnvConfig {
             drill_prob: 1.0,
+            drill_weights,
             ..EnvConfig::for_stage(6)
         };
         let mut e = Env::new(cfg, 9).unwrap();
@@ -1821,6 +1878,84 @@ mod tests {
         assert_eq!(e.take_mechanics().total(), 0);
         total += e.take_drill_report().mechanics.total();
         assert!(total > 0, "au moins des touchers en drill");
+    }
+
+    #[test]
+    fn dribble_turn_has_an_active_opponent_and_all_families_run() {
+        assert!(setup());
+        let cfg = EnvConfig {
+            drill_prob: 1.0,
+            ..EnvConfig::for_stage(6)
+        };
+        let mut e = Env::new(cfg, 4).unwrap();
+        // Adversaire actif : il obéit à l'action adverse (accélération + boost) et quitte sa place de départ.
+        e.reset_drill_with(Drill::DribbleTurn);
+        let start = e.sim.snapshot().cars[car_index(&e.sim.snapshot(), e.opp.unwrap())].pos;
+        assert!(start[1] < 4400.0, "pas garé : {start:?}");
+        for _ in 0..30 {
+            e.step_vs(0, Some(e.expert_action(0.0)));
+        }
+        let snap = e.sim.snapshot();
+        let now = snap.cars[car_index(&snap, e.opp.unwrap())].pos;
+        assert!(
+            (now[0] - start[0]).hypot(now[1] - start[1]) > 300.0,
+            "{start:?} {now:?}"
+        );
+        // Chaque famille démarre, avance et rend des observations finies ; l'horizon des drills courts est tenu.
+        for d in Drill::ALL {
+            let o = e.reset_drill_with(d);
+            assert!(o.iter().all(|x| x.is_finite()), "{d:?}");
+            let mut ended = false;
+            for _ in 0..e.cfg.max_steps {
+                let info = e.step(0);
+                assert!(info.reward.is_finite());
+                if info.terminated || info.truncated {
+                    ended = true;
+                    break;
+                }
+            }
+            assert!(ended, "{d:?} ne finit pas");
+        }
+        let rep = e.take_drill_report();
+        assert!(
+            Drill::ALL
+                .iter()
+                .all(|d| rep.episodes[d.index()] >= 1 || *d == Drill::Rebound)
+        );
+    }
+
+    #[test]
+    fn keeper_horizon_and_success_never_exceed_saves() {
+        assert!(setup());
+        let cfg = EnvConfig {
+            drill_prob: 1.0,
+            ..EnvConfig::for_stage(6)
+        };
+        let mut e = Env::new(cfg, 6).unwrap();
+        assert_eq!(
+            {
+                e.reset_drill_with(Drill::Keeper);
+                e.max_steps()
+            },
+            (6.0 * 120.0 / 8.0) as u32
+        );
+        // Le fonceur scripté défend mal (peu d'arrêts) : on vérifie seulement la cohérence des compteurs ; la
+        // logique d'arrêt est testée dans `drill::tests`.
+        for _ in 0..20 {
+            e.reset_drill_with(Drill::Keeper);
+            for _ in 0..e.max_steps() {
+                let s = e.sim.snapshot();
+                let a = e.expert_action(charger_steer(&s, e.car));
+                let info = e.step(a);
+                if info.terminated || info.truncated {
+                    break;
+                }
+            }
+        }
+        e.reset();
+        let rep = e.take_drill_report();
+        // Réussite = arrêt sans but encaissé ensuite : jamais plus que d'arrêts.
+        assert!(rep.success[Drill::Keeper.index()] <= rep.saves);
     }
 
     #[test]
