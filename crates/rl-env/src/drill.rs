@@ -240,7 +240,257 @@ pub struct EpisodeBonus {
     pub goal_paid: bool,
     /// Suivi du gardien (drill `keeper` seulement).
     pub keeper: Option<KeeperTrack>,
-    /// Suivi du demi-tour : première décision où la voiture, au sol, fait face à la balle (cible) avec de la vitesse.
+    /// Suivi du demi-tour (drill `turnaround`) et des anneaux (drill `rings`).
+    pub turn: Option<TurnTrack>,
+    pub rings: Option<RingTrack>,
+}
+
+/// Ce qu'un pas de drill a produit, pour [`EpisodeBonus::on_events`].
+#[derive(Clone, Copy, Debug)]
+pub struct StepEvents<'a> {
+    pub tick: u64,
+    pub touched: bool,
+    pub ball: ([f32; 3], [f32; 3]),
+    /// La voiture est en l'air (moins de 3 roues au sol).
+    pub car_airborne: bool,
+    pub our_goal: bool,
+    pub own_goal: bool,
+    pub seen: &'a Counts,
+    /// Voiture de l'agent (au sol, position, vitesse, avant) pour le demi-tour et les anneaux.
+    pub car_on_ground: bool,
+    pub car_pos: [f32; 3],
+    pub car_vel: [f32; 3],
+    pub car_forward: [f32; 3],
+}
+
+/// Vitesse de la balle vers SA cage (−Y), uu/s.
+pub fn speed_toward_own_goal(ball_pos: [f32; 3], ball_vel: [f32; 3]) -> f32 {
+    speed_toward_goal(
+        [-ball_pos[0], -ball_pos[1], ball_pos[2]],
+        [-ball_vel[0], -ball_vel[1], ball_vel[2]],
+    )
+}
+
+/// Suivi du gardien : un toucher qui arrête une balle qui menaçait la cage est un arrêt ; fin 1,5 s après.
+#[derive(Debug)]
+pub struct KeeperTrack {
+    prev: ([f32; 3], [f32; 3]),
+    pub saved_tick: Option<u64>,
+}
+
+impl KeeperTrack {
+    pub fn new(ball_pos: [f32; 3], ball_vel: [f32; 3]) -> Self {
+        Self {
+            prev: (ball_pos, ball_vel),
+            saved_tick: None,
+        }
+    }
+
+    /// Avance d'une décision : `(arrêt nouveau, épisode fini)`.
+    pub fn step(&mut self, tick: u64, touched: bool, ball: ([f32; 3], [f32; 3])) -> (bool, bool) {
+        let mut saved = false;
+        if touched
+            && self.saved_tick.is_none()
+            && speed_toward_own_goal(self.prev.0, self.prev.1) > KEEPER_THREAT_SPEED
+            && speed_toward_own_goal(ball.0, ball.1) < KEEPER_SAVED_SPEED
+        {
+            self.saved_tick = Some(tick);
+            saved = true;
+        }
+        self.prev = ball;
+        let done = self
+            .saved_tick
+            .is_some_and(|t| tick >= t + KEEPER_CLEAR_TICKS);
+        (saved, done)
+    }
+}
+
+impl EpisodeBonus {
+    /// Traite les occurrences vues ce pas (`seen`), à l'instant `tick`, balle en `ball_pos`/`ball_vel`. Renvoie
+    /// la récompense de bonus immédiate et incrémente `report.bonus`. `bonus_cap` = plafond d'un bonus.
+    pub fn on_step(
+        &mut self,
+        seen: &Counts,
+        tick: u64,
+        ball: ([f32; 3], [f32; 3]),
+        bonus_cap: f32,
+        ledger: &BonusLedger,
+        report: &mut DrillReport,
+    ) -> f32 {
+        let mut reward = 0.0;
+        self.pending
+            .retain(|(_, t)| tick.saturating_sub(*t) <= GOAL_WINDOW_TICKS);
+        let toward = speed_toward_goal(ball.0, ball.1);
+        if seen.get(Mechanic::Flick) > 0 || seen.get(Mechanic::DribbleTurn) > 0 {
+            self.last_carry = Some(tick);
+        }
+        for m in Mechanic::ALL {
+            let b0 = base_bonus(m).min(bonus_cap);
+            if b0 <= 0.0 {
+                continue;
+            }
+            if m == Mechanic::DribbleTurn {
+                for _ in 0..seen.get(m) {
+                    if self.turns_paid < MAX_TURNS_PER_EPISODE {
+                        reward += ledger.pay(m, b0);
+                        report.bonus.inc(m);
+                        self.turns_paid += 1;
+                    }
+                }
+                continue;
+            }
+            let useful = toward > useful_speed(m);
+            for _ in 0..seen.get(m) {
+                if useful {
+                    if self.paid < MAX_PER_EPISODE {
+                        reward += ledger.pay(m, b0);
+                        report.bonus.inc(m);
+                        self.paid += 1;
+                    }
+                } else if self.pending.len() < MAX_PER_EPISODE as usize {
+                    self.pending.push((m, tick));
+                }
+            }
+        }
+        reward
+    }
+
+    /// But marqué : paie les occurrences en attente (dans la fenêtre, dans la limite de l'épisode).
+    pub fn on_goal(
+        &mut self,
+        tick: u64,
+        bonus_cap: f32,
+        ledger: &BonusLedger,
+        report: &mut DrillReport,
+    ) -> f32 {
+        let mut reward = 0.0;
+        for (m, t) in std::mem::take(&mut self.pending) {
+            if self.paid >= MAX_PER_EPISODE {
+                break;
+            }
+            if tick.saturating_sub(t) <= GOAL_WINDOW_TICKS {
+                reward += ledger.pay(m, base_bonus(m).min(bonus_cap));
+                report.bonus.inc(m);
+                self.paid += 1;
+            }
+        }
+        if !self.goal_paid
+            && self
+                .last_carry
+                .is_some_and(|t| tick.saturating_sub(t) <= CARRY_GOAL_WINDOW_TICKS)
+        {
+            self.goal_paid = true;
+            reward += ledger.pay_slot(DRIBBLE_GOAL_SLOT, DRIBBLE_GOAL_BONUS.min(bonus_cap));
+            report.dribble_goal += 1;
+        }
+        reward
+    }
+
+    /// Réussite de la famille et récompenses propres au gardien. Renvoie `(récompense, épisode fini)`.
+    /// Réussite : but pour les tirs, dribbles, murs, rebonds ; toucher aérien (balle > 300 uu, voiture en l'air)
+    /// pour `aerial_touch`, `air_dribble`, `aerial_high` ; flip reset détecté pour `flip_reset` ; arrêt sans but
+    /// encaissé pour `keeper`. La récupération est jugée par [`RecoveryTrack`].
+    pub fn on_events(
+        &mut self,
+        d: Drill,
+        e: &StepEvents,
+        bonus_cap: f32,
+        ledger: &BonusLedger,
+        report: &mut DrillReport,
+    ) -> (f32, bool) {
+        let mut reward = 0.0;
+        let mut done = false;
+        match d {
+            Drill::Keeper => {
+                if let Some(k) = self.keeper.as_mut() {
+                    let (saved, fin) = k.step(e.tick, e.touched, e.ball);
+                    if saved {
+                        self.success = true;
+                        report.saves += 1;
+                        reward += ledger.pay_slot(KEEPER_SLOT, KEEPER_SAVE_BONUS.min(bonus_cap));
+                    }
+                    done = fin;
+                }
+                if e.own_goal {
+                    self.success = false;
+                    reward -= KEEPER_CONCEDE_PENALTY;
+                }
+            }
+            Drill::AerialTouch | Drill::AirDribble | Drill::AerialHigh => {
+                if e.touched && e.car_airborne && e.ball.0[2] > 300.0 {
+                    self.success = true;
+                }
+            }
+            Drill::FlipReset => {
+                if e.seen.get(Mechanic::FlipReset) > 0 {
+                    self.success = true;
+                }
+            }
+            Drill::Recovery => {}
+            Drill::FlipShot => {
+                let toward = speed_toward_goal(e.ball.0, e.ball.1);
+                if e.our_goal
+                    || (e.seen.get(Mechanic::FlipShot) > 0 && toward > FLIP_SHOT_USEFUL_SPEED)
+                {
+                    self.success = true;
+                }
+            }
+            Drill::Flick => {
+                let toward = speed_toward_goal(e.ball.0, e.ball.1);
+                if e.our_goal || (e.seen.get(Mechanic::Flick) > 0 && toward > FLICK_USEFUL_SPEED) {
+                    self.success = true;
+                }
+            }
+            Drill::Turnaround => {
+                if let Some(t) = self.turn.as_mut() {
+                    if e.seen.get(Mechanic::HalfFlip) > 0 && !t.half_flip_paid {
+                        t.half_flip_paid = true;
+                        reward += ledger.pay(Mechanic::HalfFlip, HALF_FLIP_BONUS.min(bonus_cap));
+                        report.bonus.inc(Mechanic::HalfFlip);
+                    }
+                    if let Some(secs) = t.step(e) {
+                        self.success = true;
+                        reward += ledger
+                            .pay_slot(TURN_SLOT, TURN_BONUS.min(bonus_cap) * turn_fraction(secs));
+                        done = true;
+                    }
+                }
+            }
+            Drill::Rings => {
+                if let Some(r) = self.rings.as_mut() {
+                    let n = r.rings.len() as f32;
+                    let (crossed, secs) = r.step(e.tick, e.car_pos);
+                    for _ in 0..crossed {
+                        report.rings += 1;
+                        reward +=
+                            ledger.pay_slot(RINGS_SLOT, (RINGS_TOTAL_BONUS / n).min(bonus_cap));
+                    }
+                    if let Some(secs) = secs {
+                        self.success = true;
+                        let par = RINGS_PAR_S * n;
+                        let f = ((par - secs) / par).clamp(0.0, 1.0);
+                        reward +=
+                            ledger.pay_slot(RINGS_TIME_SLOT, RINGS_TIME_BONUS.min(bonus_cap) * f);
+                        done = true;
+                    }
+                }
+            }
+            _ => {
+                if e.our_goal {
+                    self.success = true;
+                }
+            }
+        }
+        (reward, done)
+    }
+}
+
+/// Part du bonus de demi-tour selon le retard (s, voir `TURN_FAST_S`) pour faire face à la cible avec de la vitesse.
+pub fn turn_fraction(secs: f32) -> f32 {
+    ((TURN_SLOW_S - secs) / (TURN_SLOW_S - TURN_FAST_S)).clamp(0.0, 1.0)
+}
+
+/// Suivi du demi-tour : première décision où la voiture, au sol, fait face à la balle (cible) avec de la vitesse.
 #[derive(Debug)]
 pub struct TurnTrack {
     start_tick: u64,

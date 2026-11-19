@@ -28,19 +28,22 @@ pub struct HalfFlipScript {
     pub boost_cos: f32,
 }
 
-/// Meilleure séquence trouvée par le banc, départ à l'arrêt ou en marche arrière (voir `docs/drills.md`).
+/// Meilleur jeu de paramètres unique (somme des temps pour parcourir 2 000 uu vers la cible depuis l'arrêt, en marche
+/// arrière 500 et 1 400 uu/s, en marche avant 500 uu/s, boost 100) trouvé par le banc `turnaround_bench ref` ; voir
+/// `docs/drills.md`. Saut de 2 ticks, tangage arrière jusqu'au dodge (4 ticks plus tard), annulation 2 ticks après le
+/// dodge, roulis 8 ticks après, lacet pendant l'annulation, boost dès que le nez passe l'horizontale vers la cible.
 pub const REFERENCE: HalfFlipScript = HalfFlipScript {
-    hold: 2,
+    hold: 1,
     pre_pitch: true,
-    dodge_at: 3,
+    dodge_at: 4,
     dodge_side: 0.0,
-    cancel_after: 6,
-    cancel_len: 200,
+    cancel_after: 2,
+    cancel_len: 45,
     roll: 1.0,
-    roll_after: 30,
+    roll_after: 8,
     roll_len: 45,
-    yaw: -1.0,
-    boost_cos: 2.0,
+    yaw: 1.0,
+    boost_cos: 0.0,
 };
 
 impl HalfFlipScript {

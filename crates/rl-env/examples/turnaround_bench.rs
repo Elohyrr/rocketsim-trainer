@@ -195,7 +195,7 @@ impl Roll {
 }
 
 // ---------------------------------------------------------------- half flip
-use rl_env::half_flip::HalfFlipScript as Hf;
+use rl_env::half_flip::{HalfFlipScript as Hf, REFERENCE};
 
 // ---------------------------------------------------------------- half flip (grille de recherche)
 const HF_HOLD: [u32; 4] = [1, 2, 4, 8];
@@ -267,6 +267,7 @@ struct Setup {
 /// Tirage + descente locale. Renvoie le meilleur paramètre et sa sortie ; `eval` donne le résultat d'un essai.
 fn search<P: Copy>(
     seed: u64,
+    start_cap: u32,
     samples: u32,
     random: impl Fn(&mut Rng) -> P,
     mutate: impl Fn(P, &mut Rng) -> P,
@@ -274,7 +275,7 @@ fn search<P: Copy>(
 ) -> Option<(P, Out)> {
     let mut r = Rng(seed);
     let mut best: Option<(P, Out)> = None;
-    let cap = |b: &Option<(P, Out)>| b.as_ref().map_or(MAX_TICKS, |(_, o)| o.ground);
+    let cap = |b: &Option<(P, Out)>| b.as_ref().map_or(start_cap, |(_, o)| o.ground);
     for _ in 0..samples {
         let p = random(&mut r);
         if let Some(o) = eval(&p, cap(&best)) {
@@ -296,6 +297,7 @@ fn best_roll(s: &Setup, samples: u32) -> Option<(Roll, Out)> {
     let has_boost = s.boost > 0.0;
     search(
         1,
+        MAX_TICKS,
         samples,
         Roll::random,
         |p, r| p.mutate(r),
@@ -308,6 +310,7 @@ fn best_hf(s: &Setup, samples: u32, strict: bool) -> Option<(Hf, Out)> {
     let has_boost = s.boost > 0.0;
     search(
         2,
+        MAX_TICKS,
         samples,
         |r| hf_random(r, strict),
         |p, r| hf_mutate(p, r, strict),
@@ -349,6 +352,7 @@ fn main() {
         let starts = [0.0f32, -500.0, -1400.0, 500.0];
         let (p, o) = search(
             7,
+            starts.len() as u32 * MAX_TICKS,
             samples,
             |r| hf_random(r, true),
             |p, r| hf_mutate(p, r, true),
@@ -424,6 +428,8 @@ fn main() {
                     let s = Setup { goal, v0, boost };
                     (
                         label,
+                        v0,
+                        boost,
                         best_roll(&s, samples),
                         best_hf(&s, samples, true),
                         best_hf(&s, samples, false),
@@ -433,11 +439,13 @@ fn main() {
             .collect();
         hs.into_iter().map(|h| h.join().unwrap()).collect()
     });
-    for (label, r, h, hl) in results {
+    for (label, v0, boost, r, h, hl) in results {
         println!("## {label}");
         println!("  roulant   : {}", fmt(&r.map(|x| x.1)));
         println!("  half flip : {}", fmt(&h.map(|x| x.1)));
         println!("  libre     : {}", fmt(&hl.map(|x| x.1)));
+        let rf = run(goal, v0, boost, MAX_TICKS, hf_ctl(REFERENCE, boost > 0.0));
+        println!("  référence : {}", fmt(&rf));
         if let Some((p, _)) = r {
             println!("    {p:?}");
         }
