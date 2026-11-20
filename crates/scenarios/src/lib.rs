@@ -53,10 +53,12 @@ pub enum Drill {
     Flick,
     /// Anneaux virtuels (points de passage sans collision) dans l'air et près des murs, à traverser dans l'ordre.
     Rings,
+    /// Course au boost : voiture presque à vide, gros pad accessible, balle loin ; prendre le pad puis toucher la balle.
+    BoostRun,
 }
 
 /// Nombre de drills.
-pub const DRILL_COUNT: usize = 20;
+pub const DRILL_COUNT: usize = 21;
 
 impl Drill {
     pub const ALL: [Drill; DRILL_COUNT] = [
@@ -80,13 +82,14 @@ impl Drill {
         Drill::Turnaround,
         Drill::Flick,
         Drill::Rings,
+        Drill::BoostRun,
     ];
 
     /// Poids de tirage par défaut (même ordre que [`Drill::ALL`]) : les drills de la v1 pèsent 1, les nouvelles
     /// familles davantage (dribble de virage 3, gardien 2,5, tirs 1,5).
     pub const DEFAULT_WEIGHTS: [f32; DRILL_COUNT] = [
         1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3.0, 1.5, 1.5, 1.5, 1.0, 2.5, 1.0, 1.0, 1.5, 3.0, 2.0,
-        2.0, 1.5,
+        2.0, 1.5, 1.5,
     ];
 
     pub fn label(self) -> &'static str {
@@ -111,6 +114,7 @@ impl Drill {
             Drill::Turnaround => "turnaround",
             Drill::Flick => "flick",
             Drill::Rings => "rings",
+            Drill::BoostRun => "boost_run",
         }
     }
 
@@ -186,6 +190,51 @@ pub fn parse_weights(spec: &str) -> Result<[f32; DRILL_COUNT], String> {
         w[d.index()] = v;
     }
     Ok(w)
+}
+
+/// Gros pads de boost (+100) de l'arène soccar : (x, y).
+pub const BIG_PADS: [[f32; 2]; 6] = [
+    [-3584.0, 0.0],
+    [3584.0, 0.0],
+    [-3072.0, 4096.0],
+    [3072.0, 4096.0],
+    [-3072.0, -4096.0],
+    [3072.0, -4096.0],
+];
+
+/// Drills trop durs au départ, avec un niveau de difficulté 0..1 ([`sample_at`], curriculum du learner).
+pub const CURRICULUM: [Drill; 7] = [
+    Drill::Keeper,
+    Drill::AerialTouch,
+    Drill::AerialHigh,
+    Drill::AirDribble,
+    Drill::Rings,
+    Drill::WallRun,
+    Drill::Rebound,
+];
+
+/// Niveaux de difficulté courants des drills (partagés entre les envs et les threads ; 1 = drill complet, défaut).
+/// Le learner les met à jour pendant l'entraînement ; les envs les lisent à chaque tirage de drill.
+#[derive(Debug)]
+pub struct DrillLevels([std::sync::atomic::AtomicU32; DRILL_COUNT]);
+
+impl Default for DrillLevels {
+    fn default() -> Self {
+        Self(std::array::from_fn(|_| {
+            std::sync::atomic::AtomicU32::new(1.0f32.to_bits())
+        }))
+    }
+}
+
+impl DrillLevels {
+    pub fn get(&self, d: Drill) -> f32 {
+        f32::from_bits(self.0[d.index()].load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    pub fn set(&self, d: Drill, level: f32) {
+        let v = if level.is_finite() { level.clamp(0.0, 1.0) } else { 1.0 };
+        self.0[d.index()].store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Adversaire d'un drill : position, cap, boost ; `active` = il joue (politique adverse), sinon garé.
@@ -344,6 +393,16 @@ pub fn axes_rolled(yaw: f32, pitch: f32, roll: f32) -> [V3; 3] {
 
 /// Tire l'état de départ de `drill`. Toutes les positions restent dans le terrain (|x| < 4096, |y| < 5120).
 pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
+    sample_at(drill, unit, 1.0)
+}
+
+/// Comme [`sample`] avec un niveau de difficulté `level` dans [0, 1] (voir [`CURRICULUM`]) : 1 = le drill complet
+/// (le tirage est alors identique à [`sample`]), 0 = la version la plus facile. Les drills hors [`CURRICULUM`]
+/// ignorent `level`. Le nombre de tirages `unit()` ne dépend pas du niveau.
+pub fn sample_at(drill: Drill, unit: &mut dyn FnMut() -> f32, level: f32) -> DrillSetup {
+    let l = level.clamp(0.0, 1.0);
+    // Interpolation facile (niveau 0) → complet (niveau 1).
+    let mix = |easy: f32, full: f32| easy + (full - easy) * l;
     let mut s = DrillSetup {
         rings: Vec::new(),
         drill,
@@ -391,30 +450,35 @@ pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
                 17.0,
             ];
             s.car_yaw = yaw;
-            let ahead = range(unit, 300.0, 900.0);
+            let ahead = range(unit, mix(0.0, 300.0), mix(200.0, 900.0));
             s.ball_pos = [
                 s.car_pos[0] + h[0] * ahead,
                 s.car_pos[1] + h[1] * ahead,
-                range(unit, 800.0, 1600.0),
+                range(unit, mix(300.0, 800.0), mix(500.0, 1600.0)),
             ];
+            let vs = mix(0.2, 1.0);
             s.ball_vel = [
-                range(unit, -200.0, 200.0),
-                range(unit, 0.0, 400.0),
-                range(unit, 0.0, 700.0),
+                range(unit, -200.0, 200.0) * vs,
+                range(unit, 0.0, 400.0) * vs,
+                range(unit, 0.0, 700.0) * vs,
             ];
         }
         Drill::AirDribble => {
             let yaw = yaw_to_goal(unit, 0.5);
             let h = heading(yaw);
-            let bspeed = range(unit, 300.0, 900.0);
+            let bspeed = range(unit, mix(100.0, 300.0), mix(300.0, 900.0));
             s.ball_pos = [
                 range(unit, -2000.0, 2000.0),
                 range(unit, -3000.0, 500.0),
-                range(unit, 300.0, 600.0),
+                range(unit, 300.0, mix(450.0, 600.0)),
             ];
-            s.ball_vel = [h[0] * bspeed, h[1] * bspeed, range(unit, 500.0, 900.0)];
-            let back = range(unit, 300.0, 600.0);
-            let cspeed = range(unit, 600.0, 1100.0);
+            s.ball_vel = [
+                h[0] * bspeed,
+                h[1] * bspeed,
+                range(unit, mix(200.0, 500.0), mix(400.0, 900.0)),
+            ];
+            let back = range(unit, mix(100.0, 300.0), mix(250.0, 600.0));
+            let cspeed = range(unit, mix(300.0, 600.0), mix(500.0, 1100.0));
             s.car_pos = [
                 s.ball_pos[0] - h[0] * back,
                 s.ball_pos[1] - h[1] * back,
@@ -634,16 +698,20 @@ pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
         }
         Drill::Keeper => {
             s.ball_pos = [
-                range(unit, -3000.0, 3000.0),
-                range(unit, -3500.0, 0.0),
-                range(unit, 93.0, 600.0),
+                range(unit, mix(-1500.0, -3000.0), mix(1500.0, 3000.0)),
+                range(unit, mix(-3300.0, -3500.0), mix(-2800.0, 0.0)),
+                range(unit, 93.0, mix(250.0, 600.0)),
             ];
             let target = [
-                range(unit, -800.0, 800.0),
+                range(unit, -mix(400.0, 800.0), mix(400.0, 800.0)),
                 -5120.0,
-                range(unit, 100.0, 600.0),
+                range(unit, 100.0, mix(300.0, 600.0)),
             ];
-            s.ball_vel = aim(s.ball_pos, target, range(unit, 900.0, 2200.0));
+            s.ball_vel = aim(
+                s.ball_pos,
+                target,
+                range(unit, mix(450.0, 900.0), mix(800.0, 2200.0)),
+            );
             loop {
                 s.car_pos = [
                     range(unit, -1500.0, 1500.0),
@@ -654,7 +722,16 @@ pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
                     break;
                 }
             }
-            s.car_yaw = yaw_towards(s.car_pos, s.ball_pos) + range(unit, -0.5, 0.5);
+            // Niveau bas : la voiture est déjà sur la trajectoire de la balle, devant sa cage.
+            let t = ((-4200.0 - s.ball_pos[1]) / (target[1] - s.ball_pos[1])).clamp(0.0, 1.0);
+            let ideal = [
+                s.ball_pos[0] + t * (target[0] - s.ball_pos[0]),
+                -4200.0,
+            ];
+            let w = 1.0 - l;
+            s.car_pos[0] += (ideal[0] - s.car_pos[0]) * w;
+            s.car_pos[1] += (ideal[1] - s.car_pos[1]) * w;
+            s.car_yaw = yaw_towards(s.car_pos, s.ball_pos) + range(unit, -0.5, 0.5) * mix(0.3, 1.0);
             let h = heading(s.car_yaw);
             let sp = range(unit, 0.0, 900.0);
             s.car_vel = [h[0] * sp, h[1] * sp, 0.0];
@@ -663,14 +740,15 @@ pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
             s.ball_pos = [
                 range(unit, -2500.0, 2500.0),
                 range(unit, -1500.0, 2500.0),
-                range(unit, 900.0, 1700.0),
+                range(unit, mix(400.0, 900.0), mix(700.0, 1700.0)),
             ];
+            let vs = mix(0.2, 1.0);
             s.ball_vel = [
-                range(unit, -600.0, 600.0),
-                range(unit, 200.0, 900.0),
-                range(unit, -300.0, 500.0),
+                range(unit, -600.0, 600.0) * vs,
+                range(unit, 200.0, 900.0) * vs,
+                range(unit, -300.0, 500.0) * vs,
             ];
-            let away = range(unit, 800.0, 2200.0);
+            let away = range(unit, mix(400.0, 800.0), mix(900.0, 2200.0));
             let a = range(unit, -PI, PI);
             s.car_pos = clamp_xy([
                 s.ball_pos[0] + a.cos() * away,
@@ -687,16 +765,16 @@ pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
             s.ball_pos = [
                 side * range(unit, 3700.0, 3980.0),
                 range(unit, -2000.0, 1500.0),
-                range(unit, 250.0, 800.0),
+                range(unit, 250.0, mix(450.0, 800.0)),
             ];
             s.ball_vel = [
                 side * range(unit, -200.0, 150.0),
-                range(unit, 600.0, 1600.0),
-                range(unit, 0.0, 600.0),
+                range(unit, mix(300.0, 600.0), mix(600.0, 1600.0)),
+                range(unit, 0.0, mix(200.0, 600.0)),
             ];
             s.car_pos = [
                 side * range(unit, 3300.0, 3800.0),
-                s.ball_pos[1] - range(unit, 800.0, 2000.0),
+                s.ball_pos[1] - range(unit, mix(400.0, 800.0), mix(900.0, 2000.0)),
                 17.0,
             ];
             s.car_yaw = FRAC_PI_2 + range(unit, -0.25, 0.25);
@@ -801,20 +879,22 @@ pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
                 range(unit, -3800.0, 1500.0),
                 17.0,
             ];
-            let n = 3 + (unit() * 4.0) as usize % 4;
+            let n_lo = mix(1.0, 3.0).round() as usize;
+            let span = mix(2.0, 6.0).round() as usize - n_lo + 1;
+            let n = n_lo + (unit() * span as f32) as usize % span;
             let mut dir = yaw_to_goal(unit, 1.2);
             s.car_yaw = dir;
             let mut p = s.car_pos;
             for i in 0..n {
-                dir += range(unit, -0.9, 0.9);
-                let step = range(unit, 800.0, 1500.0);
-                let near_wall = unit() < 0.4;
+                dir += range(unit, -mix(0.3, 0.9), mix(0.3, 0.9));
+                let step = range(unit, mix(450.0, 800.0), mix(700.0, 1500.0));
+                let near_wall = unit() < mix(0.0, 0.4);
                 let z = if i == 0 {
-                    range(unit, 250.0, 600.0)
+                    range(unit, 250.0, mix(400.0, 600.0))
                 } else if near_wall {
                     range(unit, 300.0, 1100.0)
                 } else {
-                    range(unit, 400.0, 1400.0)
+                    range(unit, mix(250.0, 400.0), mix(500.0, 1400.0))
                 };
                 p = clamp_xy([p[0] + dir.cos() * step, p[1] + dir.sin() * step, z]);
                 if near_wall {
@@ -826,7 +906,7 @@ pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
                 }
                 s.rings.push(Ring {
                     pos: p,
-                    radius: range(unit, 260.0, 380.0),
+                    radius: range(unit, mix(380.0, 260.0), mix(500.0, 380.0)),
                 });
             }
             // Balle (inutile ici : la balle vue par l'agent est le prochain anneau) loin de tout.
@@ -851,23 +931,55 @@ pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
             ];
             s.ball_vel = [
                 range(unit, -500.0, 500.0),
-                -range(unit, 500.0, 1800.0),
+                -range(unit, mix(300.0, 500.0), mix(700.0, 1800.0)),
                 range(unit, -200.0, 400.0),
             ];
             s.car_pos = [
                 range(unit, -2000.0, 2000.0),
-                range(unit, 800.0, 2800.0),
+                range(unit, mix(2400.0, 800.0), mix(3200.0, 2800.0)),
                 17.0,
             ];
-            s.car_yaw = yaw_towards(s.car_pos, s.ball_pos) + range(unit, -0.8, 0.8);
+            s.car_yaw = yaw_towards(s.car_pos, s.ball_pos) + range(unit, -0.8, 0.8) * mix(0.4, 1.0);
             let h = heading(s.car_yaw);
-            let sp = range(unit, 400.0, 1500.0);
+            let sp = range(unit, mix(0.0, 400.0), mix(600.0, 1500.0));
             s.car_vel = [h[0] * sp, h[1] * sp, 0.0];
+        }
+        Drill::BoostRun => {
+            // Gros pad à 600–2000 uu, voiture à l'arrêt ou lancée, cap vers le pad à ±0,8 rad ; balle à > 3500 uu.
+            let [px, py] = BIG_PADS[(unit() * 6.0) as usize % 6];
+            let pad = [px, py, 17.0];
+            let a = range(unit, -PI, PI);
+            let away = range(unit, 600.0, 2000.0);
+            s.car_pos = clamp_xy([pad[0] + a.cos() * away, pad[1] + a.sin() * away, 17.0]);
+            s.car_yaw = yaw_towards(s.car_pos, pad) + range(unit, -0.8, 0.8);
+            let h = heading(s.car_yaw);
+            let sp = range(unit, 0.0, 900.0);
+            s.car_vel = [h[0] * sp, h[1] * sp, 0.0];
+            loop {
+                s.ball_pos = [
+                    range(unit, -3000.0, 3000.0),
+                    range(unit, -4000.0, 4000.0),
+                    93.0,
+                ];
+                if dist_xy(s.car_pos, s.ball_pos) > 3500.0 && dist_xy(pad, s.ball_pos) > 2500.0 {
+                    break;
+                }
+            }
         }
     }
     s.car_boost = random_boost(unit);
     if drill == Drill::Rings {
         s.car_boost = 100.0;
+    }
+    if drill == Drill::BoostRun {
+        s.car_boost = range(unit, 0.0, 20.0);
+    }
+    if matches!(
+        drill,
+        Drill::AerialTouch | Drill::AirDribble | Drill::AerialHigh | Drill::WallRun
+    ) {
+        // Niveau bas : plein de boost ; le plancher descend avec la difficulté.
+        s.car_boost = s.car_boost.max(100.0 * (1.0 - l));
     }
     if matches!(drill, Drill::AerialHigh | Drill::WallRun | Drill::ShotLob) {
         // Ces tirs demandent du boost pour être joués.
@@ -900,7 +1012,7 @@ mod tests {
         labels.dedup();
         assert_eq!(labels.len(), Drill::ALL.len());
         assert_eq!(Drill::pick(0.0), Drill::RoofStill);
-        assert_eq!(Drill::pick(0.999_999), Drill::Rings);
+        assert_eq!(Drill::pick(0.999_999), Drill::BoostRun);
     }
 
     #[test]
@@ -1074,5 +1186,50 @@ mod tests {
         assert!(dot(f, r).abs() < 1e-5 && dot(f, up).abs() < 1e-5 && dot(r, up).abs() < 1e-5);
         assert!(up[2] < -0.9);
         assert!(axes(0.7, 0.0, false)[2][2] > 0.99);
+    }
+
+    #[test]
+    fn niveau_un_identique_au_drill_complet_et_niveau_zero_facile() {
+        for d in CURRICULUM {
+            let (mut a, mut b) = (lcg(5), lcg(5));
+            assert_eq!(sample(d, &mut a), sample_at(d, &mut b, 1.0), "{d:?}");
+        }
+        let mut u = lcg(13);
+        for _ in 0..300 {
+            let k = sample_at(Drill::Keeper, &mut u, 0.0);
+            let v = (k.ball_vel[0].powi(2) + k.ball_vel[1].powi(2)).sqrt();
+            assert!(v < 950.0, "tir lent : {v}");
+            assert!(k.car_pos[1] < -3500.0, "{:?}", k.car_pos);
+            let a = sample_at(Drill::AerialTouch, &mut u, 0.0);
+            assert!(a.ball_pos[2] >= 300.0 && a.ball_pos[2] <= 500.0, "{:?}", a.ball_pos);
+            assert_eq!(a.car_boost, 100.0);
+            let r = sample_at(Drill::Rings, &mut u, 0.0);
+            assert!((1..=2).contains(&r.rings.len()));
+            for g in &r.rings {
+                assert!(g.radius >= 380.0);
+            }
+            for d in [Drill::AirDribble, Drill::AerialHigh, Drill::WallRun] {
+                assert_eq!(sample_at(d, &mut u, 0.0).car_boost, 100.0, "{d:?}");
+            }
+        }
+        let l = DrillLevels::default();
+        assert_eq!(l.get(Drill::Keeper), 1.0);
+        l.set(Drill::Keeper, 0.25);
+        assert_eq!(l.get(Drill::Keeper), 0.25);
+    }
+
+    #[test]
+    fn boost_run_pad_accessible_balle_loin() {
+        let mut u = lcg(3);
+        for _ in 0..500 {
+            let s = sample(Drill::BoostRun, &mut u);
+            assert!(s.car_boost <= 20.0);
+            let d = BIG_PADS
+                .iter()
+                .map(|p| (p[0] - s.car_pos[0]).hypot(p[1] - s.car_pos[1]))
+                .fold(f32::MAX, f32::min);
+            assert!(d < 2100.0, "{d}");
+            assert!(dist_xy(s.car_pos, s.ball_pos) > 3500.0);
+        }
     }
 }
