@@ -251,6 +251,17 @@ fn main() {
     let drill_levels = std::sync::Arc::new(scenarios::DrillLevels::default());
     let mut drill_curr = drill_curriculum
         .then(|| learner::drill_curriculum::DrillCurriculum::load(&out, drill_levels.clone()));
+    // `--drill-level L` (ou DRILL_LEVEL) : fige tous les drills du curriculum au niveau L (0..1), sans curriculum
+    // automatique ; sert aux essais (mesure au niveau 0) et à désamorcer un curriculum emballé.
+    if let Some(l) = arg("--drill-level")
+        .or_else(|| std::env::var("DRILL_LEVEL").ok())
+        .and_then(|s| s.parse::<f32>().ok())
+    {
+        for d in scenarios::CURRICULUM {
+            drill_levels.set(d, l);
+        }
+        drill_curr = None;
+    }
     let fixed_boost = std::env::args().any(|a| a == "--fixed-boost");
     // `--drill-weights label=poids,…` (ou DRILL_WEIGHTS) : poids de tirage des drills, par-dessus les défauts
     // (`scenarios::Drill::DEFAULT_WEIGHTS`) ; ex. `dribble_turn=5,keeper=0`.
