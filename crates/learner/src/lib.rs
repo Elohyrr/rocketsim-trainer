@@ -4,6 +4,7 @@
 pub mod best;
 pub mod clips;
 pub mod curriculum;
+pub mod drill_curriculum;
 pub mod elo;
 pub mod eval;
 pub mod explore;

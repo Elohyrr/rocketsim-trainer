@@ -60,7 +60,15 @@ pub const KEEPER_CLEAR_TICKS: u64 = 180;
 pub const TURN_SLOT: usize = mechanics::MECH_COUNT + 3;
 pub const RINGS_SLOT: usize = mechanics::MECH_COUNT + 4;
 pub const RINGS_TIME_SLOT: usize = mechanics::MECH_COUNT + 5;
-const EXTRA_SLOTS: usize = 6;
+pub const BOOST_PAD_SLOT: usize = mechanics::MECH_COUNT + 6;
+pub const BOOST_RUN_SLOT: usize = mechanics::MECH_COUNT + 7;
+const EXTRA_SLOTS: usize = 8;
+/// Gain de boost en une décision à partir duquel on a pris un gros pad (une petite en donne 12).
+pub const BIG_PAD_GAIN: f32 = 40.0;
+/// Bonus du gros pad pris à vide, puis du toucher utile qui suit (balle vers le but à plus de [`BOOST_RUN_USEFUL_SPEED`]).
+pub const BOOST_PAD_BONUS: f32 = 0.3;
+pub const BOOST_RUN_BONUS: f32 = 0.5;
+pub const BOOST_RUN_USEFUL_SPEED: f32 = 300.0;
 /// Vitesse de balle vers le but (uu/s) au-delà de laquelle un flip shot / un flick est utile.
 pub const FLIP_SHOT_USEFUL_SPEED: f32 = 1000.0;
 pub const FLICK_USEFUL_SPEED: f32 = 1500.0;
@@ -243,6 +251,8 @@ pub struct EpisodeBonus {
     /// Suivi du demi-tour (drill `turnaround`) et des anneaux (drill `rings`).
     pub turn: Option<TurnTrack>,
     pub rings: Option<RingTrack>,
+    /// Suivi de la course au boost (drill `boost_run`).
+    pub boost_run: Option<BoostRunTrack>,
 }
 
 /// Ce qu'un pas de drill a produit, pour [`EpisodeBonus::on_events`].
@@ -261,6 +271,10 @@ pub struct StepEvents<'a> {
     pub car_pos: [f32; 3],
     pub car_vel: [f32; 3],
     pub car_forward: [f32; 3],
+    /// Boost de la voiture (0–100) après ce pas.
+    pub car_boost: f32,
+    /// Niveau de difficulté courant du drill (1 hors curriculum, voir `scenarios::CURRICULUM`).
+    pub level: f32,
 }
 
 /// Vitesse de la balle vers SA cage (−Y), uu/s.
@@ -417,7 +431,9 @@ impl EpisodeBonus {
                 }
             }
             Drill::AerialTouch | Drill::AirDribble | Drill::AerialHigh => {
-                if e.touched && e.car_airborne && e.ball.0[2] > 300.0 {
+                // Hauteur de toucher : 300 uu au niveau complet, 130 au niveau 0 (la balle facile, 250–330 et immobile,
+                // tombe sur la voiture : un simple saut la touche).
+                if e.touched && e.car_airborne && e.ball.0[2] > 130.0 + 170.0 * e.level {
                     self.success = true;
                 }
             }
@@ -456,6 +472,21 @@ impl EpisodeBonus {
                     }
                 }
             }
+            Drill::BoostRun => {
+                if let Some(t) = self.boost_run.as_mut() {
+                    if t.step_pad(e.car_boost) {
+                        reward += ledger.pay_slot(BOOST_PAD_SLOT, BOOST_PAD_BONUS.min(bonus_cap));
+                    }
+                    if t.picked
+                        && e.touched
+                        && speed_toward_goal(e.ball.0, e.ball.1) > BOOST_RUN_USEFUL_SPEED
+                    {
+                        self.success = true;
+                        reward += ledger.pay_slot(BOOST_RUN_SLOT, BOOST_RUN_BONUS.min(bonus_cap));
+                        done = true;
+                    }
+                }
+            }
             Drill::Rings => {
                 if let Some(r) = self.rings.as_mut() {
                     let n = r.rings.len() as f32;
@@ -482,6 +513,30 @@ impl EpisodeBonus {
             }
         }
         (reward, done)
+    }
+}
+
+/// Course au boost : gros pad pris (gain de boost d'un coup ≥ [`BIG_PAD_GAIN`]), puis toucher utile.
+#[derive(Clone, Copy, Debug)]
+pub struct BoostRunTrack {
+    prev: f32,
+    pub picked: bool,
+}
+
+impl BoostRunTrack {
+    pub fn new(boost: f32) -> Self {
+        Self {
+            prev: boost,
+            picked: false,
+        }
+    }
+
+    /// Vrai au pas où le gros pad est pris (une fois).
+    pub fn step_pad(&mut self, boost: f32) -> bool {
+        let took = !self.picked && boost - self.prev >= BIG_PAD_GAIN;
+        self.prev = boost;
+        self.picked |= took;
+        took
     }
 }
 
@@ -927,7 +982,39 @@ mod tests {
             car_pos: [0.0; 3],
             car_vel: [0.0; 3],
             car_forward: [0.0, 1.0, 0.0],
+            car_boost: 0.0,
+            level: 1.0,
         }
+    }
+
+    #[test]
+    fn boost_run_pad_puis_toucher_utile() {
+        let l = BonusLedger::default();
+        let mut r = DrillReport::default();
+        let mut b = EpisodeBonus {
+            boost_run: Some(BoostRunTrack::new(5.0)),
+            ..Default::default()
+        };
+        let c = Counts::default();
+        let ball = ([0.0, 0.0, 93.0], [0.0, 1000.0, 0.0]);
+        // Toucher utile avant le pad : rien.
+        let (rw, done) = b.on_events(Drill::BoostRun, &ev(1, true, ball, &c), 1.0, &l, &mut r);
+        assert!(rw == 0.0 && !done && !b.success);
+        // Petit pad (+12) : pas un gros pad.
+        let mut e = ev(2, false, ball, &c);
+        e.car_boost = 17.0;
+        assert_eq!(b.on_events(Drill::BoostRun, &e, 1.0, &l, &mut r).0, 0.0);
+        // Gros pad.
+        e.car_boost = 100.0;
+        assert_eq!(
+            b.on_events(Drill::BoostRun, &e, 1.0, &l, &mut r).0,
+            BOOST_PAD_BONUS
+        );
+        // Toucher utile ensuite.
+        let mut e = ev(3, true, ball, &c);
+        e.car_boost = 90.0;
+        let (rw, done) = b.on_events(Drill::BoostRun, &e, 1.0, &l, &mut r);
+        assert!(done && b.success && rw > 0.0);
     }
 
     #[test]

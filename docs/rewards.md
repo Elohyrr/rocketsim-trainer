@@ -57,3 +57,37 @@ en self-play la part visée est ~50 %). **Aucune hausse de la vitesse de balle a
 est même plus basse, dans le bruit : 548 k pas contre 800 k, un seul essai par bras). Un effet sur les gros tirs
 demande des heures d'entraînement ; ce test ne prouve que l'absence de casse. À surveiller en prod :
 `trainer_hit_speed_to_goal_mean` / `_record`, et le taux de but.
+
+## Gestion du boost (v2) : prime plus forte, pénalité de vide, drill `boost_run`
+
+Constat de prod (4 h) : boost moyen 5/100, **à 0 de boost 82 % du temps**. La prime de ramassage `0,2 × Δ√boost` ne
+suffisait pas : dépenser tout et ne jamais aller aux pads reste optimal pour l'agent tant que le boost ne rapporte rien
+et que le vide ne coûte rien. Trois leviers, tous limités au match (paliers 5/6) :
+
+| Levier | Formule | Défaut | Flag / env |
+|---|---|---|---|
+| prime de ramassage | `c × (√b_t − √b_t−1)` sur les gains, `b` dans 0–1 | `c = 0,4` (était 0,2) | `--boost-reward C` / `BOOST_REWARD` |
+| pénalité de vide | par décision : `−p × (1 − boost/10)` si boost < 10 **et** balle à plus de 2500 uu **et** hors coup d'envoi | `p = 0,003` (≈ 0,045/s) | `--empty-boost-penalty P` / `EMPTY_BOOST_PENALTY` (0 = coupée) |
+| drill `boost_run` | voir `docs/drills.md` | poids 1,5 | `--drill-weights boost_run=…` |
+
+Pourquoi ces valeurs :
+
+- **Convexité déjà là** : `√` paie surtout les premiers points de boost. Un gros pad pris à vide rapporte `0,4` (0,2
+  avant), un petit pad à vide `0,4 × √0,12 ≈ 0,14`, un petit pad à 33 de boost `≈ 0,04`. Un toucher valait 1 au palier
+  5 : le plein à vide reste sous un toucher, donc on ne farme pas les pads au lieu de jouer.
+- **Pénalité seulement balle loin** : quand la balle est à moins de 2500 uu, jouer à vide peut être juste (défense,
+  contre, 50/50) : aucune pénalité. Loin, rien ne presse : aller au pad est gratuit. Rampe linéaire entre 10 et 0 de
+  boost (pas de falaise à 0,5). Sur 10 s balle loin et à vide : −0,45 ≈ un gros pad. Elle ne punit donc pas le
+  boost dépensé (c'est lui qui sert à jouer), seulement de ne pas le reprendre quand on le pourrait.
+- **Pas accro** : la prime ne paie que les gains (concave) et la pénalité est bornée par épisode ; rien ne rapporte plus
+  de 0,4 par plein, et la dépense reste libre. Un cycle « vider puis re-prendre » rapporte au plus 0,4 par ~7–10 s de
+  boost, très en dessous des termes de but (+10) et de frappe.
+- **Somme nulle en self-play** : non appliquée. L'adversaire est une copie gelée qui n'apprend pas pendant l'itération ;
+  une prime symétrique (retrancher la prime de l'adversaire) ne change aucun gradient et rendrait la prime de l'agent
+  dépendante du jeu de l'adversaire (bruit). Le boost n'est pas un jeu à somme nulle : si les deux se ravitaillent,
+  les deux y gagnent.
+- Références : RLGym `SaveBoostReward` (√ du boost tenu) et Necto/Nexto (`BoostPickupReward` : gain de boost, pondéré
+  par la rareté). On garde la forme « gain » de Necto (pas de prime à *tenir* du boost, qui pousserait à ne plus
+  jamais boost) et on ajoute le coût du vide, absent des deux.
+
+Métriques (existantes) : `trainer_boost_mean`, `trainer_boost_empty_fraction`, `trainer_boost_pickups_total{size}`.
