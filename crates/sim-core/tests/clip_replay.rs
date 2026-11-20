@@ -37,6 +37,17 @@ fn record(n: u32, trigger: u32, seed: u64) -> (Clip, Vec<Snapshot>) {
 /// Comme `record`, dans une simulation « sale » (un épisode d'abord joué au hasard contre les murs, comme dans
 /// l'entraînement où la simulation vit longtemps), puis remise en état comme `Env::reset`.
 fn record_with(n: u32, trigger: u32, seed: u64, dirty: bool) -> (Clip, Vec<Snapshot>) {
+    record_at(TICK_SKIP, n, trigger, seed, dirty)
+}
+
+/// Comme `record_with` à `tick_skip` donné (8 = 15 Hz, 4 = 30 Hz).
+fn record_at(
+    tick_skip: u32,
+    n: u32,
+    trigger: u32,
+    seed: u64,
+    dirty: bool,
+) -> (Clip, Vec<Snapshot>) {
     init_meshes(&meshes_dir_from_env().expect("meshes")).expect("init meshes");
     let mut sim = Sim::new_soccar().unwrap();
     let (a, b) = (sim.add_car(true), sim.add_car(false));
@@ -45,7 +56,7 @@ fn record_with(n: u32, trigger: u32, seed: u64, dirty: bool) -> (Clip, Vec<Snaps
     for _ in 0..if dirty { 150 } else { 0 } {
         sim.set_controls(a, rand_controls(&mut rng)).unwrap();
         sim.set_controls(b, rand_controls(&mut rng)).unwrap();
-        sim.step(TICK_SKIP);
+        sim.step(tick_skip);
     }
     sim.reset_kickoff(7);
     sim.reset_ball([0.0, 0.0, 93.15], [0.0; 3]);
@@ -55,7 +66,7 @@ fn record_with(n: u32, trigger: u32, seed: u64, dirty: bool) -> (Clip, Vec<Snaps
         .unwrap();
     sim.set_controls(a, Controls::default()).unwrap();
     sim.set_controls(b, Controls::default()).unwrap();
-    let mut rec = ClipRecorder::new(TICK_SKIP);
+    let mut rec = ClipRecorder::new(tick_skip);
     let mut rng = seed;
     let mut trace = Vec::new();
     let mut clip = None;
@@ -65,7 +76,7 @@ fn record_with(n: u32, trigger: u32, seed: u64, dirty: bool) -> (Clip, Vec<Snaps
         rec.begin_step(&mut sim, &ctl);
         sim.set_controls(a, ctl[0]).unwrap();
         sim.set_controls(b, ctl[1]).unwrap();
-        sim.step(TICK_SKIP);
+        sim.step(tick_skip);
         if step == trigger {
             rec.trigger("flip_reset");
         }
@@ -247,4 +258,43 @@ fn trajectory_reports_pads_and_a_pickup() {
         "le boost monte au ramassage"
     );
     assert!(t.cars[0].boost.last().unwrap() >= &12.0);
+}
+
+/// 30 Hz : un clip se rejoue à l'identique (même durée en secondes pour l'état clé, le début et la fin), et ses
+/// longueurs en décisions sont celles de 15 Hz doublées.
+#[test]
+fn replay_works_at_30_hz() {
+    use sim_core::clip::{KEY_EVERY, LEAD_STEPS, TRAIL_STEPS, scale_steps};
+    assert_eq!(scale_steps(KEY_EVERY, 4), 2 * KEY_EVERY);
+    assert_eq!(scale_steps(LEAD_STEPS, 4), 2 * LEAD_STEPS);
+    assert_eq!(scale_steps(TRAIL_STEPS, 8), TRAIL_STEPS);
+    // Déclenchement à la décision 240 (= 120 à 15 Hz), pas avant : le clip ne commence pas à l'épisode.
+    let (clip, trace) = record_at(4, 400, 240, 42, false);
+    let clip = Clip::from_json(&clip.to_json()).unwrap();
+    assert_eq!(clip.tick_skip, 4);
+    assert!(
+        clip.steps.len() as u32 <= 2 * MAX_STEPS,
+        "{}",
+        clip.steps.len()
+    );
+    // La queue après le déclenchement dure 1 s de jeu (TRAIL_STEPS à 15 Hz) : 30 décisions.
+    assert!(clip.steps.len() as u32 - clip.trigger_step >= 2 * TRAIL_STEPS);
+    assert!((clip.seconds() - clip.steps.len() as f32 * 4.0 / 120.0).abs() < 1e-4);
+    let first = clip.keyframes[0].tick;
+    let start = trace.iter().position(|s| s.tick == first).unwrap();
+    let mut sim = Sim::new_soccar().unwrap();
+    let mut rp = Replayer::start(&mut sim, clip).unwrap();
+    let mut worst = 0.0f32;
+    let mut s = 0;
+    loop {
+        let (step, total) = rp.progress();
+        if step > s || step == total {
+            worst = worst.max(max_diff(&sim.snapshot(), &trace[start + step]));
+            s = step;
+        }
+        if rp.tick(&mut sim) {
+            break;
+        }
+    }
+    assert!(worst <= DRIFT_BOUND, "écart {worst} uu");
 }

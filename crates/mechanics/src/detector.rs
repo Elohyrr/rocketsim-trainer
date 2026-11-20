@@ -817,10 +817,16 @@ impl Detector {
                 }
                 let diagonal =
                     d.fwd > DIAGONAL_MIN_COMPONENT && d.lat.abs() > DIAGONAL_MIN_COMPONENT;
+                // Un speed flip file droit : le cap ne tourne presque pas et la vitesse monte (la politique aléatoire
+                // retombe aussi vite mais de travers, après des dodges et des tangages au hasard).
+                let kept_heading =
+                    d.heading[0] * head[0] + d.heading[1] * head[1] > SPEED_FLIP_MIN_HEADING_COS;
                 if diagonal
                     && d.cancelled
                     && dt <= SPEED_FLIP_MAX_LAND_TICKS
                     && hspeed > SPEED_FLIP_MIN_LAND_SPEED
+                    && hspeed - d.speed_before > SPEED_FLIP_MIN_GAIN
+                    && kept_heading
                 {
                     counts.inc(Mechanic::SpeedFlip);
                 }

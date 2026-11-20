@@ -19,15 +19,15 @@ use serde::{Deserialize, Serialize};
 use crate::{Controls, Sim, SimError};
 
 pub const CLIP_VERSION: u32 = 1;
-/// Un état clé toutes les N décisions (5 = 1/3 s à 15 Hz).
+/// Un état clé toutes les N décisions de 1/15 s (5 = 1/3 s) ; à 30 Hz le recorder en compte 10 (même durée).
 pub const KEY_EVERY: u32 = 5;
 /// Les pads (34 appels C++) ne sont capturés que tous les [`PAD_EVERY`] états clés : un clip démarre sur l'un d'eux.
 pub const PAD_EVERY: u32 = 4;
 /// Voitures par clip au plus (agent + adversaire).
 const MAX_CARS: usize = 2;
-/// Longueur maximale d'un clip en décisions.
+/// Longueur maximale d'un clip en décisions de 1/15 s (ce que stocke un clip à `tick_skip` 8).
 pub const MAX_STEPS: u32 = LEAD_STEPS + KEY_EVERY * PAD_EVERY + TRAIL_STEPS + 1;
-/// Décisions gardées avant le déclenchement (au moins) et après.
+/// Décisions de 1/15 s gardées avant le déclenchement (au moins) et après (3 s et 1 s ; converties par `tick_skip`).
 pub const LEAD_STEPS: u32 = 45;
 pub const TRAIL_STEPS: u32 = 15;
 /// Écart de position (unités RocketSim ≈ cm) toléré entre le rejeu et l'état clé : au-delà, le rejeu n'est plus
@@ -650,9 +650,18 @@ struct Pending {
     start: u32,
 }
 
+/// Convertit un nombre de décisions de 1/15 s (`tick_skip` 8) en décisions de `tick_skip` (≥ 1) : mêmes durées en
+/// secondes de jeu à tout rythme (30 Hz : ×2).
+pub fn scale_steps(n_ref: u32, tick_skip: u32) -> u32 {
+    (n_ref * 8).div_ceil(tick_skip.max(1)).max(1)
+}
+
 /// Enregistre en continu les contrôles et des états clés ; un déclenchement fige un clip après [`TRAIL_STEPS`].
 pub struct ClipRecorder {
     tick_skip: u32,
+    key_every: u32,
+    lead_steps: u32,
+    trail_steps: u32,
     step: u32,
     keys: VecDeque<(u32, Keyframe)>,
     /// Contrôles des décisions `ctl_first ..`.
@@ -671,6 +680,9 @@ impl ClipRecorder {
     pub fn new(tick_skip: u32) -> Self {
         Self {
             tick_skip,
+            key_every: scale_steps(KEY_EVERY, tick_skip),
+            lead_steps: scale_steps(LEAD_STEPS, tick_skip),
+            trail_steps: scale_steps(TRAIL_STEPS, tick_skip),
             step: 0,
             keys: VecDeque::new(),
             ctl: VecDeque::new(),
@@ -679,7 +691,7 @@ impl ClipRecorder {
             pending: None,
             events: Vec::new(),
             quiet_until: 0,
-            cooldown: 150,
+            cooldown: scale_steps(150, tick_skip),
         }
     }
 
@@ -708,8 +720,8 @@ impl ClipRecorder {
 
     /// À appeler avant d'appliquer les contrôles d'une décision (`ctls` dans l'ordre des ids triés).
     pub fn begin_step(&mut self, sim: &mut Sim, ctls: &[Controls]) {
-        if self.step % KEY_EVERY == 0 {
-            let mut kf = sim.capture(self.step % (KEY_EVERY * PAD_EVERY) == 0);
+        if self.step % self.key_every == 0 {
+            let mut kf = sim.capture(self.step % (self.key_every * PAD_EVERY) == 0);
             kf.step = self.step;
             if self.keys.is_empty() {
                 self.ctl.clear();
@@ -747,13 +759,13 @@ impl ClipRecorder {
         let done = self
             .pending
             .as_ref()
-            .is_some_and(|p| self.step >= p.trigger + 1 + TRAIL_STEPS);
+            .is_some_and(|p| self.step >= p.trigger + 1 + self.trail_steps);
         let out = if done { self.build(sim) } else { None };
         // Garder LEAD_STEPS avant le pas courant (+ jusqu'à l'état clé qui précède), ou le début d'un clip en attente.
         let keep_from = self
             .pending
             .as_ref()
-            .map_or(self.step.saturating_sub(LEAD_STEPS), |p| p.start);
+            .map_or(self.step.saturating_sub(self.lead_steps), |p| p.start);
         self.events.retain(|e| e.0 >= keep_from);
         // Le premier état clé garde toujours ses pads : un clip démarre dessus.
         if let Some(j) = self

@@ -17,7 +17,7 @@ pub const WEIGHTS: &str = "policy.safetensors";
 pub const META: &str = "policy.json";
 
 /// Contenu de `policy.json`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct PolicyMeta {
     /// Palier de curriculum de la politique.
     #[serde(default)]
@@ -27,9 +27,43 @@ pub struct PolicyMeta {
     /// Date d'export (secondes Unix) : sert de version.
     #[serde(default)]
     pub updated_unix: u64,
+    /// Ticks de simulation (120 Hz) entre deux décisions de la politique : 8 = 15 Hz (absent des anciennes
+    /// politiques), 4 = 30 Hz. Le jeu doit la jouer à ce rythme.
+    #[serde(default = "default_tick_skip")]
+    pub tick_skip: u32,
+}
+
+/// Rythmes de décision que ce client sait jouer (`tick_skip`).
+pub const SUPPORTED_TICK_SKIPS: [u32; 2] = [8, 4];
+
+fn default_tick_skip() -> u32 {
+    SUPPORTED_TICK_SKIPS[0]
+}
+
+impl Default for PolicyMeta {
+    fn default() -> Self {
+        Self {
+            stage: 0,
+            bytes: 0,
+            updated_unix: 0,
+            tick_skip: default_tick_skip(),
+        }
+    }
 }
 
 impl PolicyMeta {
+    /// Refuse un rythme de décision que ce client ne sait pas jouer.
+    pub fn check_rate(&self) -> Result<(), String> {
+        if SUPPORTED_TICK_SKIPS.contains(&self.tick_skip) {
+            Ok(())
+        } else {
+            Err(format!(
+                "politique à {} ticks par décision, le client sait jouer {:?} (rst update ?)",
+                self.tick_skip, SUPPORTED_TICK_SKIPS
+            ))
+        }
+    }
+
     pub fn parse(json: &[u8]) -> Result<Self, String> {
         serde_json::from_slice(json).map_err(|e| format!("policy.json illisible : {e}"))
     }
@@ -144,9 +178,15 @@ pub fn pull(
             NetError::Other(m) => m,
         })
     };
-    let meta_raw = get(META)?;
+    // `/v2/` sert la politique quel que soit son rythme (un serveur en 30 Hz refuse l'ancien chemin aux clients
+    // 0.4.0) ; un serveur plus ancien n'a que `/policy.*`.
+    let (prefix, meta_raw) = match get(&format!("v2/{META}")) {
+        Ok(m) => ("v2/", m),
+        Err(_) => ("", get(META)?),
+    };
     let meta = PolicyMeta::parse(&meta_raw)?;
-    let weights = get(WEIGHTS)?;
+    meta.check_rate()?;
+    let weights = get(&format!("{prefix}{WEIGHTS}"))?;
     validate(dir, &weights, obs_dims, actions)?;
     install(dir, &weights, Some(&meta_raw))?;
     Ok(Pulled {
@@ -168,6 +208,9 @@ pub fn pull_file(
     validate(dir, &weights, obs_dims, actions)?;
     let meta_raw = std::fs::read(file.with_file_name(META)).ok();
     let meta = meta_raw.as_deref().and_then(|m| PolicyMeta::parse(m).ok());
+    if let Some(m) = &meta {
+        m.check_rate()?;
+    }
     install(
         dir,
         &weights,
@@ -224,6 +267,7 @@ mod tests {
             stage: 3,
             bytes: 1,
             updated_unix: 0,
+            ..PolicyMeta::default()
         };
         assert_eq!(m.label(), "palier 3");
     }
@@ -263,6 +307,54 @@ mod tests {
                 .unwrap_err()
                 .contains("injoignable")
         );
+    }
+
+    #[test]
+    fn rythme_de_decision_lu_et_controle() {
+        // Absent : 15 Hz (anciennes politiques et serveurs).
+        let old = PolicyMeta::parse(br#"{"stage":4}"#).unwrap();
+        assert_eq!(old.tick_skip, 8);
+        let new = PolicyMeta::parse(br#"{"stage":4,"tick_skip":4}"#).unwrap();
+        assert_eq!(new.tick_skip, 4);
+        assert!(new.check_rate().is_ok());
+        let odd = PolicyMeta::parse(br#"{"tick_skip":2}"#).unwrap();
+        assert!(odd.check_rate().unwrap_err().contains("ticks par décision"));
+    }
+
+    #[test]
+    fn pull_prefere_v2_puis_retombe_sur_l_ancien_chemin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = tiny_file(&tmp.path().join("src.safetensors"));
+        let base = "http://x:9090";
+        let dir = tmp.path().join("bot");
+        // Serveur 30 Hz : l'ancien chemin est refusé (410), /v2 sert la politique et son rythme.
+        let srv = Fake(HashMap::from([
+            (
+                format!("{base}/v2/policy.json"),
+                Ok(br#"{"stage":6,"tick_skip":4}"#.to_vec()),
+            ),
+            (format!("{base}/v2/policy.safetensors"), Ok(w.clone())),
+            (
+                format!("{base}/policy.json"),
+                Err(NetError::Other("410 Gone".into())),
+            ),
+        ]));
+        let r = pull(&srv, base, &dir, &[4], &[3]).unwrap();
+        assert_eq!(r.meta.unwrap().tick_skip, 4);
+        // Rythme inconnu : refus, politique précédente intacte.
+        let bad = Fake(HashMap::from([
+            (
+                format!("{base}/v2/policy.json"),
+                Ok(br#"{"tick_skip":3}"#.to_vec()),
+            ),
+            (format!("{base}/v2/policy.safetensors"), Ok(vec![0])),
+        ]));
+        assert!(
+            pull(&bad, base, &dir, &[4], &[3])
+                .unwrap_err()
+                .contains("ticks")
+        );
+        assert_eq!(std::fs::read(dir.join(WEIGHTS)).unwrap(), w);
     }
 
     #[test]

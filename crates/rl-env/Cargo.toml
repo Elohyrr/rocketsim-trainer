@@ -18,3 +18,7 @@ path = "examples/bench.rs"
 [[example]]
 name = "demo_bench"
 path = "examples/demo_bench.rs"
+
+[[example]]
+name = "speed_flip_bench"
+path = "examples/speed_flip_bench.rs"

@@ -51,11 +51,18 @@ impl Brain {
                 table.len()
             ));
         }
+        // Rythme de décision de la politique (`policy.json` voisin ; 15 Hz s'il manque, comme les anciennes).
         let meta = weights.parent().and_then(PolicyMeta::load);
+        if let Some(m) = &meta {
+            m.check_rate()?;
+        }
+        let tick_skip = meta
+            .as_ref()
+            .map_or_else(|| EnvConfig::default().tick_skip, |m| m.tick_skip);
         Ok(Self {
             policy,
             table,
-            tick_skip: u64::from(EnvConfig::default().tick_skip),
+            tick_skip: u64::from(tick_skip),
             held: Controls::default(),
             next_decision: 0,
             meta,
@@ -77,6 +84,11 @@ impl Brain {
                 Self::load(&f)
             }
         }
+    }
+
+    /// Ticks entre deux décisions (8 = 15 Hz, 4 = 30 Hz).
+    pub fn tick_skip(&self) -> u32 {
+        self.tick_skip as u32
     }
 
     /// Libellé « palier N · politique du … » (ou « politique locale » sans métadonnées).

@@ -3,7 +3,9 @@
 //! learner --eval-kickoff N --policy policy.safetensors [--idle] : évalue les coups d'envoi (voir `eval.rs`).
 //! learner [--minutes M] [--envs N] [--threads T] [--out DIR] [--metrics ADDR] [--resume]
 //!         [--checkpoint-minutes N] [--stage S] [--init-actor policy.safetensors [--critic-warmup N]]
-//!         [--elo-minutes N] [--pool-every N] [--drill-prob P]
+//!         [--elo-minutes N] [--pool-every N] [--drill-prob P] [--tick-skip 4|8]
+//! `--tick-skip N` (ou `TICK_SKIP`) : ticks par décision, 8 = 15 Hz (défaut), 4 = 30 Hz ; γ, λ, horizon, minibatch et les
+//! récompenses denses en suivent (`docs/trente-hz.md`). Reprise d'un état à un autre rythme : sauvegarde `pre-tickskip-*`.
 //! `--boost-reward C` (ou `BOOST_REWARD`) : prime de ramassage de boost aux paliers 5/6 (0,2 par défaut, 0 = coupée) ;
 //! `--fixed-boost` : boost de départ fixe (33) au lieu d'aléatoire (`docs/observation.md`).
 //! `--drill-weights label=poids,…` (ou `DRILL_WEIGHTS`) règle le tirage des drills ; `--drill-clips` (ou
@@ -128,7 +130,12 @@ impl Saver<'_> {
                 .lock()
                 .is_ok_and(|c| c.save(self.out).is_ok())
             && self.tr.explore.save(self.out).is_ok()
-            && std::fs::write(self.out.join(OPPONENT_OBS_MARKER), "1\n").is_ok();
+            && std::fs::write(self.out.join(OPPONENT_OBS_MARKER), "1\n").is_ok()
+            && std::fs::write(
+                self.out.join(best::TICK_SKIP_FILE),
+                format!("{}\n", self.tr.tick_skip),
+            )
+            .is_ok();
         if let Ok(mut m) = self.metrics.lock() {
             if ok {
                 m.checkpoints_ok += 1;
@@ -144,11 +151,28 @@ impl Saver<'_> {
     }
 }
 
+/// Rythme de décision demandé : `--tick-skip N` ou `$TICK_SKIP` (ticks de simulation à 120 Hz par décision) ; 8 par
+/// défaut (15 Hz), 4 = 30 Hz. Seules ces deux valeurs sont acceptées (ce sont celles que sait jouer le client).
+fn tick_skip_arg() -> u32 {
+    let v = arg("--tick-skip").or_else(|| std::env::var("TICK_SKIP").ok());
+    match v.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        None => 8,
+        Some(s) => match s.parse::<u32>() {
+            Ok(t @ (4 | 8)) => t,
+            _ => {
+                eprintln!("--tick-skip / TICK_SKIP : « {s} » refusé (4 = 30 Hz ou 8 = 15 Hz)");
+                std::process::exit(2);
+            }
+        },
+    }
+}
+
 fn main() {
     if let Some(n) = arg("--eval-kickoff") {
         let policy = arg("--policy").unwrap_or_else(|| "runs/latest/policy.safetensors".into());
         let idle = std::env::args().any(|a| a == "--idle");
-        if let Err(e) = learner::eval::run(Path::new(&policy), n.parse().unwrap_or(40), idle) {
+        let ts = tick_skip_arg();
+        if let Err(e) = learner::eval::run(Path::new(&policy), n.parse().unwrap_or(40), idle, ts) {
             eprintln!("{e}");
             std::process::exit(2);
         }
@@ -161,7 +185,9 @@ fn main() {
             .unwrap_or(5.0f64)
             * 60.0,
     );
-    let mut cfg = PpoConfig::default();
+    let tick_skip = tick_skip_arg();
+    // γ, λ, horizon et minibatch suivent le rythme de décision (même horizon en secondes de jeu).
+    let mut cfg = PpoConfig::for_tick_skip(tick_skip);
     if let Some(n) = arg("--envs").and_then(|s| s.parse().ok()) {
         cfg.n_envs = n;
     }
@@ -306,7 +332,7 @@ fn main() {
         .flatten();
     let record_clips = clip_store.is_some();
     let env_cfg = move |st: u32| {
-        let c = EnvConfig::for_stage(st);
+        let c = EnvConfig::for_stage(st).with_tick_skip(tick_skip);
         EnvConfig {
             record_clips,
             detector_v1,
@@ -418,7 +444,7 @@ fn main() {
             .and_then(|s| s.parse().ok())
             .unwrap_or(50_000);
         let t = Instant::now();
-        match rl_env::demo::build_pool(per_kind, 60, 0xDE40 ^ tr.cfg.seed) {
+        match rl_env::demo::build_pool(per_kind, 60, 0xDE40 ^ tr.cfg.seed, tick_skip) {
             Ok((demos, rep)) => {
                 tr.demo = learner::ppo::DemoBuffer::new(tr.obs_dim(), cap);
                 for d in &demos {
@@ -448,6 +474,55 @@ fn main() {
         if resume && let Ok(t) = std::fs::read_to_string(out.join("demo-steps")) {
             tr.bc_steps = t.trim().parse().unwrap_or(0);
         }
+    }
+    // Changement de rythme de décision depuis l'état relu (15 → 30 Hz ou retour) : sauvegarde automatique de l'état
+    // d'avant (`pre-tickskip-<ancien>/`), mêmes poids, exploration et lr remis en adaptation, critique réchauffé, pool et
+    // références d'Elo (jouées à l'ancien rythme) mises de côté. Voir `docs/trente-hz.md`.
+    let prev_skip: u32 = std::fs::read_to_string(out.join(best::TICK_SKIP_FILE))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(8);
+    if loaded && prev_skip != tick_skip {
+        eprintln!(
+            "changement de rythme : {} Hz → {} Hz (tick_skip {prev_skip} → {tick_skip})",
+            120 / prev_skip,
+            120 / tick_skip
+        );
+        tr.tick_skip = prev_skip;
+        let saved = best::snapshot(&tr, &out, &format!("pre-tickskip-{prev_skip}"), stage, -1.0);
+        tr.tick_skip = tick_skip;
+        if let Err(e) = saved {
+            eprintln!("sauvegarde avant bascule en échec ({e}) : bascule annulée");
+            std::process::exit(2);
+        }
+        tr.explore.begin_adaptation();
+        let tag = format!("{}hz", 120 / prev_skip);
+        for name in ["pool", "refs"] {
+            let from = out.join(name);
+            let to = out.join(format!("{name}-{tag}"));
+            if from.exists() && !to.exists() && std::fs::rename(&from, &to).is_err() {
+                eprintln!("{name}/ : déplacement en échec, conservé");
+            }
+        }
+        let elo_file = out.join("elo.json");
+        if elo_file.exists() {
+            let _ = std::fs::rename(&elo_file, out.join(format!("elo-{tag}.json")));
+        }
+        if let Ok(mut c) = curriculum.lock() {
+            c.elo = learner::elo::EloState::default();
+        }
+        if warmup == 0 {
+            warmup = arg("--critic-warmup")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(100);
+            tr.freeze_policy = warmup > 0;
+        }
+        eprintln!(
+            "adaptation : ent_coef {:.4}, lr ≤ {:.0e} pendant {} itérations, échauffement du critique {warmup} itérations",
+            tr.explore.ent_coef,
+            learner::explore::ADAPT_LR,
+            learner::explore::ADAPT_ITERS
+        );
     }
     // Points de restauration : l'état relu (avant toute itération) et, s'il n'y en a pas, le « meilleur » du palier.
     let mut best_by_stage = Best::load(&out);
@@ -655,7 +730,13 @@ fn main() {
             let mut st = curriculum.lock().expect("curriculum").elo.clone();
             let best_before = st.best;
             let te = Instant::now();
-            match elo::measure(&tr.policy_snapshot(), &mut st, &out, &tr.plain_device()) {
+            match elo::measure(
+                &tr.policy_snapshot(),
+                &mut st,
+                &out,
+                &tr.plain_device(),
+                tick_skip,
+            ) {
                 Ok(rep) => {
                     let mv = {
                         let mut c = curriculum.lock().expect("curriculum");
@@ -735,6 +816,7 @@ fn main() {
         if let Ok(mut m) = metrics.lock() {
             m.steps_total = steps;
             m.steps_per_second = s.steps as f64 / dt;
+            m.tick_skip = tick_skip;
             m.episodes_total = eps;
             m.reward_mean = s.reward_mean;
             m.episode_length_mean = s.length_mean;

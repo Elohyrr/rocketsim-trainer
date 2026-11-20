@@ -205,6 +205,25 @@ pub struct PpoConfig {
     pub seed: u64,
 }
 
+impl PpoConfig {
+    /// Réglages « par décision » ramenés à la seconde de jeu pour un `tick_skip` : γ et λ élevés à la puissance
+    /// `tick_skip / 8` (même horizon en secondes : 0,99 → ≈ 0,995 et 0,95 → ≈ 0,975 à 30 Hz), horizon de collecte
+    /// et minibatch multipliés par `8 / tick_skip` (128 décisions = 8,5 s de jeu par env à 15 Hz, 256 à 30 Hz ;
+    /// même nombre de minibatchs par itération). Les cadences en itérations (gel de la copie, pool, curriculum) gardent
+    /// ainsi la même durée de jeu.
+    pub fn for_tick_skip(tick_skip: u32) -> Self {
+        let base = Self::default();
+        let r = f64::from(tick_skip.max(1)) / f64::from(rl_env::REF_TICK_SKIP);
+        Self {
+            gamma: f64::from(base.gamma).powf(r) as f32,
+            lambda: f64::from(base.lambda).powf(r) as f32,
+            horizon: ((base.horizon as f64 / r).round() as usize).max(1),
+            minibatch: ((base.minibatch as f64 / r).round() as usize).max(1),
+            ..base
+        }
+    }
+}
+
 impl Default for PpoConfig {
     fn default() -> Self {
         Self {
@@ -401,6 +420,8 @@ pub struct Trainer {
     pub bc_steps: u64,
     /// Politique de référence de l'ancre (voir [`BcConfig::anchor`]).
     ref_policy: Option<Mlp>,
+    /// Décisions par seconde de jeu = 120 / `tick_skip` (écrit dans `policy.json` pour les clients).
+    pub tick_skip: u32,
 }
 
 /// Itérations entre deux mises à jour de la copie gelée en self-play.
@@ -421,6 +442,7 @@ fn scalar(t: Tensor<1>) -> f64 {
 impl Trainer {
     pub fn new(cfg: PpoConfig, env_cfg: EnvConfig) -> Result<Self, rl_env::SimError> {
         let env_cfg_selfplay = env_cfg.opponent == Opponent::SelfPlay;
+        let tick_skip = env_cfg.tick_skip;
         let mut env = VecEnv::new(cfg.n_envs, cfg.threads, env_cfg, cfg.seed)?;
         let (obs_dim, n_actions) = (env.obs_dim(), env.action_count());
         let plain = Device::flex();
@@ -442,6 +464,7 @@ impl Trainer {
             bc: BcConfig::default(),
             bc_steps: 0,
             ref_policy: None,
+            tick_skip,
             cfg,
             env,
             model,
@@ -808,11 +831,15 @@ impl Trainer {
         st.bc_loss = bc_sum / cnt;
         st.bc_lambda = f64::from(bc_lambda);
         if bc_lambda > 0.0 {
-            self.bc_steps += total as u64;
+            // Pas de 1/15 s, comme `explore.steps` : la décroissance de λ dure autant de secondes de jeu à 30 Hz.
+            self.bc_steps +=
+                total as u64 * u64::from(self.tick_skip) / u64::from(rl_env::REF_TICK_SKIP);
         }
         st.ent_coef = f64::from(ent_coef);
         st.lr = lr;
-        self.explore.update(total as u64, st.entropy, na);
+        // `explore.steps` compte des pas de 1/15 s : à 30 Hz, 2 décisions valent un pas (même lr par seconde de jeu).
+        let ref_steps = total as u64 * u64::from(self.tick_skip) / u64::from(rl_env::REF_TICK_SKIP);
+        self.explore.update(ref_steps, st.entropy, na);
         if st.episodes > 0 {
             st.reward_mean = ret_sum / st.episodes as f64;
             st.length_mean = len_sum / st.episodes as f64;
@@ -839,6 +866,7 @@ impl Trainer {
 
     /// Change la config de l'env (palier de curriculum) : tous les envs sont remis à zéro immédiatement.
     pub fn set_env_config(&mut self, cfg: &EnvConfig) {
+        self.tick_skip = cfg.tick_skip;
         self.obs = self.env.set_config(cfg);
         self.selfplay = cfg.opponent == Opponent::SelfPlay;
         if !self.selfplay {
@@ -857,8 +885,8 @@ impl Trainer {
         let t = self.model.policy.to_tensors();
         write_safetensors(path, &t).map_err(|e| std::io::Error::other(e.to_string()))?;
         let meta = format!(
-            "{{\"obs_dim\":{},\"actions\":{},\"hidden\":{},\"activation\":\"tanh\",\"action_table\":\"rlgym-90\"}}\n",
-            self.obs_dim, self.n_actions, self.cfg.hidden
+            "{{\"obs_dim\":{},\"actions\":{},\"hidden\":{},\"activation\":\"tanh\",\"action_table\":\"rlgym-90\",\"tick_skip\":{}}}\n",
+            self.obs_dim, self.n_actions, self.cfg.hidden, self.tick_skip
         );
         std::fs::write(path.with_extension("json"), meta)
     }

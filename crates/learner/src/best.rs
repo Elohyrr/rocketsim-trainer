@@ -18,6 +18,8 @@ pub const OPPONENT_OBS_MARKER: &str = "opponent-obs-v2";
 pub const RESTORE_FILE: &str = "restore-from";
 pub const META: &str = "best.json";
 pub const LAST_START: &str = "last-start";
+/// Rythme de décision (`tick_skip`) avec lequel l'état a été écrit ; absent = 8 (15 Hz).
+pub const TICK_SKIP_FILE: &str = "tick-skip";
 /// Amélioration minimale du taux de but pour remplacer un meilleur état.
 pub const MARGIN: f64 = 0.02;
 /// Itérations minimales entre deux écritures de meilleur état.
@@ -51,6 +53,7 @@ pub fn snapshot(
     std::fs::write(tmp.join("stage"), format!("{stage}\n"))?;
     tr.explore.save(&tmp)?;
     std::fs::write(tmp.join(OPPONENT_OBS_MARKER), "1\n")?;
+    std::fs::write(tmp.join(TICK_SKIP_FILE), format!("{}\n", tr.tick_skip))?;
     std::fs::write(
         tmp.join(META),
         format!(
@@ -113,7 +116,12 @@ impl Best {
 
 /// Fichiers d'état effacés de `--out` lors d'une restauration si la source ne les a pas (sinon l'état restauré
 /// serait mélangé à l'ancien : `explore.json` d'un autre réglage, marqueur d'un autre checkpoint).
-const OPTIONAL_STATE: [&str; 3] = ["explore.json", "elo.json", OPPONENT_OBS_MARKER];
+const OPTIONAL_STATE: [&str; 4] = [
+    "explore.json",
+    "elo.json",
+    OPPONENT_OBS_MARKER,
+    TICK_SKIP_FILE,
+];
 
 /// Applique `<out>/restore-from` s'il existe ; renvoie le dossier restauré.
 pub fn apply_restore(out: &Path) -> Result<Option<PathBuf>, String> {

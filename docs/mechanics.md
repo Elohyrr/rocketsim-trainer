@@ -117,7 +117,7 @@ vitesse due à un choc à deux ne gonfle pas le score. Les clips portent `detect
 | `double_touch` | toucher en l'air (balle z > 300), rebond de la balle sur un mur latéral ou du fond, second toucher en l'air ≤ 3 s, sans retour au sol |
 | `dribble` | balle dans le repère voiture : `up` ∈ [110, 190], \|avant\| < 110, \|côté\| < 80, vitesse relative < 400, `on_ground`, `up.z > 0,7`, maintenu 60 ticks (trous ≤ 6 ticks tolérés) ; une fois par dribble |
 | `flick` | dodge ≤ 0,4 s après un dribble validé, puis toucher et balle > 1 500 uu/s ≤ 0,3 s après le dodge |
-| `speed_flip` | dodge diagonal avant (composantes normalisées > 0,3), annulation (tangage opposé ≥ 0,5, ≤ 18 ticks), retour au sol ≤ 0,8 s, vitesse horizontale > 1 900 |
+| `speed_flip` | dodge diagonal avant (composantes normalisées > 0,3), annulation (tangage opposé ≥ 0,5, ≤ 18 ticks), retour au sol ≤ 1,25 s (150 ticks), vitesse horizontale > 1 750 (seuils révisés, mesures dans `docs/trente-hz.md`) |
 | `wave_dash` | dodge puis retour au sol ≤ 6 ticks, gain de vitesse horizontale > 250 (vs tick avant le dodge) |
 | `half_flip` | dodge arrière (avant < −0,7), annulation, roulis ≥ 0,5 après l'annulation, retour au sol ≤ 1,5 s, cap tourné (cos < −0,8) |
 
