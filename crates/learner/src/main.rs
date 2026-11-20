@@ -423,7 +423,8 @@ fn main() {
                 tr.demo = learner::ppo::DemoBuffer::new(tr.obs_dim(), cap);
                 for d in &demos {
                     for (i, &a) in d.actions.iter().enumerate() {
-                        tr.demo.push(&d.obs[i * tr.obs_dim()..(i + 1) * tr.obs_dim()], a);
+                        tr.demo
+                            .push(&d.obs[i * tr.obs_dim()..(i + 1) * tr.obs_dim()], a);
                     }
                 }
                 for (i, k) in rl_env::demo::DemoKind::ALL.iter().enumerate() {

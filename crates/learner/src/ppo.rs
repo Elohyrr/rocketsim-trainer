@@ -753,15 +753,17 @@ impl Trainer {
                         if let Some((bx, boh)) = bc_batch {
                             if let Some(rlp) = ref_lp {
                                 let kl_ref = (rlp.clone().exp() * (rlp - logp_all)).sum_dim(1);
-                                loss = loss
-                                    + (kl_ref * w).sum() * (bc_lambda * anchor / n_match);
+                                loss = loss + (kl_ref * w).sum() * (bc_lambda * anchor / n_match);
                             }
                             let lp = log_softmax(policy.forward(bx), 1);
                             let ce = -(lp * boh).sum_dim(1).mean();
                             bc_val = scalar(ce.clone().reshape([1]));
                             loss = loss + ce * bc_lambda;
                         }
-                        let stats = PolStats { bc: bc_val, ..stats };
+                        let stats = PolStats {
+                            bc: bc_val,
+                            ..stats
+                        };
                         let grads = GradientsParams::from_grads(loss.backward(), &policy);
                         (opt_p.step(lr, policy, grads), stats)
                     });
@@ -960,10 +962,7 @@ mod bc_tests {
         assert!((c.lambda(500) - 0.05).abs() < 1e-7);
         assert_eq!(c.lambda(1000), 0.0);
         assert_eq!(c.lambda(5000), 0.0);
-        let off = BcConfig {
-            lambda0: 0.0,
-            ..c
-        };
+        let off = BcConfig { lambda0: 0.0, ..c };
         assert_eq!(off.lambda(0), 0.0);
     }
 
