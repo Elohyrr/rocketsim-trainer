@@ -390,7 +390,7 @@ fn main() {
     }
     // Démonstrations (clonage de comportement mélangé à PPO, voir docs/demonstration.md) : `--demo-lambda L` (ou
     // DEMO_LAMBDA, 0 = désactivé, défaut), `--demo-decay-steps N` (30 M), `--demo-per-kind N` (150 séquences par
-    // mécanique), `--demo-batch N` (128 par minibatch), `--demo-buffer N` (50 000 échantillons). À chaud : un fichier
+    // mécanique), `--demo-batch N` (128 par minibatch), `--demo-anchor A` (5 : poids de l'ancre, multiple de λ), `--demo-buffer N` (50 000 échantillons). À chaud : un fichier
     // `<out>/demo-off` coupe le clonage, `<out>/demo-lambda` (un nombre) remplace λ0.
     let demo_lambda: f32 = arg("--demo-lambda")
         .or_else(|| std::env::var("DEMO_LAMBDA").ok())
@@ -402,6 +402,9 @@ fn main() {
         .and_then(|s| s.parse().ok())
     {
         tr.bc.decay_steps = n;
+    }
+    if let Some(a) = arg("--demo-anchor").and_then(|s| s.parse().ok()) {
+        tr.bc.anchor = a;
     }
     if let Some(n) = arg("--demo-batch").and_then(|s| s.parse().ok()) {
         tr.bc.batch = n;

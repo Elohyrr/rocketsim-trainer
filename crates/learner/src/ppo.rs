@@ -335,6 +335,10 @@ pub struct BcConfig {
     pub decay_steps: u64,
     /// Échantillons de démonstration par minibatch PPO.
     pub batch: usize,
+    /// Ancre : poids (multiple de λ) de `−log π(a)` sur les décisions de la collecte (actions jouées par la politique
+    /// d'avant la mise à jour) ; en espérance c'est KL(π_ancienne ‖ π) + H, qui retient la politique sur les états de
+    /// match pendant que la perte de clonage la déplace sur les états de démonstration.
+    pub anchor: f32,
 }
 
 impl Default for BcConfig {
@@ -343,6 +347,7 @@ impl Default for BcConfig {
             lambda0: 0.0,
             decay_steps: 30_000_000,
             batch: 128,
+            anchor: 5.0,
         }
     }
 }
@@ -689,6 +694,7 @@ impl Trainer {
                 // Acteur et critique sont indépendants (pertes et optimiseurs séparés) : un thread chacun.
                 // Mêmes gradients et même Adam que sur une seule perte somme : les paramètres ne se croisent pas.
                 let (freeze, clip, vf_coef) = (self.freeze_policy, self.cfg.clip, self.cfg.vf_coef);
+                let anchor = self.bc.anchor;
                 // Démonstrations : un lot tiré au hasard, perte appliquée à elles seules (jamais aux états de match).
                 let bc_batch = (bc_lambda > 0.0 && !freeze).then(|| {
                     let bm = self.bc.batch.max(1);
@@ -721,7 +727,7 @@ impl Trainer {
                             en_n: scalar(w.sum().reshape([1])),
                             en_all: scalar(ent_vec.clone().sum().reshape([1])),
                             pl: scalar(pol_loss.clone().reshape([1])),
-                            kl: scalar((old_lp - logp).mean().reshape([1])),
+                            kl: scalar((old_lp - logp.clone()).mean().reshape([1])),
                         };
                         let entropy = ent_vec.mean();
                         if freeze {
@@ -729,6 +735,7 @@ impl Trainer {
                         }
                         let mut loss = pol_loss - entropy * ent_coef;
                         if let Some((bx, boh)) = bc_batch {
+                            loss = loss - logp.mean() * (bc_lambda * anchor);
                             let lp = log_softmax(policy.forward(bx), 1);
                             let ce = -(lp * boh).sum_dim(1).mean();
                             bc_val = scalar(ce.clone().reshape([1]));
@@ -922,6 +929,7 @@ mod bc_tests {
             lambda0: 0.1,
             decay_steps: 1000,
             batch: 8,
+            anchor: 5.0,
         };
         assert!((c.lambda(0) - 0.1).abs() < 1e-7);
         assert!((c.lambda(500) - 0.05).abs() < 1e-7);
