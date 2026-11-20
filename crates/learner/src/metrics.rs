@@ -30,6 +30,9 @@ pub struct Metrics {
     /// Entropie visée (nat), coefficient d'entropie adaptatif et lr courant (exploration, `explore.rs`).
     pub entropy_target: f64,
     pub ent_coef: f64,
+    /// Clonage de comportement : perte (entropie croisée sur les démonstrations) et poids λ courant.
+    pub bc_loss: f64,
+    pub bc_lambda: f64,
     pub learning_rate: f64,
     /// Réduction de la cible d'entropie par le garde-fou (1 = aucune) et nombre de déclenchements.
     pub entropy_scale: f64,
@@ -148,6 +151,8 @@ impl Metrics {
         g("trainer_kl", "gauge", self.kl);
         g("trainer_entropy_target", "gauge", self.entropy_target);
         g("trainer_entropy_coef", "gauge", self.ent_coef);
+        g("trainer_bc_loss", "gauge", self.bc_loss);
+        g("trainer_bc_lambda", "gauge", self.bc_lambda);
         g("trainer_learning_rate", "gauge", self.learning_rate);
         g("trainer_entropy_guard_scale", "gauge", self.entropy_scale);
         g(

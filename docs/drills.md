@@ -423,3 +423,5 @@ réglages avec `--boost-reward 0.2 --empty-boost-penalty 0 --drill-weights boost
   8 min ici, des milliers par jour en prod) ; `rings` est monté à 0,05 dans un essai précédent (104/120).
 - `rebound` (3 %) et `wall_run` (9 %) restent sous 15 % au niveau 0 : candidats à un niveau 0 encore plus facile si
   le niveau reste à 0 en prod.
+
+Suite : les mécaniques que les drills ne font pas apparaître sont montrées par des séquences scriptées et un clonage de comportement mélangé à PPO (`docs/demonstration.md`).

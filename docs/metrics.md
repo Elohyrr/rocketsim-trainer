@@ -13,6 +13,7 @@ Règles : labels à valeurs bornées (énumérations fixes), jamais d'identifian
 | `trainer_episode_length_mean` | gauge | — | 1 |
 | `trainer_policy_loss`, `trainer_value_loss`, `trainer_entropy`, `trainer_kl` | gauge | — | 4 |
 | `trainer_entropy_target`, `trainer_entropy_coef`, `trainer_learning_rate`, `trainer_entropy_guard_scale` (régulateur d'exploration et garde-fou, `explore.rs`) | gauge | — | 4 |
+| `trainer_bc_loss` (entropie croisée sur les démonstrations), `trainer_bc_lambda` (poids λ courant ; 0 si le clonage est coupé, `docs/demonstration.md`) | gauge | — | 2 |
 | `trainer_entropy_guard_backoffs_total` (déclenchements du garde-fou depuis le démarrage) | counter | — | 1 |
 | `trainer_iteration_seconds` | histogram (≤ 8 buckets) | — | ≈ 10 |
 | `trainer_checkpoint_age_seconds` | gauge | — | 1 |
@@ -42,7 +43,7 @@ Règles : labels à valeurs bornées (énumérations fixes), jamais d'identifian
 | `trainer_stage_changes_total` | counter | `direction` = up\|down | 2 |
 | `process_*` (RSS, CPU) | gauge/counter | — | ≈ 6 |
 
-Total estimé : ≈ 111 séries (+4 : boost). Taux de kickoffs gagnés : `rate(trainer_kickoffs_total{outcome="won"}[15m]) / sum(rate(trainer_kickoffs_total[15m]))`. Catalogue `mechanic` (détecteur par tick, `docs/mechanics.md`) : `touch`, `aerial_touch`, `air_dribble`, `flip_reset`,
+Total estimé : ≈ 113 séries (+2 : clonage de comportement). Taux de kickoffs gagnés : `rate(trainer_kickoffs_total{outcome="won"}[15m]) / sum(rate(trainer_kickoffs_total[15m]))`. Catalogue `mechanic` (détecteur par tick, `docs/mechanics.md`) : `touch`, `aerial_touch`, `air_dribble`, `flip_reset`,
 `ceiling_shot`, `wall_shot`, `double_touch`, `flick`, `dribble`, `speed_flip`, `wave_dash`, `half_flip`. La série `drill` compte les mécaniques vues
 pendant les épisodes de drill (`docs/drills.md`) ; elle reste à 0 tant que `--drill-prob` vaut 0.
 
