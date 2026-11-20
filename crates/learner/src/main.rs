@@ -390,7 +390,7 @@ fn main() {
     }
     // Démonstrations (clonage de comportement mélangé à PPO, voir docs/demonstration.md) : `--demo-lambda L` (ou
     // DEMO_LAMBDA, 0 = désactivé, défaut), `--demo-decay-steps N` (30 M), `--demo-per-kind N` (150 séquences par
-    // mécanique), `--demo-batch N` (128 par minibatch), `--demo-anchor A` (5 : poids de l'ancre, multiple de λ), `--demo-buffer N` (50 000 échantillons). À chaud : un fichier
+    // mécanique), `--demo-batch N` (128 par minibatch), `--demo-anchor A` (50 : poids de l'ancre KL sur les états de match, multiple de λ), `--demo-buffer N` (50 000 échantillons). À chaud : un fichier
     // `<out>/demo-off` coupe le clonage, `<out>/demo-lambda` (un nombre) remplace λ0.
     let demo_lambda: f32 = arg("--demo-lambda")
         .or_else(|| std::env::var("DEMO_LAMBDA").ok())
@@ -410,6 +410,7 @@ fn main() {
         tr.bc.batch = n;
     }
     if demo_lambda > 0.0 {
+        tr.set_reference();
         let per_kind = arg("--demo-per-kind")
             .and_then(|s| s.parse().ok())
             .unwrap_or(150);

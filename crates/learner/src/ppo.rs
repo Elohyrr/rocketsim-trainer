@@ -335,9 +335,9 @@ pub struct BcConfig {
     pub decay_steps: u64,
     /// Échantillons de démonstration par minibatch PPO.
     pub batch: usize,
-    /// Ancre : poids (multiple de λ) de `−log π(a)` sur les décisions de la collecte (actions jouées par la politique
-    /// d'avant la mise à jour) ; en espérance c'est KL(π_ancienne ‖ π) + H, qui retient la politique sur les états de
-    /// match pendant que la perte de clonage la déplace sur les états de démonstration.
+    /// Ancre : poids (multiple de λ) de KL(π_réf ‖ π) sur les états de MATCH de la collecte (π_réf = politique au
+    /// démarrage du clonage, gelée) ; elle retient la politique là où elle joue déjà bien pendant que la perte de
+    /// clonage la déplace sur les états de démonstration.
     pub anchor: f32,
 }
 
@@ -347,7 +347,7 @@ impl Default for BcConfig {
             lambda0: 0.0,
             decay_steps: 30_000_000,
             batch: 128,
-            anchor: 5.0,
+            anchor: 50.0,
         }
     }
 }
@@ -399,6 +399,8 @@ pub struct Trainer {
     pub demo: DemoBuffer,
     pub bc: BcConfig,
     pub bc_steps: u64,
+    /// Politique de référence de l'ancre (voir [`BcConfig::anchor`]).
+    ref_policy: Option<Mlp>,
 }
 
 /// Itérations entre deux mises à jour de la copie gelée en self-play.
@@ -439,6 +441,7 @@ impl Trainer {
             demo: DemoBuffer::new(obs_dim, 50_000),
             bc: BcConfig::default(),
             bc_steps: 0,
+            ref_policy: None,
             cfg,
             env,
             model,
@@ -685,6 +688,19 @@ impl Trainer {
                 }
                 let d = &self.device;
                 let device_p = d.clone();
+                let n_match = match_w.iter().sum::<f32>().max(1.0);
+                // Ancre : log-probabilités de la politique de référence sur ces états (sans gradient).
+                let ref_lp = self
+                    .ref_policy
+                    .as_ref()
+                    .filter(|_| bc_lambda > 0.0 && !self.freeze_policy)
+                    .map(|r| {
+                        let lp = to_vec(log_softmax(
+                            r.forward(tensor2(ob.clone(), m, od, &self.plain)),
+                            1,
+                        ));
+                        tensor2(lp, m, na, d)
+                    });
                 let x = tensor2(ob, m, od, d);
                 let onehot = tensor2(oh, m, na, d);
                 let old_lp = tensor2(olp, m, 1, d);
@@ -718,13 +734,13 @@ impl Trainer {
                         let s1 = ratio.clone() * adv_t.clone();
                         let s2 = ratio.clamp(1.0 - clip, 1.0 + clip) * adv_t;
                         let pol_loss = -(s1.min_pair(s2)).mean();
-                        let ent_vec = -(logp_all.clone().exp() * logp_all).sum_dim(1);
+                        let ent_vec = -(logp_all.clone().exp() * logp_all.clone()).sum_dim(1);
                         let w = tensor2(match_w, m, 1, &device_p);
                         let mut bc_val = 0.0;
                         let stats = PolStats {
                             bc: 0.0,
                             en_match: scalar((ent_vec.clone() * w.clone()).sum().reshape([1])),
-                            en_n: scalar(w.sum().reshape([1])),
+                            en_n: scalar(w.clone().sum().reshape([1])),
                             en_all: scalar(ent_vec.clone().sum().reshape([1])),
                             pl: scalar(pol_loss.clone().reshape([1])),
                             kl: scalar((old_lp - logp.clone()).mean().reshape([1])),
@@ -735,7 +751,11 @@ impl Trainer {
                         }
                         let mut loss = pol_loss - entropy * ent_coef;
                         if let Some((bx, boh)) = bc_batch {
-                            loss = loss - logp.mean() * (bc_lambda * anchor);
+                            if let Some(rlp) = ref_lp {
+                                let kl_ref = (rlp.clone().exp() * (rlp - logp_all)).sum_dim(1);
+                                loss = loss
+                                    + (kl_ref * w).sum() * (bc_lambda * anchor / n_match);
+                            }
                             let lp = log_softmax(policy.forward(bx), 1);
                             let ce = -(lp * boh).sum_dim(1).mean();
                             bc_val = scalar(ce.clone().reshape([1]));
@@ -798,6 +818,11 @@ impl Trainer {
             st.goal_rate = st.goals as f64 / st.episodes as f64;
         }
         st
+    }
+
+    /// Fige la politique actuelle comme référence de l'ancre du clonage.
+    pub fn set_reference(&mut self) {
+        self.ref_policy = Some(self.model.valid().policy.clone());
     }
 
     /// Taille de l'observation.
@@ -929,7 +954,7 @@ mod bc_tests {
             lambda0: 0.1,
             decay_steps: 1000,
             batch: 8,
-            anchor: 5.0,
+            anchor: 50.0,
         };
         assert!((c.lambda(0) - 0.1).abs() < 1e-7);
         assert!((c.lambda(500) - 0.05).abs() < 1e-7);
