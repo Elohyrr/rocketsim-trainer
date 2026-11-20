@@ -212,6 +212,9 @@ pub struct EnvConfig {
     /// Poids `c` de la récompense de ramassage `c × (√boost_t − √boost_t−1)` (boost dans 0–1), sur les gains
     /// seulement : aucune pénalité de dépense. 0 = désactivée. Hors drills.
     pub boost_reward: f32,
+    /// Pénalité par décision passée presque à vide (boost < [`EMPTY_BOOST_RAMP`], pleine à 0) quand la balle est à
+    /// plus de [`EMPTY_FAR_DIST`] de la voiture (pas d'urgence) et hors coup d'envoi. 0 = désactivée. Hors drills.
+    pub empty_boost_penalty: f32,
     /// Poids `w` de la récompense dense « balle vers le but adverse » : `w × clamp(v_balle · u / BALL_SPEED_MAX, −1, 1)`
     /// par décision, `u` = direction balle → centre du but adverse (+Y). Signée : négative quand la balle file
     /// vers notre but (somme nulle en self-play, voir `docs/rewards.md`). 0 = désactivée. Hors drills.
@@ -250,6 +253,8 @@ pub struct EnvConfig {
     pub drill_weights: [f32; scenarios::DRILL_COUNT],
     /// Enregistre aussi les clips des drills de dribble (jamais les autres).
     pub drill_clips: bool,
+    /// Niveaux de difficulté des drills du curriculum ([`scenarios::CURRICULUM`]), mis à jour par le learner.
+    pub drill_levels: Arc<scenarios::DrillLevels>,
     /// Registre partagé des bonus de méca payés (décroissance sur 1 h glissante) ; à partager entre les paliers.
     pub bonus_ledger: Arc<BonusLedger>,
 }
@@ -288,6 +293,7 @@ impl Default for EnvConfig {
             start_boost: 33.0,
             random_start_boost: false,
             boost_reward: 0.0,
+            empty_boost_penalty: 0.0,
             goal_reward: 0.0,
             own_goal_penalty: 0.0,
             ball_goal_reward: 0.0,
@@ -304,6 +310,7 @@ impl Default for EnvConfig {
             drill_prob: 0.0,
             drill_weights: Drill::DEFAULT_WEIGHTS,
             drill_clips: false,
+            drill_levels: Arc::default(),
             bonus_ledger: Arc::default(),
         }
     }
@@ -350,6 +357,7 @@ impl EnvConfig {
                 kickoff_prob: KICKOFF_PROB,
                 random_start_boost: true,
                 boost_reward: BOOST_REWARD,
+                empty_boost_penalty: EMPTY_BOOST_PENALTY,
                 ..scoring
             },
             _ => Self {
@@ -360,6 +368,7 @@ impl EnvConfig {
                 kickoff_prob: KICKOFF_PROB,
                 random_start_boost: true,
                 boost_reward: BOOST_REWARD,
+                empty_boost_penalty: EMPTY_BOOST_PENALTY,
                 // Somme nulle : but marqué +10, but encaissé −10 ; plus de prime au toucher (un comportement,
                 // pas un résultat) et seulement l'approche, faible.
                 own_goal_penalty: scoring.goal_reward,
@@ -394,7 +403,13 @@ impl EnvConfig {
 pub const KICKOFF_PROB: f32 = 0.4;
 /// Poids de la récompense de ramassage de boost aux paliers 5 et 6 : une grosse prise à vide vaut 0,2 (un
 /// toucher vaut 1 au palier 5), une petite prise à vide ≈ 0,07, une petite prise à 33 de boost ≈ 0,02.
-pub const BOOST_REWARD: f32 = 0.2;
+pub const BOOST_REWARD: f32 = 0.4;
+/// Pénalité par décision (15/s) passée à vide balle loin : 0,003 ≈ 0,045 par seconde, un gros pad à vide en rapporte 0,4.
+pub const EMPTY_BOOST_PENALTY: f32 = 0.003;
+/// Sous ce boost (0–100) la pénalité de vide est partielle (rampe linéaire jusqu'à 0).
+pub const EMPTY_BOOST_RAMP: f32 = 10.0;
+/// Distance voiture/balle (uu) au-delà de laquelle être à vide ne se justifie par aucune urgence.
+pub const EMPTY_FAR_DIST: f32 = 2500.0;
 /// Un car pinch de coup d'envoi ne fait un clip qu'au-dessus de cette vitesse de balle (uu/s) : les pinchs
 /// ordinaires (2 300–2 950 mesurés en prod, ~3 % des clips) ne le sont pas.
 const KICKOFF_PINCH_CLIP_SPEED: f32 = 3000.0;
@@ -849,8 +864,14 @@ impl Env {
         self.end_episode();
         self.kickoff = None;
         self.detector.reset();
+        if d == Drill::BoostRun {
+            // Pads de boost remplis (un épisode précédent a pu en vider) : le gros pad doit être prenable.
+            let seed = (self.rng.next_u64() & 0x7FFF_FFFF) as i32;
+            self.sim.reset_kickoff(seed);
+        }
         let rng = &mut self.rng;
-        let s = scenarios::sample(d, &mut || rng.unit());
+        let level = self.cfg.drill_levels.get(d);
+        let s = scenarios::sample_at(d, &mut || rng.unit(), level);
         match s.car_axes {
             Some(axes) => self
                 .sim
@@ -903,6 +924,9 @@ impl Env {
                 self.sim.tick_count(),
                 s.car_pos,
             ));
+        }
+        if d == Drill::BoostRun {
+            bonus.boost_run = Some(drill::BoostRunTrack::new(s.car_boost));
         }
         if d == Drill::Keeper {
             bonus.keeper = Some(drill::KeeperTrack::new(s.ball_pos, s.ball_vel));
@@ -1211,6 +1235,7 @@ impl Env {
                     car_pos: car.pos,
                     car_vel: car.vel,
                     car_forward: car.forward,
+                    car_boost: car.boost,
                 },
                 cap,
                 ledger,
@@ -1347,6 +1372,13 @@ impl Env {
                 None => {}
             }
         }
+        if self.cfg.empty_boost_penalty > 0.0 && self.kickoff.is_none() && now < EMPTY_BOOST_RAMP {
+            let far = (snap.ball.pos[0] - car.pos[0]).hypot(snap.ball.pos[1] - car.pos[1])
+                > EMPTY_FAR_DIST;
+            if far {
+                r -= self.cfg.empty_boost_penalty * (1.0 - now / EMPTY_BOOST_RAMP);
+            }
+        }
         self.prev_boost = now;
         self.prev_pads.clear();
         self.prev_pads.extend(snap.pads.iter().map(|p| p.active));
@@ -1365,6 +1397,7 @@ impl Env {
             Some(Drill::FlipShot) => 8.0,
             Some(Drill::Turnaround) => 6.0,
             Some(Drill::Rings) => 20.0,
+            Some(Drill::BoostRun) => 12.0,
             _ => return self.cfg.max_steps,
         };
         let steps = (secs * TICKS_PER_SECOND / self.cfg.tick_skip.max(1) as f32) as u32;
@@ -2042,9 +2075,9 @@ mod tests {
         }
         let rep = e.take_drill_report();
         assert!(
-            Drill::ALL
-                .iter()
-                .all(|d| rep.episodes[d.index()] >= 1 || *d == Drill::Rings)
+            Drill::ALL.iter().all(
+                |d| rep.episodes[d.index()] >= 1 || matches!(d, Drill::Rings | Drill::BoostRun)
+            )
         );
     }
 
@@ -2540,6 +2573,67 @@ mod tests {
         // Le terme de l'adversaire (miroir : but en −Y) serait exactement l'opposé.
         let mirrored = speed_to_goal([0.0, 0.0, 321.0], [0.0, 3000.0, 0.0]);
         assert!(mirrored > 0.0);
+    }
+
+    #[test]
+    fn empty_boost_penalty_only_when_ball_far() {
+        assert!(setup());
+        let cfg = EnvConfig {
+            empty_boost_penalty: EMPTY_BOOST_PENALTY,
+            ..boost_cfg()
+        };
+        let mut e = Env::new(cfg, 6).unwrap();
+        e.reset();
+        let idle = (0..e.actions.len())
+            .find(|&i| {
+                let c = e.actions.get(i);
+                c.throttle == 0.0
+                    && c.steer == 0.0
+                    && !c.boost
+                    && !c.jump
+                    && c.pitch == 0.0
+                    && c.roll == 0.0
+            })
+            .unwrap();
+        // À vide, balle loin : pénalité pleine.
+        e.sim
+            .place_car(e.car, [0.0, -3000.0, 17.0], 0.0, 0.0)
+            .unwrap();
+        e.sim.reset_ball([0.0, 3000.0, 93.0], [0.0; 3]);
+        e.observe_synced();
+        let r = e.step(idle).reward;
+        assert!((r + EMPTY_BOOST_PENALTY).abs() < 1e-4, "{r}");
+        // À vide, balle proche : rien (urgence).
+        // (position sans pad à moins de 600 uu : pas de ramassage qui fausserait la mesure)
+        let free = [
+            [500.0, -1000.0],
+            [-500.0, -600.0],
+            [1000.0, 0.0],
+            [0.0, -1400.0],
+        ]
+        .into_iter()
+        .find(|c| {
+            e.sim
+                .pads()
+                .iter()
+                .all(|p| (p.pos[0] - c[0]).hypot(p.pos[1] - c[1]) > 600.0)
+        })
+        .unwrap();
+        e.sim
+            .place_car(e.car, [free[0], free[1], 17.0], 0.0, 0.0)
+            .unwrap();
+        e.sim
+            .reset_ball([free[0], free[1] + 1500.0, 93.0], [0.0; 3]);
+        e.observe_synced();
+        let r2 = e.step(idle).reward;
+        assert!(r2.abs() < 1e-4, "{r2}");
+        // Du boost, balle loin : rien.
+        e.sim
+            .place_car(e.car, [0.0, -3000.0, 17.0], 0.0, 50.0)
+            .unwrap();
+        e.sim.reset_ball([0.0, 3000.0, 93.0], [0.0; 3]);
+        e.observe_synced();
+        assert!(e.step(idle).reward.abs() < 1e-4);
     }
 
     #[test]

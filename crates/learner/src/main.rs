@@ -238,6 +238,19 @@ fn main() {
     };
     let ball_goal_reward = coef("--ball-goal-reward", "BALL_GOAL_REWARD");
     let hit_speed_reward = coef("--hit-speed-reward", "HIT_SPEED_REWARD");
+    // `--empty-boost-penalty P` (ou EMPTY_BOOST_PENALTY) : pénalité par décision à vide quand la balle est loin
+    // (défaut : celui des paliers 5/6, 0 = coupée). Voir docs/rewards.md.
+    let empty_boost_penalty: Option<f32> = arg("--empty-boost-penalty")
+        .or_else(|| std::env::var("EMPTY_BOOST_PENALTY").ok())
+        .and_then(|s| s.parse().ok())
+        .map(|c: f32| c.clamp(0.0, 0.05));
+    // `--drill-curriculum` (ou DRILL_CURRICULUM=1) : niveau de difficulté automatique par drill dur
+    // (`scenarios::CURRICULUM`), persisté dans `<out>/drill_levels.json`. Voir docs/drills.md.
+    let drill_curriculum = std::env::args().any(|a| a == "--drill-curriculum")
+        || std::env::var("DRILL_CURRICULUM").is_ok_and(|v| v == "1");
+    let drill_levels = std::sync::Arc::new(scenarios::DrillLevels::default());
+    let mut drill_curr = drill_curriculum
+        .then(|| learner::drill_curriculum::DrillCurriculum::load(&out, drill_levels.clone()));
     let fixed_boost = std::env::args().any(|a| a == "--fixed-boost");
     // `--drill-weights label=poids,…` (ou DRILL_WEIGHTS) : poids de tirage des drills, par-dessus les défauts
     // (`scenarios::Drill::DEFAULT_WEIGHTS`) ; ex. `dribble_turn=5,keeper=0`.
@@ -290,6 +303,7 @@ fn main() {
             drill_prob: if c.end_on_touch { 0.0 } else { drill_prob },
             drill_weights,
             drill_clips,
+            drill_levels: drill_levels.clone(),
             bonus_ledger: ledger.clone(),
             boost_reward: boost_reward.map_or(c.boost_reward, |b| {
                 if c.boost_reward > 0.0 { b } else { 0.0 }
@@ -304,6 +318,9 @@ fn main() {
             } else {
                 0.0
             },
+            empty_boost_penalty: empty_boost_penalty.map_or(c.empty_boost_penalty, |p| {
+                if c.empty_boost_penalty > 0.0 { p } else { 0.0 }
+            }),
             random_start_boost: c.random_start_boost && !fixed_boost,
             kickoff_prob: if c.kickoff_prob > 0.0 {
                 kp.unwrap_or(c.kickoff_prob)
@@ -666,6 +683,11 @@ fn main() {
             }
             m.drill_success = drill_total.success;
             m.drill_dribble_goal = drill_total.dribble_goal;
+            if let Some(dc) = drill_curr.as_mut() {
+                dc.update(&s.drill.episodes, &s.drill.success);
+                m.drill_difficulty =
+                    Some(std::array::from_fn(|i| dc.level(scenarios::Drill::ALL[i])));
+            }
             m.drill_saves = drill_total.saves;
             m.drill_rings = drill_total.rings;
             m.clips_saved_known = clips_saved;

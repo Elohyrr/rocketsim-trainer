@@ -17,7 +17,7 @@ Sans effet aux paliers 0 et 1 (`end_on_touch`) : un drill y finirait au premier 
 drill (probabilité `P`), sinon le coup d'envoi (paliers 5/6), sinon l'apparition aléatoire. Observations et actions
 sont inchangées : un checkpoint de prod se reprend tel quel (aucune remise à zéro).
 
-## Les 20 drills (`crates/scenarios`)
+## Les 21 drills (`crates/scenarios`)
 
 Fonctions pures `scenarios::sample(drill, unit)` ; `rl-env` applique l'état (`Env::reset_drill`). Tirage pondéré (voir « Pondération »).
 
@@ -155,6 +155,40 @@ l'atterrissage → sortie en ligne droite (braquage proportionnel au cap). `turn
 - Faisabilité : **faible à moyenne et coûteuse** (extraction `.upk`, conversion `.cmf`, boosts/buts à décrire). Les
   anneaux virtuels de `rings` donnent déjà l'essentiel (passage dans l'air et près des murs) sans changer la physique.
   Décision : ne pas l'implémenter.
+
+## Drill `boost_run` (21ᵉ) et gestion du boost
+
+Voiture à 0–20 de boost, gros pad à 600–2000 uu (cap ±0,8 rad vers lui, à l'arrêt ou jusqu'à 900 uu/s), balle à plus de
+3500 uu (et de 2500 du pad). Les pads sont remplis au reset (`reset_kickoff` de la simulation : un épisode précédent a pu
+en vider). Horizon 12 s. **Bonus** (drill seulement, plafonnés à 10 % du but, décroissants comme les autres) : gros pad pris
+(gain de boost ≥ 40 en une décision) +0,3, puis premier toucher envoyant la balle vers le but à plus de 300 uu/s +0,5,
+qui réussit le drill et le termine. Un toucher *avant* le pad ne paie rien. Poids 1,5. Récompenses de match associées :
+`docs/rewards.md` (prime ×2, pénalité de vide balle loin).
+
+## Curriculum automatique par drill (`--drill-curriculum`)
+
+Constat de prod (4 h) : réussite `keeper` 0,1 %, `aerial_touch` / `aerial_high` / `air_dribble` 0 %, `rings` 0,1 %,
+`wall_run` 3,8 %, `rebound` 2,5 % : trop durs, donc aucun signal. Chacun des 7 drills de `scenarios::CURRICULUM` a un
+**niveau de difficulté 0..1** (`scenarios::sample_at`) : 1 = le drill d'origine (tirage identique à `sample`, testé),
+0 = la version la plus facile ; les ranges sont interpolées linéairement (même nombre de tirages `unit()` à tout niveau).
+
+| Drill | Niveau 0 | Niveau 1 |
+|---|---|---|
+| `keeper` | tir à 450–800 uu/s, but ±400, balle départ y −3300…−2800 (loin de la cage ≈ 2 000 uu), voiture déjà sur la trajectoire à y −4200, cap ±0,15 rad | 900–2200 uu/s, voiture au hasard devant la cage |
+| `aerial_touch` | balle à 300–500 uu, 0–200 devant la voiture, vitesse de balle × 0,2, boost 100 | 800–1600 uu, 300–900 devant |
+| `aerial_high` | balle à 400–700 uu, voiture à 400–900, vitesse × 0,2, boost 100 | 900–1700 uu, 800–2200 |
+| `air_dribble` | balle 300–450 uu qui monte de 200–400, voiture 100–250 dessous à 300–500 uu/s, boost 100 | 300–600, +500–900, 300–600 dessous |
+| `rings` | 1–2 anneaux, rayon 380–500, espacés de 450–700, bas (z ≤ 400), pas de mur | 3–6 anneaux, rayon 260–380, 800–1500, z jusqu'à 1400, 40 % au mur |
+| `wall_run` | balle z ≤ 450, vitesse 300–600, voiture à 400–900 en arrière, boost 100 | z ≤ 800, 600–1600, 900–2000 |
+| `rebound` | balle 300–700 uu/s, voiture à y 2400–3200, cap ±0,32 rad, départ 0–600 uu/s | 500–1800 uu/s, y 800–2800, ±0,8 rad |
+
+**Règle** (`learner::drill_curriculum`) : fenêtre d'au moins 100 épisodes par drill, jugée puis remise à zéro ; taux de
+réussite (`success` de la table « Métriques ») **> 50 % → niveau + 0,05**, **< 15 % → − 0,05**, entre les deux stable.
+Sans fichier les niveaux démarrent à 0. Persistance : `<out>/drill_levels.json` (`{"keeper":0.35,…}`), réécrit à
+chaque changement, donc sur le PVC à côté du checkpoint ; repris au redémarrage. Drills hors curriculum : toujours à
+leur niveau complet. Désactivé (défaut) : tous les drills au niveau 1, comportement d'avant. Le niveau est partagé par
+tous les envs (atomiques dans `EnvConfig::drill_levels`), sans remise à zéro des envs. Métrique :
+**`trainer_drill_difficulty{drill}`** (gauge, 7 séries, seulement si le curriculum est actif).
 
 ## Pondération
 

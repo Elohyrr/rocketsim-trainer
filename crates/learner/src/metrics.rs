@@ -63,6 +63,8 @@ pub struct Metrics {
     pub hit_speed_record: f32,
     /// Réussites par drill, buts payés après virage/flick, arrêts du gardien (voir `docs/drills.md`).
     pub drill_success: [u64; scenarios::DRILL_COUNT],
+    /// Niveau de difficulté 0..1 des drills du curriculum (`scenarios::CURRICULUM`) ; `None` = curriculum coupé.
+    pub drill_difficulty: Option<[f32; scenarios::DRILL_COUNT]>,
     pub drill_dribble_goal: u64,
     pub drill_saves: u64,
     pub drill_rings: u64,
@@ -270,6 +272,17 @@ impl Metrics {
                 d.label(),
                 self.drill_episodes[d.index()]
             );
+        }
+        if let Some(lv) = &self.drill_difficulty {
+            let _ = writeln!(s, "# TYPE trainer_drill_difficulty gauge");
+            for d in scenarios::CURRICULUM {
+                let _ = writeln!(
+                    s,
+                    "trainer_drill_difficulty{{drill=\"{}\"}} {}",
+                    d.label(),
+                    lv[d.index()]
+                );
+            }
         }
         let _ = writeln!(s, "# TYPE trainer_drill_success_total counter");
         for d in scenarios::Drill::ALL {
@@ -635,12 +648,18 @@ mod tests {
         assert!(t.contains("trainer_drill_bonus_total{mechanic=\"flick\"} 2"));
         assert!(t.contains("trainer_drill_recovery_total{outcome=\"good\"} 4"));
         assert!(t.contains("trainer_drill_success_total{drill=\"keeper\"} 3"));
+        assert!(!t.contains("trainer_drill_difficulty"));
+        let mut lv = [1.0; scenarios::DRILL_COUNT];
+        lv[scenarios::Drill::Keeper.index()] = 0.25;
+        m.drill_difficulty = Some(lv);
+        let t = m.render();
+        assert!(t.contains("trainer_drill_difficulty{drill=\"keeper\"} 0.25"));
         assert!(t.contains("trainer_mechanic_total{mechanic=\"dribble\",context=\"drill\"} 5"));
         assert_eq!(
             t.lines()
                 .filter(|l| l.starts_with("trainer_drill_"))
                 .count(),
-            DRILL_COUNT * 2 + 11 + 4 + 2 + 1
+            DRILL_COUNT * 2 + 11 + 4 + 2 + 1 + scenarios::CURRICULUM.len()
         );
     }
 

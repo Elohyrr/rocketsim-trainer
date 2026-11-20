@@ -232,7 +232,11 @@ impl DrillLevels {
     }
 
     pub fn set(&self, d: Drill, level: f32) {
-        let v = if level.is_finite() { level.clamp(0.0, 1.0) } else { 1.0 };
+        let v = if level.is_finite() {
+            level.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
         self.0[d.index()].store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
     }
 }
@@ -724,10 +728,7 @@ pub fn sample_at(drill: Drill, unit: &mut dyn FnMut() -> f32, level: f32) -> Dri
             }
             // Niveau bas : la voiture est déjà sur la trajectoire de la balle, devant sa cage.
             let t = ((-4200.0 - s.ball_pos[1]) / (target[1] - s.ball_pos[1])).clamp(0.0, 1.0);
-            let ideal = [
-                s.ball_pos[0] + t * (target[0] - s.ball_pos[0]),
-                -4200.0,
-            ];
+            let ideal = [s.ball_pos[0] + t * (target[0] - s.ball_pos[0]), -4200.0];
             let w = 1.0 - l;
             s.car_pos[0] += (ideal[0] - s.car_pos[0]) * w;
             s.car_pos[1] += (ideal[1] - s.car_pos[1]) * w;
@@ -1201,7 +1202,11 @@ mod tests {
             assert!(v < 950.0, "tir lent : {v}");
             assert!(k.car_pos[1] < -3500.0, "{:?}", k.car_pos);
             let a = sample_at(Drill::AerialTouch, &mut u, 0.0);
-            assert!(a.ball_pos[2] >= 300.0 && a.ball_pos[2] <= 500.0, "{:?}", a.ball_pos);
+            assert!(
+                a.ball_pos[2] >= 300.0 && a.ball_pos[2] <= 500.0,
+                "{:?}",
+                a.ball_pos
+            );
             assert_eq!(a.car_boost, 100.0);
             let r = sample_at(Drill::Rings, &mut u, 0.0);
             assert!((1..=2).contains(&r.rings.len()));
