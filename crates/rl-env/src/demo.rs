@@ -62,6 +62,8 @@ impl Demo {
     }
 }
 
+/// Les durées de script (`TAIL`, `MAX_STEPS`, attentes, annulation, approche) sont données en décisions de 1/15 s ;
+/// à `tick_skip` 4 (30 Hz) elles sont multipliées par `k = 8 / tick_skip` (mêmes secondes de jeu).
 /// Décisions gardées après la détection (l'atterrissage qui la déclenche est montré, pas plus).
 const TAIL: usize = 2;
 /// Décisions maximales d'une séquence.
@@ -94,6 +96,8 @@ pub fn nearest_action(table: &ActionTable, want: &Controls) -> usize {
 /// Générateur : un environnement privé (sans adversaire, détecteur actif) et ses compteurs de réussite.
 pub struct DemoGen {
     env: Env,
+    /// Décisions par pas de 1/15 s : `8 / tick_skip` (1 à 15 Hz, 2 à 30 Hz).
+    k: u32,
     table: ActionTable,
     rng: Rng,
     /// Essais et réussites par mécanique (ordre de [`DemoKind::ALL`]).
@@ -112,6 +116,8 @@ struct Script {
     /// Décisions depuis le début de la phase aérienne (0 = pas encore parti).
     air: u32,
     started: bool,
+    /// Facteur de rythme (voir [`DemoGen`]).
+    k: u32,
     /// Paramètres tirés au début de la séquence.
     wait: u32,
     pre: u32,
@@ -127,14 +133,22 @@ struct Script {
 impl DemoGen {
     /// `init_meshes` doit avoir réussi avant.
     pub fn new(seed: u64) -> Result<Self, SimError> {
+        Self::with_tick_skip(seed, crate::REF_TICK_SKIP)
+    }
+
+    /// Comme [`DemoGen::new`] au rythme de décision `tick_skip` (4 = 30 Hz) : l'environnement privé et les durées
+    /// du script suivent, pour que les démonstrations soient des couples (observation, action) du rythme appris.
+    pub fn with_tick_skip(seed: u64, tick_skip: u32) -> Result<Self, SimError> {
         let cfg = EnvConfig {
             end_on_touch: false,
             opponent: Opponent::None,
             max_steps: 10_000,
             detect_mechanics: true,
             ..EnvConfig::default()
-        };
+        }
+        .with_tick_skip(tick_skip);
         Ok(Self {
+            k: crate::REF_TICK_SKIP.div_ceil(tick_skip.max(1)),
             env: Env::new(cfg, seed)?,
             table: ActionTable::rlgym(),
             rng: Rng::new(seed ^ 0xD3A0),
@@ -189,7 +203,7 @@ impl DemoGen {
         let mut found: Option<usize> = None;
         let mut toward_max = f32::MIN;
         let (mut t_dodge, mut t_land, mut vmax) = (None, None, 0.0f32);
-        for step in 0..MAX_STEPS {
+        for step in 0..MAX_STEPS * self.k as usize {
             let o = self.env.observe();
             let want = self.control(kind, &mut sc, step);
             let a = nearest_action(&self.table, &want);
@@ -230,7 +244,7 @@ impl DemoGen {
                 found = Some(step);
             }
             if let Some(f) = found
-                && step >= f + TAIL
+                && step >= f + TAIL * self.k as usize
             {
                 break;
             }
@@ -250,35 +264,39 @@ impl DemoGen {
         if kind == DemoKind::FlipShot && toward_max < FLIP_SHOT_MIN_TOWARD {
             return None;
         }
-        let n = (f + 1 + TAIL).min(actions.len());
+        let n = (f + 1 + TAIL * self.k as usize).min(actions.len());
         obs.truncate(n * OBS_DIM);
         actions.truncate(n);
         Some(Demo { kind, obs, actions })
     }
 
     fn draw(&mut self, kind: DemoKind) -> Script {
+        let k = self.k;
         let r = &mut self.rng;
         let sign = |r: &mut Rng| if r.unit() < 0.5 { -1.0 } else { 1.0 };
-        let mut s = Script::default();
+        let mut s = Script {
+            k,
+            ..Script::default()
+        };
         match kind {
             DemoKind::HalfFlip => {
-                s.wait = (r.next_u64() % 2) as u32;
-                s.cancel_n = 4 + (r.next_u64() % 3) as u32;
+                s.wait = (r.next_u64() % u64::from(2 * k)) as u32;
+                s.cancel_n = (4 + (r.next_u64() % 3) as u32) * k;
                 s.roll = sign(r);
                 s.yaw = if r.unit() < 0.5 { s.roll } else { 0.0 };
             }
             DemoKind::FlipShot => {
                 s.ttc = r.range(0.28, 0.5);
-                s.wait = (r.next_u64() % 2) as u32;
+                s.wait = (r.next_u64() % u64::from(2 * k)) as u32;
                 s.roll = [0.0, 0.0, 1.0, -1.0][(r.next_u64() % 4) as usize];
                 s.pre_pitch = if r.unit() < 0.3 { 1.0 } else { 0.0 };
             }
             DemoKind::SpeedFlip => {
-                s.pre = 3 + (r.next_u64() % 8) as u32;
-                s.wait = (r.next_u64() % 2) as u32;
+                s.pre = (3 + (r.next_u64() % 8) as u32) * k;
+                s.wait = (r.next_u64() % u64::from(2 * k)) as u32;
                 s.roll = sign(r);
                 s.pre_pitch = [-1.0f32, 0.0, 1.0][(r.next_u64() % 3) as usize];
-                s.cancel_n = 1 + (r.next_u64() % 3) as u32;
+                s.cancel_n = (1 + (r.next_u64() % 3) as u32) * k;
                 let mut cur = [1.0, 0.0, s.roll];
                 for t in s.tail.iter_mut() {
                     if r.unit() < 0.4 {
@@ -290,8 +308,8 @@ impl DemoGen {
                 }
             }
             DemoKind::Flick => {
-                s.pre = 10 + (r.next_u64() % 20) as u32;
-                s.wait = (r.next_u64() % 2) as u32;
+                s.pre = (10 + (r.next_u64() % 20) as u32) * k;
+                s.wait = (r.next_u64() % u64::from(2 * k)) as u32;
                 s.roll = [0.0, 1.0, -1.0][(r.next_u64() % 3) as usize];
                 s.pre_pitch = if r.unit() < 0.5 { 1.0 } else { 0.0 };
             }
@@ -361,7 +379,7 @@ impl DemoGen {
                     };
                 }
                 s.air += 1;
-                if !aerial && a > 2 {
+                if !aerial && a > 2 * s.k {
                     return drive(true);
                 }
                 let w = s.wait + 2;
@@ -406,7 +424,7 @@ impl DemoGen {
                     };
                 }
                 s.air += 1;
-                if !aerial && a > 2 {
+                if !aerial && a > 2 * s.k {
                     return drive(true);
                 }
                 let w = s.wait + 2;
@@ -435,7 +453,7 @@ impl DemoGen {
                         ..Default::default()
                     }
                 } else {
-                    let [p, y, r] = s.tail[((a - w - s.cancel_n - 1) as usize).min(15)];
+                    let [p, y, r] = s.tail[((a - w - s.cancel_n - 1) / s.k) as usize % 16];
                     Controls {
                         pitch: p,
                         yaw: y,
@@ -467,7 +485,7 @@ impl DemoGen {
                     return drive(true);
                 }
                 s.air += 1;
-                if !aerial && a > 2 {
+                if !aerial && a > 2 * s.k {
                     return drive(true);
                 }
                 let w = s.wait + 2;
@@ -538,7 +556,7 @@ impl DemoGen {
                     };
                 }
                 s.air += 1;
-                if !aerial && a > 2 {
+                if !aerial && a > 2 * s.k {
                     return drive(true);
                 }
                 let w = s.wait + 2;
@@ -582,6 +600,7 @@ pub fn build_pool(
     per_kind: usize,
     max_ratio: usize,
     seed: u64,
+    tick_skip: u32,
 ) -> Result<(Vec<Demo>, PoolReport), SimError> {
     type Part = Result<(Vec<Demo>, u64, u64), SimError>;
     let results: Vec<Part> = std::thread::scope(|sc| {
@@ -590,9 +609,11 @@ pub fn build_pool(
             .enumerate()
             .map(|(i, &kind)| {
                 sc.spawn(move || {
-                    let mut g = DemoGen::new(seed.wrapping_add(i as u64 * 7919))?;
+                    let mut g =
+                        DemoGen::with_tick_skip(seed.wrapping_add(i as u64 * 7919), tick_skip)?;
                     let mut out = Vec::new();
-                    // Le speed flip n'est pas reproductible à 15 Hz (1 séquence sur ≈ 10 000) : essais plafonnés.
+                    // Le speed flip est rare (≈ 1 séquence sur 10 000 avant la révision du seuil du détecteur, voir
+                    // `docs/trente-hz.md`) : essais plafonnés.
                     let ratio = if kind == DemoKind::SpeedFlip {
                         8
                     } else {
@@ -645,32 +666,22 @@ mod tests {
         }
     }
 
-    /// Half flip, flip shot et flick sortent au moins une séquence vérifiée (jusqu'à 400 essais chacun) ; le speed flip
-    /// n'est pas reproductible à 15 Hz (voir `docs/demonstration.md`) : ce que le générateur en rend est valide, c'est tout.
+    /// Chaque mécanique sort au moins une séquence vérifiée (jusqu'à 400 essais chacune), à 15 et à 30 Hz. Le speed flip
+    /// l'est depuis la révision du seuil du détecteur (`docs/trente-hz.md`) : ≈ 17 % des essais aux deux rythmes.
     #[test]
     fn chaque_mecanique_a_des_sequences_verifiees() {
         if !ready() {
             return;
         }
-        let mut g = DemoGen::new(7).unwrap();
-        for kind in DemoKind::ALL {
-            let tries = if kind == DemoKind::SpeedFlip { 10 } else { 400 };
-            let mut found = 0;
-            for _ in 0..tries {
-                if let Some(d) = g.sample(kind) {
-                    assert_eq!(d.obs.len(), d.len() * OBS_DIM);
-                    assert!(d.actions.iter().all(|&a| (a as usize) < 90));
-                    found += 1;
-                    if kind != DemoKind::SpeedFlip {
-                        break;
-                    }
-                }
+        for ts in [8, 4] {
+            let mut g = DemoGen::with_tick_skip(7, ts).unwrap();
+            for kind in DemoKind::ALL {
+                let found = (0..400).find_map(|_| g.sample(kind));
+                let d = found
+                    .unwrap_or_else(|| panic!("{} : 0 séquence à tick_skip {ts}", kind.label()));
+                assert_eq!(d.obs.len(), d.len() * OBS_DIM);
+                assert!(d.actions.iter().all(|&a| (a as usize) < 90));
             }
-            assert!(
-                found >= 1 || kind == DemoKind::SpeedFlip,
-                "{}: 0 séquence sur {tries}",
-                kind.label()
-            );
         }
     }
 }

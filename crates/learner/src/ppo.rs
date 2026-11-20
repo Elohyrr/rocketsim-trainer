@@ -831,7 +831,9 @@ impl Trainer {
         st.bc_loss = bc_sum / cnt;
         st.bc_lambda = f64::from(bc_lambda);
         if bc_lambda > 0.0 {
-            self.bc_steps += total as u64;
+            // Pas de 1/15 s, comme `explore.steps` : la décroissance de λ dure autant de secondes de jeu à 30 Hz.
+            self.bc_steps +=
+                total as u64 * u64::from(self.tick_skip) / u64::from(rl_env::REF_TICK_SKIP);
         }
         st.ent_coef = f64::from(ent_coef);
         st.lr = lr;

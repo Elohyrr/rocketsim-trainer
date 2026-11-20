@@ -11,7 +11,12 @@ fn main() {
         .unwrap_or(200);
     let only = std::env::args().nth(2);
     init_meshes(&meshes_dir_from_env().expect("meshes")).expect("meshes");
-    let mut g = DemoGen::new(1).expect("env");
+    // TICK_SKIP=4 : démonstrations à 30 Hz.
+    let tick_skip: u32 = std::env::var("TICK_SKIP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8);
+    let mut g = DemoGen::with_tick_skip(1, tick_skip).expect("env");
     g.diag = std::env::var("DIAG").is_ok();
     g.trace = std::env::var("TRACE").is_ok();
     for kind in DemoKind::ALL {

@@ -22,14 +22,13 @@ les décisions du début jusqu'à 2 décisions après la détection.
 | `speed_flip` | un des 5 kickoffs | boost, saut, relâche, dodge diagonal `saut + p−1 + r±1`, annulation `p+1`, suite aérienne tirée au hasard |
 
 **Taux de séquences vérifiées** (`cargo run --release -p rl-env --example demo_bench -- N [mécanique]`) : half flip ≈ 23 %,
-flip shot ≈ 60 %, flick ≈ 5 %, **speed flip ≈ 0,01 %** (1 sur 9 000 : 0 sur 12 000 dans un autre tirage).
+flip shot ≈ 60 %, flick ≈ 5 %, speed flip ≈ 0,01 % avec l'ancien seuil du détecteur (**≈ 17 % depuis la PR 30 Hz**).
 
-**Le speed flip n'est pas reproductible à 15 Hz avec ce détecteur.** Le détecteur exige le retour au sol ≤ 96 ticks (0,8 s) après le
-dodge ; à 15 Hz le saut dure au moins 8 ticks (touche maintenue pendant la décision), il faut une décision de relâche, puis le dodge
-se fait à ≈ 60 uu de hauteur, et la voiture reste en « flip » (contrôle aérien coupé) ≈ 0,65 s : le plus tôt mesuré est à 112 ticks
-(14 décisions) dans 3 000 essais. La grille 1.3 b de l'étude (dodge diagonal annulé) n'a de « vrai speed flip » qu'à 30 Hz. Le
-générateur le tente quand même (essais plafonnés, ≈ 3 s) et n'ajoute **aucune** séquence si le détecteur ne la reconnaît pas ; pour
-l'obtenir il faudrait 30 Hz ou un seuil `SPEED_FLIP_MAX_LAND_TICKS` ≈ 120–140 (hors périmètre de cette PR, détecteur partagé).
+**Speed flip (mis à jour avec la PR 30 Hz)** : le détecteur exigeait un retour au sol ≤ 96 ticks (0,8 s) après le dodge, ce qui est
+physiquement impossible (vol de 113 ticks au minimum, même au tick près : `docs/trente-hz.md`). Le seuil est passé à 150 ticks /
+1 750 uu/s (+ gain de vitesse et cap conservé) : les scripts atteignent maintenant **≈ 17 % de séquences vérifiées à 15 Hz comme à
+30 Hz**, et ne sont plus plafonnés. Les scripts suivent le rythme de décision (`DemoGen::with_tick_skip`, `--tick-skip` du learner) :
+les durées en décisions sont multipliées par `8 / tick_skip`.
 
 ## 2. Perte de clonage dans PPO (`learner::ppo`)
 
@@ -105,7 +104,7 @@ cause est la politique saturée : envisager de distiller d'abord la prod à temp
 
 ## 4. Limites et suites
 
-* **Speed flip** : non reproductible à 15 Hz avec le détecteur actuel (§ 1) ; 30 Hz ou seuil de 120–140 ticks.
+* **Speed flip** : reproductible (≈ 17 %) depuis la révision du seuil du détecteur ; reste à voir si la politique l'apprend.
 * **Flick** : 5 % des essais sont vérifiés (le dribble v2 exige 5 touchers et 600 uu) ; échantillons peu nombreux (≈ 27 décisions chacun).
 * **Formats** : aucun changement du format de la politique ni du checkpoint (donc pas de release `rst`) ; deux séries de métriques de plus.
 * Les démonstrations sont régénérées à chaque démarrage (≈ 1 min) ; elles ne sont pas sauvegardées.

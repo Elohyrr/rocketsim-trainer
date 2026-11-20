@@ -444,7 +444,7 @@ fn main() {
             .and_then(|s| s.parse().ok())
             .unwrap_or(50_000);
         let t = Instant::now();
-        match rl_env::demo::build_pool(per_kind, 60, 0xDE40 ^ tr.cfg.seed) {
+        match rl_env::demo::build_pool(per_kind, 60, 0xDE40 ^ tr.cfg.seed, tick_skip) {
             Ok((demos, rep)) => {
                 tr.demo = learner::ppo::DemoBuffer::new(tr.obs_dim(), cap);
                 for d in &demos {
