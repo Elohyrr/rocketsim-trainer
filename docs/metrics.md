@@ -2,7 +2,7 @@
 
 Liste **fermée** : toute nouvelle métrique passe par une PR qui met à jour ce fichier **et** le test de plafond.
 Règles : labels à valeurs bornées (énumérations fixes), jamais d'identifiant d'épisode / de run, histogrammes
-à ≤ 8 buckets. Objectif : ≲ 100 séries (110 avec les drills, le boost et la vitesse de frappe ; le test exige < 115), plafond dur 500 (un test du crate `learner` échoue au-delà).
+à ≤ 8 buckets. Objectif : ≲ 100 séries (110 avec les drills, le boost et la vitesse de frappe ; ≈ 120 avec le curriculum de drills : +7 `trainer_drill_difficulty{drill}`, +2 pour `boost_run`), plafond dur 500 (un test du crate `learner` échoue au-delà).
 
 | Métrique | Type | Labels (valeurs) | Séries |
 | --- | --- | --- | --- |

@@ -174,13 +174,18 @@ Constat de prod (4 h) : réussite `keeper` 0,1 %, `aerial_touch` / `aerial_high`
 
 | Drill | Niveau 0 | Niveau 1 |
 |---|---|---|
-| `keeper` | tir à 450–800 uu/s, but ±400, balle départ y −3300…−2800 (loin de la cage ≈ 2 000 uu), voiture déjà sur la trajectoire à y −4200, cap ±0,15 rad | 900–2200 uu/s, voiture au hasard devant la cage |
-| `aerial_touch` | balle à 300–500 uu, 0–200 devant la voiture, vitesse de balle × 0,2, boost 100 | 800–1600 uu, 300–900 devant |
-| `aerial_high` | balle à 400–700 uu, voiture à 400–900, vitesse × 0,2, boost 100 | 900–1700 uu, 800–2200 |
-| `air_dribble` | balle 300–450 uu qui monte de 200–400, voiture 100–250 dessous à 300–500 uu/s, boost 100 | 300–600, +500–900, 300–600 dessous |
+| `keeper` | tir **roulé à plat** à 520–800 uu/s (plancher = `KEEPER_THREAT_SPEED`, sinon pas de « menace » donc pas d'arrêt possible), but ±400, balle au sol départ y −3300…−2800, voiture déjà sur la trajectoire à y −4200, cap ±0,15 rad | cloche balistique à 900–2200 uu/s, voiture au hasard devant la cage |
+| `aerial_touch` | balle immobile à 250–330 uu, 0–80 devant la voiture (elle lui tombe dessus : un saut la touche), boost 100 | 800–1600 uu, 300–900 devant, balle en mouvement |
+| `aerial_high` | balle immobile à 250–330 uu, voiture à 0–80 en dessous, boost 100 | 900–1700 uu, 800–2200, balle en mouvement |
+| `air_dribble` | balle 300–450 uu qui monte de 200–400, voiture 100–250 devant-dessous à 300–500 uu/s, boost 100 | 300–600, +500–900, 300–600 |
 | `rings` | 1–2 anneaux, rayon 380–500, espacés de 450–700, bas (z ≤ 400), pas de mur | 3–6 anneaux, rayon 260–380, 800–1500, z jusqu'à 1400, 40 % au mur |
 | `wall_run` | balle z ≤ 450, vitesse 300–600, voiture à 400–900 en arrière, boost 100 | z ≤ 800, 600–1600, 900–2000 |
 | `rebound` | balle 300–700 uu/s, voiture à y 2400–3200, cap ±0,32 rad, départ 0–600 uu/s | 500–1800 uu/s, y 800–2800, ±0,8 rad |
+
+Critère de réussite des 3 drills aériens (toucher en l'air, voiture décollée) : balle à plus de `130 + 170 × niveau` uu
+(300 au niveau 1 comme avant, 130 au niveau 0 : la balle facile tombe sur la voiture, un saut suffit).
+**Résolubilité testée** (`cargo test -p rl-env`) : un script naïf (conduire vers la balle) arrête 47 % des tirs du gardien au
+niveau 0 (14/30) ; un script « saut + boost nez en l'air » touche 19/40 au niveau 0 d'`aerial_touch` contre 1/40 au niveau 1.
 
 **Règle** (`learner::drill_curriculum`) : fenêtre d'au moins 100 épisodes par drill, jugée puis remise à zéro ; taux de
 réussite (`success` de la table « Métriques ») **> 50 % → niveau + 0,05**, **< 15 % → − 0,05**, entre les deux stable.
@@ -369,3 +374,52 @@ après l'échauffement du critique : bruit d'un essai court, pas de chute) ; ré
   wall_shot 9, dribble 6, flip_reset 1.
 - Limites : essai court, un seul tirage, pas de décision statistique ; le barème de `turnaround` de cet essai (temps seul) a été remplacé
   ensuite par le retard (voir « Mesure du demi-tour » : le half flip y est récompensé quand il est meilleur).
+
+## Déploiement conseillé (boost + curriculum de drills)
+
+Image qui contient cette PR, mêmes réglages de prod qu'avant (`--drill-prob 0.3 --hit-speed-reward 0.5 --ball-goal-reward 0.02`)
+**plus** :
+
+```
+DRILL_CURRICULUM=1      # ou --drill-curriculum : niveaux 0..1 automatiques, persistés dans /data/run/drill_levels.json
+# optionnels (défauts = valeurs conseillées) :
+BOOST_REWARD=0.4        # prime de ramassage (0,2 avant)
+EMPTY_BOOST_PENALTY=0.003   # pénalité de vide balle loin (0 = coupée)
+DRILL_WEIGHTS=boost_run=1.5 # défaut, à monter si le boost reste vide
+```
+
+- **Format de la politique inchangé** (observation v3 89 / 90 actions, mêmes poids) : le checkpoint de prod se reprend tel quel,
+  pas de release `rst` nécessaire. Le fichier `drill_levels.json` est nouveau (absent = niveaux à 0).
+- Retour arrière : `DRILL_CURRICULUM` absent = tous les drills au niveau complet (comportement d'avant) ; `--drill-level 1`
+  fige tout au niveau complet ; `BOOST_REWARD=0.2 EMPTY_BOOST_PENALTY=0` rétablit les récompenses de boost d'avant.
+- À surveiller (Grafana) : `trainer_drill_difficulty{drill}` (monte ?), `rate(trainer_drill_success_total[1h]) / rate(trainer_drill_episodes_total[1h])`
+  par drill, `trainer_boost_mean`, `trainer_boost_empty_fraction`, `trainer_boost_pickups_total{size="big"}` et le taux de but.
+  Séries ajoutées : +7 (`trainer_drill_difficulty`) +2 (`boost_run` : épisodes, succès) = +9 (≈ 120 au total, sous la limite dure de 500).
+
+## Essai local boost + curriculum (acteur de prod, palier 6, 2 vCPU partagés)
+
+`--stage 6 --init-actor <prod> --critic-warmup 20 --hit-speed-reward 0.5 --ball-goal-reward 0.02 --drill-prob 0.3 --no-clips`,
+un seul tirage par bras (bruit large : ~900 buts par bras, écart-type de la part de buts ≈ 0,016). « Avant » = mêmes
+réglages avec `--boost-reward 0.2 --empty-boost-penalty 0 --drill-weights boost_run=0` ; « après » = défauts de cette PR
++ `--drill-curriculum` ; « niveau 0 » = `--drill-level 0`.
+
+| Bras | durée / pas | part de buts en match (marqués / total) | boost moyen | part à 0 de boost | gros pads / 100 k pas |
+|---|---|---|---|---|---|
+| avant | 6 min / 0,67 M | 0,470 (443 / 942) | 3,9–7,2 | 0,79–0,83 | 103 |
+| après (v1, 7 min) | 1,40 M | 0,466 (792 / 1700) | 2,9–4,8 | 0,79–0,88 | 105 |
+| après (final, 8 min) | 0,77 M | 0,439 (393 / 895) | 4,6–10,2 | 0,70–0,81 | 109 |
+
+- **Buts** : pas d'effondrement ; la dernière série est 2 écarts-types sous « avant », la première à l'identique : bruit
+  d'un essai court, à surveiller en prod (`trainer_goals_total`), pas une régression démontrée.
+- **Boost** : **aucun effet mesurable en 8 min** (boost moyen ≈ 5, à vide ≈ 0,8, gros pads au même rythme) : un acteur
+  de prod qui a appris à ne jamais boost ne change pas de comportement en quelques minutes avec des primes plus fortes.
+  Ce test ne prouve que l'absence de casse ; l'effet se juge en prod (heures) sur `trainer_boost_mean`,
+  `trainer_boost_empty_fraction` et les gros pads. `boost_run` : 12 % de réussite (7/57) sans entraînement dédié.
+- **Réussite au niveau 0** (`--drill-level 0`, 5 min, épisodes → réussis) : **`keeper` 39/115 = 34 %** (1 % avant ce
+  réglage de niveau 0, 0,1 % au niveau 1 en prod), `rings` 41/52 = 79 %, `wall_run` 3/32 = 9 %, `rebound` 2/69 = 3 %,
+  `aerial_touch` / `aerial_high` / `air_dribble` **0 %** : l'acteur de prod ne saute pas vers la balle. Ces niveaux 0
+  sont pourtant résolubles (script de saut : 19/40, voir plus haut) : c'est le signal d'apprentissage qui manquait.
+- **Curriculum** : sur 8 min les niveaux n'ont presque pas bougé (jugement tous les 100 épisodes par drill : ~60 en
+  8 min ici, des milliers par jour en prod) ; `rings` est monté à 0,05 dans un essai précédent (104/120).
+- `rebound` (3 %) et `wall_run` (9 %) restent sous 15 % au niveau 0 : candidats à un niveau 0 encore plus facile si
+  le niveau reste à 0 en prod.
