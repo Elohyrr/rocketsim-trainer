@@ -102,4 +102,46 @@ Le curriculum, les paliers, le registre de bonus de méca et les niveaux de dril
 
 ## Mesures
 
-(voir la section « Mesures » ci-dessous, ajoutée après les essais)
+Nœud partagé (autres travailleurs en parallèle) : les débits sont indicatifs, ±30 %.
+
+**Débit** (`STAGE=6 TICK_SKIP=… cargo run --release -p rl-env --example bench -- 2 16 20`, 2 threads, 16 envs, politique aléatoire) :
+
+| tick_skip | décisions/s | ticks/s | secondes de jeu/s |
+| --- | --- | --- | --- |
+| 8 (15 Hz) | 10 383 et 8 505 | 83 064 et 68 038 | 692 et 567 |
+| 4 (30 Hz) | 14 552 et 27 771 | 58 208 et 111 085 | 485 et 926 |
+
+La simulation (ticks/s) borne le débit : à 30 Hz on décide 1,4 à 3 fois plus vite mais on simule à peu près le même nombre de
+secondes de jeu ; l'observation et le détecteur coûtent par décision. En entraînement (itérations complètes, deux essais en
+parallèle sur 2 threads chacun, 20 min) : 324 k décisions à 30 Hz (10 800 s de jeu) contre 209 k à 15 Hz (13 900 s de jeu), soit
+**≈ 77 % de la durée de jeu par seconde réelle** à 30 Hz ; chaque itération PPO traite deux fois plus de décisions (horizon 256).
+
+**Scripts experts** (`demo_bench 1500`, séquences vérifiées par le détecteur révisé) :
+
+| Mécanique | 15 Hz | 30 Hz |
+| --- | --- | --- |
+| half flip | 28 % (23 décisions) | 45 % (41 décisions) |
+| flip shot | 62 % | 64 % |
+| speed flip | 17 % (ancien seuil : 0,01 %) | 17 % (56 décisions) |
+| flick | 6 % | 5 % |
+
+Le speed flip n'a rien de spécifique au 30 Hz : c'est le seuil du détecteur qui l'empêchait. Le half flip est plus souvent
+réussi à 30 Hz (commandes plus fines).
+
+**Coups d'envoi** (`learner --eval-kickoff 100 --tick-skip …`, 500 coups d'envoi) : la politique de prod, **sans aucun
+entraînement**, gagne 84,4 % à 15 Hz et 81,8 % à 30 Hz (perdus 12,6 % / 15,4 %, premier toucher 95,0 / 92,8 %, même temps de
+toucher 2,33 s). Elle reste donc jouable telle quelle en 30 Hz. Après 20 min d'entraînement : témoin 15 Hz 85,8 %, 30 Hz 83,0 %.
+
+**Essai d'apprentissage 30 Hz depuis l'acteur de prod** (20 min, palier 6, `--init-actor prod --critic-warmup 20 --drill-prob 0.3
+--no-clips --hit-speed-reward 0.5 --ball-goal-reward 0.02`, 16 envs ; témoin identique en 15 Hz) :
+
+| | 15 Hz (témoin) | 30 Hz |
+| --- | --- | --- |
+| itérations / décisions | 102 / 209 k | 79 / 324 k |
+| buts marqués / encaissés (self-play) | 148 / 152 (0,97) | 113 / 108 (1,05) |
+| entropie moyenne | 0,518 | 0,523 |
+| coups d'envoi gagnés / perdus (entraînement) | 188 / 97 | 135 / 85 |
+
+**Pas de régression** : les buts, l'entropie et les coups d'envoi sont dans le bruit du témoin. L'essai est trop court (≈ 3 h de
+jeu) pour juger l'apprentissage de mécaniques ; il montre que la politique de prod reprise en 30 Hz joue et progresse normalement.
+La reprise `--resume` d'un état 15 Hz (sauvegarde, adaptation, pool mis de côté) est couverte par les tests, pas rejouée ici.
