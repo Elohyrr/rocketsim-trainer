@@ -3,7 +3,8 @@
 //! taskset -c 0,1 cargo run --release -p rl-env --example bench -- <threads> <n_envs> <secondes>
 //! NO_DETECT=1 coupe le détecteur de mécaniques (mesure de son coût) ; CLIPS=1 enregistre des clips (coût de
 //! l'enregistreur) ; STAGE=5 prend le palier 5 (adversaire, coups d'envoi : le profil de la prod).
-//! (politique aléatoire uniforme sur la table d'actions ; steps = décisions, 8 ticks chacune)
+//! (politique aléatoire uniforme sur la table d'actions ; steps = décisions de `tick_skip` ticks : 8 par défaut,
+//! TICK_SKIP=4 pour 30 Hz)
 
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,12 @@ fn main() {
         .ok()
         .and_then(|s| s.parse().ok())
         .map_or_else(EnvConfig::default, EnvConfig::for_stage);
+    // TICK_SKIP=4 : 30 Hz (2 fois plus de décisions par seconde de jeu).
+    let tick_skip: u32 = std::env::var("TICK_SKIP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(stage.tick_skip);
+    let stage = stage.with_tick_skip(tick_skip);
     let opp = stage.opponent != rl_env::Opponent::None;
     let mut v = VecEnv::new(
         n_envs,
@@ -55,8 +62,9 @@ fn main() {
     }
     let dt = t.elapsed().as_secs_f64();
     println!(
-        "threads={threads} envs={n_envs} steps={steps} en {dt:.1}s -> {:.0} steps/s ({:.0} ticks/s), {clips} clips",
+        "threads={threads} envs={n_envs} tick_skip={tick_skip} steps={steps} en {dt:.1}s -> {:.0} steps/s ({:.0} ticks/s, {:.1} s de jeu/s), {clips} clips",
         steps as f64 / dt,
-        steps as f64 * 8.0 / dt
+        steps as f64 * f64::from(tick_skip) / dt,
+        steps as f64 * f64::from(tick_skip) / 120.0 / dt
     );
 }

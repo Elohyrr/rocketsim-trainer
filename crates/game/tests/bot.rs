@@ -175,3 +175,18 @@ fn watch_kickoff_loop_adds_a_charging_opponent_and_restarts_kickoffs() {
         "la boucle doit enchaîner les kickoffs : {resets}"
     );
 }
+
+#[test]
+fn rythme_de_decision_lu_dans_policy_json() {
+    let tmp = tempfile::tempdir().unwrap();
+    let f = write_policy(tmp.path(), OBS_DIM);
+    // Sans `tick_skip` : politique 15 Hz.
+    assert_eq!(Brain::load(&f).unwrap().tick_skip(), 8);
+    let meta = tmp.path().join("policy.json");
+    std::fs::write(&meta, br#"{"stage":6,"tick_skip":4}"#).unwrap();
+    assert_eq!(Brain::load(&f).unwrap().tick_skip(), 4);
+    // Rythme que le client ne sait pas jouer : refus propre.
+    std::fs::write(&meta, br#"{"stage":6,"tick_skip":3}"#).unwrap();
+    let e = Brain::load(&f).err().expect("rythme inconnu");
+    assert!(e.contains("ticks par décision"), "{e}");
+}

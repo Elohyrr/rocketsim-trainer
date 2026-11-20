@@ -56,11 +56,12 @@ pub fn eval_kickoffs(
     act: &dyn Fn(&[f32]) -> usize,
     n: u32,
     idle: bool,
+    tick_skip: u32,
 ) -> Result<(KickoffEval, [KickoffEval; 5]), rl_env::SimError> {
     rl_env::init_meshes_from_env()?;
     let mut total = KickoffEval::default();
     let mut per: [KickoffEval; 5] = Default::default();
-    let cfg = EnvConfig::kickoff_eval(idle);
+    let cfg = EnvConfig::kickoff_eval(idle).with_tick_skip(tick_skip);
     for (spawn, slot) in per.iter_mut().enumerate() {
         // Une seule graine par position : les n essais enchaînent le même flux aléatoire d'un lancement à l'autre.
         let mut env = Env::new(cfg.clone(), 1000 + spawn as u64)?;
@@ -97,11 +98,11 @@ fn line(name: &str, e: &KickoffEval) -> String {
 }
 
 /// Évalue le fichier de politique `path` et affiche le résultat.
-pub fn run(path: &Path, n: u32, idle: bool) -> Result<(), String> {
+pub fn run(path: &Path, n: u32, idle: bool, tick_skip: u32) -> Result<(), String> {
     let pol = Policy::load(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let dim = pol.obs_dim();
     let act = move |o: &[f32]| pol.act(&o[..dim.min(o.len())]);
-    let (total, per) = eval_kickoffs(&act, n, idle).map_err(|e| e.to_string())?;
+    let (total, per) = eval_kickoffs(&act, n, idle, tick_skip).map_err(|e| e.to_string())?;
     for (i, e) in per.iter().enumerate() {
         println!("{}", line(&format!("pos {i}"), e));
     }
@@ -117,8 +118,8 @@ mod tests {
     fn eval_is_reproducible_and_a_passive_policy_loses_every_kickoff() {
         // Action 4 : gaz nul, sans boost (table `ActionTable::rlgym`).
         let idle = |_: &[f32]| 4usize;
-        let (a, per) = eval_kickoffs(&idle, 2, false).expect("meshes (ROCKETSIM_MESHES_DIR)");
-        let (b, _) = eval_kickoffs(&idle, 2, false).expect("meshes");
+        let (a, per) = eval_kickoffs(&idle, 2, false, 8).expect("meshes (ROCKETSIM_MESHES_DIR)");
+        let (b, _) = eval_kickoffs(&idle, 2, false, 8).expect("meshes");
         assert_eq!(a.total(), 10);
         assert_eq!(per.iter().map(KickoffEval::total).sum::<u32>(), 10);
         assert_eq!((a.won, a.lost, a.neutral), (b.won, b.lost, b.neutral));

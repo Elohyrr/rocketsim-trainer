@@ -72,9 +72,19 @@ pub const DIAGONAL_MIN_COMPONENT: f32 = 0.3;
 pub const CANCEL_MIN_PITCH: f32 = 0.5;
 pub const CANCEL_WINDOW_TICKS: u64 = 18;
 
-/// Speed flip : retour au sol au plus 0,8 s après le dodge, vitesse horizontale > 1 900 uu/s.
-pub const SPEED_FLIP_MAX_LAND_TICKS: u64 = 96;
-pub const SPEED_FLIP_MIN_LAND_SPEED: f32 = 1900.0;
+/// Speed flip : retour au sol au plus 1,25 s après le dodge, vitesse horizontale > 1 750 uu/s.
+/// Mesuré (`rl-env/examples/speed_flip_bench`, 20 000 essais par résolution de décision, coup d'envoi diagonal à
+/// 33 de boost) : le dodge est suivi d'au moins 113 ticks (0,94 s) de vol même au tick près, car le saut seul dure
+/// ≈ 0,9 s (292 uu/s vers le haut, gravité 650) ; l'ancien seuil de 96 ticks (0,8 s) est donc physiquement
+/// inatteignable, à 15 comme à 30 Hz. Meilleurs vols : 113–150 ticks ; vitesse horizontale max à l'atterrissage
+/// 1 935 (tick), 1 886 (30 Hz), 1 835 (15 Hz) : 33 de boost ne donnent pas plus. Un dodge diagonal non annulé
+/// (rotation complète) reste exclu par la condition d'annulation. Voir `docs/trente-hz.md`.
+pub const SPEED_FLIP_MAX_LAND_TICKS: u64 = 150;
+pub const SPEED_FLIP_MIN_LAND_SPEED: f32 = 1750.0;
+/// … avec au moins 200 uu/s de gain depuis le dodge et un cap tourné de moins de ≈ 26° (cos > 0,9) : sans ces deux
+/// conditions, le seuil élargi laissait passer des dodges aléatoires (132 sur 10 min de politique aléatoire).
+pub const SPEED_FLIP_MIN_GAIN: f32 = 200.0;
+pub const SPEED_FLIP_MIN_HEADING_COS: f32 = 0.9;
 
 /// Wave dash : retour au sol au plus 6 ticks après le dodge, gain de vitesse horizontale > 250 uu/s.
 pub const WAVE_DASH_MAX_LAND_TICKS: u64 = 6;

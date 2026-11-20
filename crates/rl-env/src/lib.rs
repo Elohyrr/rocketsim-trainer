@@ -46,6 +46,10 @@ const PAD_COOLDOWN_BIG: f32 = 10.0;
 const JUMP_TIME_SCALE: f32 = 1.5;
 /// Fréquence de simulation (ticks par seconde).
 pub const TICKS_PER_SECOND: f32 = 120.0;
+/// `tick_skip` de référence (15 décisions/s) : toutes les durées et récompenses « par décision » de [`EnvConfig`] et
+/// des constantes de ce module sont exprimées pour ce rythme, puis converties en secondes de jeu par
+/// [`EnvConfig::decisions`] et [`EnvConfig::step_scale`] (30 Hz : `tick_skip` 4, voir `docs/trente-hz.md`).
+pub const REF_TICK_SKIP: u32 = 8;
 
 const POS_SCALE: [f32; 3] = [4096.0, 5120.0, 2048.0];
 const REL_POS_SCALE: [f32; 3] = [8192.0, 10240.0, 2048.0];
@@ -191,16 +195,17 @@ impl ActionTable {
 
 #[derive(Clone, Debug)]
 pub struct EnvConfig {
-    /// Ticks de simulation par décision (action repeat). RLGym : 8 (soit 15 décisions/s).
+    /// Ticks de simulation par décision (action repeat). RLGym : 8 (soit 15 décisions/s) ; 4 = 30 Hz. Les champs
+    /// « par décision » ci-dessous sont donnés **pour 8** (1/15 s) et convertis en secondes de jeu au besoin.
     pub tick_skip: u32,
-    /// Fin d'épisode par temps écoulé (en décisions).
+    /// Fin d'épisode par temps écoulé (en décisions de 1/15 s ; 2 fois plus de décisions à 30 Hz).
     pub max_steps: u32,
     /// Termine l'épisode au premier toucher (drill « toucher la balle »).
     pub end_on_touch: bool,
     /// Récompense par toucher de la balle.
     pub touch_reward: f32,
     /// Poids de la récompense « aller vers la balle » (composante de vitesse vers la balle, dans [-1, 1]
-    /// avant poids, par décision).
+    /// avant poids, par 1/15 s).
     pub approach_weight: f32,
     /// Distance mini voiture/balle au reset.
     pub min_spawn_dist: f32,
@@ -212,11 +217,11 @@ pub struct EnvConfig {
     /// Poids `c` de la récompense de ramassage `c × (√boost_t − √boost_t−1)` (boost dans 0–1), sur les gains
     /// seulement : aucune pénalité de dépense. 0 = désactivée. Hors drills.
     pub boost_reward: f32,
-    /// Pénalité par décision passée presque à vide (boost < [`EMPTY_BOOST_RAMP`], pleine à 0) quand la balle est à
+    /// Pénalité par 1/15 s passée presque à vide (boost < [`EMPTY_BOOST_RAMP`], pleine à 0) quand la balle est à
     /// plus de [`EMPTY_FAR_DIST`] de la voiture (pas d'urgence) et hors coup d'envoi. 0 = désactivée. Hors drills.
     pub empty_boost_penalty: f32,
     /// Poids `w` de la récompense dense « balle vers le but adverse » : `w × clamp(v_balle · u / BALL_SPEED_MAX, −1, 1)`
-    /// par décision, `u` = direction balle → centre du but adverse (+Y). Signée : négative quand la balle file
+    /// par 1/15 s, `u` = direction balle → centre du but adverse (+Y). Signée : négative quand la balle file
     /// vers notre but (somme nulle en self-play, voir `docs/rewards.md`). 0 = désactivée. Hors drills.
     pub ball_goal_reward: f32,
     /// Poids `w` de la récompense de frappe : au toucher, `w × clamp(Δ(v_balle · u) / BALL_SPEED_MAX, −1, 1)`, gain
@@ -317,6 +322,32 @@ impl Default for EnvConfig {
 }
 
 impl EnvConfig {
+    /// Décisions par seconde de jeu.
+    pub fn hz(&self) -> f32 {
+        TICKS_PER_SECOND / self.tick_skip.max(1) as f32
+    }
+
+    /// Facteur des récompenses denses « par 1/15 s » pour une décision de ce `tick_skip` : 1 à 15 Hz, 0,5 à 30 Hz
+    /// (le retour par seconde de jeu, donc l'échelle de la valeur, ne change pas).
+    pub fn step_scale(&self) -> f32 {
+        self.tick_skip.max(1) as f32 / REF_TICK_SKIP as f32
+    }
+
+    /// Convertit une durée en décisions de 1/15 s en nombre de décisions de ce `tick_skip` (≥ 1).
+    pub fn decisions(&self, n_ref: u32) -> u32 {
+        (n_ref * REF_TICK_SKIP)
+            .div_ceil(self.tick_skip.max(1))
+            .max(1)
+    }
+
+    /// Passe en `tick_skip` : seul ce champ change, le reste est converti à l'usage (voir [`Self::step_scale`]).
+    pub fn with_tick_skip(self, tick_skip: u32) -> Self {
+        Self {
+            tick_skip: tick_skip.max(1),
+            ..self
+        }
+    }
+
     /// Config d'un palier de curriculum (voir `docs/curriculum.md`) : 0 = aller vers la balle, 1 = toucher,
     /// 2 = marquer (balle au repos), 3 = balle en mouvement, 4 = positions difficiles, 5 = adversaire statique,
     /// 6 = self-play. Au-delà : palier 6.
@@ -404,7 +435,7 @@ pub const KICKOFF_PROB: f32 = 0.4;
 /// Poids de la récompense de ramassage de boost aux paliers 5 et 6 : une grosse prise à vide vaut 0,2 (un
 /// toucher vaut 1 au palier 5), une petite prise à vide ≈ 0,07, une petite prise à 33 de boost ≈ 0,02.
 pub const BOOST_REWARD: f32 = 0.4;
-/// Pénalité par décision (15/s) passée à vide balle loin : 0,003 ≈ 0,045 par seconde, un gros pad à vide en rapporte 0,4.
+/// Pénalité par 1/15 s passée à vide balle loin : 0,003 ≈ 0,045 par seconde (à tout `tick_skip`), un gros pad à vide en rapporte 0,4.
 pub const EMPTY_BOOST_PENALTY: f32 = 0.003;
 /// Sous ce boost (0–100) la pénalité de vide est partielle (rampe linéaire jusqu'à 0).
 pub const EMPTY_BOOST_RAMP: f32 = 10.0;
@@ -413,9 +444,9 @@ pub const EMPTY_FAR_DIST: f32 = 2500.0;
 /// Un car pinch de coup d'envoi ne fait un clip qu'au-dessus de cette vitesse de balle (uu/s) : les pinchs
 /// ordinaires (2 300–2 950 mesurés en prod, ~3 % des clips) ne le sont pas.
 const KICKOFF_PINCH_CLIP_SPEED: f32 = 3000.0;
-/// Durée maximale d'un kickoff (décisions, 6 s).
+/// Durée maximale d'un kickoff (décisions de 1/15 s, 6 s).
 pub const KICKOFF_MAX_STEPS: u32 = 90;
-/// Décisions jouées après le premier toucher (2 s) avant de juger le kickoff.
+/// Décisions de 1/15 s jouées après le premier toucher (2 s) avant de juger le kickoff.
 const KICKOFF_AFTER_TOUCH: u32 = 30;
 /// Positions de départ officielles côté bleu (x, y, lacet) ; l'orange est le miroir (-x, -y, lacet + π).
 const KICKOFF_SPAWNS: [[f32; 3]; 5] = [
@@ -987,7 +1018,7 @@ impl Env {
             // kickoffs restent contre lui (sinon « personne ne va à la balle » devient une stratégie).
             charger = !self.cfg.kickoff_idle_opponent
                 && (self.cfg.opponent != Opponent::SelfPlay || self.rng.unit() < 0.3);
-            delay = (self.rng.next_u64() % 5) as u32;
+            delay = (self.rng.next_u64() % u64::from(self.cfg.decisions(5))) as u32;
         }
         self.steps = 0;
         self.last_touch = self.sim.last_ball_touch_tick(self.car);
@@ -1154,7 +1185,7 @@ impl Env {
         let toward =
             (car.vel[0] * dir[0] + car.vel[1] * dir[1] + car.vel[2] * dir[2]) / CAR_VEL_SCALE;
 
-        let mut reward = self.cfg.approach_weight * toward.clamp(-1.0, 1.0);
+        let mut reward = self.cfg.approach_weight * self.cfg.step_scale() * toward.clamp(-1.0, 1.0);
         if touched {
             reward += self.cfg.touch_reward;
         }
@@ -1162,7 +1193,9 @@ impl Env {
             reward += self.boost_step(&snap, car_index(&snap, self.car));
             let (pos, vel) = (snap.ball.pos, snap.ball.vel);
             let v_goal = speed_to_goal(pos, vel);
-            reward += self.cfg.ball_goal_reward * (v_goal / BALL_SPEED_MAX).clamp(-1.0, 1.0);
+            reward += self.cfg.ball_goal_reward
+                * self.cfg.step_scale()
+                * (v_goal / BALL_SPEED_MAX).clamp(-1.0, 1.0);
             if touched {
                 let gain = v_goal - speed_to_goal(pos, ball_before.vel);
                 reward += self.cfg.hit_speed_reward * (gain / BALL_SPEED_MAX).clamp(-1.0, 1.0);
@@ -1296,9 +1329,9 @@ impl Env {
                 self.kickoff_first_s = first_touch_s;
             }
             let over = scored
-                || step_no >= KICKOFF_MAX_STEPS
+                || step_no >= self.cfg.decisions(KICKOFF_MAX_STEPS)
                 || k.first_any
-                    .is_some_and(|f| step_no >= f + KICKOFF_AFTER_TOUCH);
+                    .is_some_and(|f| step_no >= f + self.cfg.decisions(KICKOFF_AFTER_TOUCH));
             if over {
                 let result = if our_goal || (k.first_me.is_some() && ball.pos[1] > 300.0) {
                     KickoffResult::Won
@@ -1377,7 +1410,9 @@ impl Env {
             let far = (snap.ball.pos[0] - car.pos[0]).hypot(snap.ball.pos[1] - car.pos[1])
                 > EMPTY_FAR_DIST;
             if far {
-                r -= self.cfg.empty_boost_penalty * (1.0 - now / EMPTY_BOOST_RAMP);
+                r -= self.cfg.empty_boost_penalty
+                    * self.cfg.step_scale()
+                    * (1.0 - now / EMPTY_BOOST_RAMP);
             }
         }
         self.prev_boost = now;
@@ -1399,10 +1434,10 @@ impl Env {
             Some(Drill::Turnaround) => 6.0,
             Some(Drill::Rings) => 20.0,
             Some(Drill::BoostRun) => 12.0,
-            _ => return self.cfg.max_steps,
+            _ => return self.cfg.decisions(self.cfg.max_steps),
         };
         let steps = (secs * TICKS_PER_SECOND / self.cfg.tick_skip.max(1) as f32) as u32;
-        steps.min(self.cfg.max_steps)
+        steps.min(self.cfg.decisions(self.cfg.max_steps))
     }
 
     /// Action de la table qui roule vers l'avant avec boost et direction `steer` (-1 ou 1) ; sert aux tests
@@ -2779,5 +2814,140 @@ mod tests {
         assert!(seen.len() > 10, "boost de départ non varié : {seen:?}");
         e.reset_kickoff(Some(0));
         assert!((e.sim.snapshot().cars[0].boost - 33.0).abs() < 0.5);
+    }
+
+    // ------------------------------------------------------------ 30 Hz (tick_skip 4)
+
+    #[test]
+    fn conversions_en_secondes_de_jeu() {
+        let c15 = EnvConfig::default();
+        let c30 = EnvConfig::default().with_tick_skip(4);
+        assert_eq!((c15.hz(), c30.hz()), (15.0, 30.0));
+        assert_eq!((c15.step_scale(), c30.step_scale()), (1.0, 0.5));
+        assert_eq!(c15.decisions(90), 90);
+        assert_eq!(c30.decisions(90), 180);
+        assert_eq!(c30.decisions(5), 10);
+        // Au moins une décision, jamais zéro.
+        assert_eq!(EnvConfig::default().with_tick_skip(16).decisions(1), 1);
+    }
+
+    #[test]
+    fn horizons_en_secondes_a_30_hz() {
+        assert!(setup());
+        let cfg = |ts| {
+            EnvConfig {
+                drill_prob: 1.0,
+                ..EnvConfig::for_stage(6)
+            }
+            .with_tick_skip(ts)
+        };
+        let mut e15 = Env::new(cfg(8), 6).unwrap();
+        let mut e30 = Env::new(cfg(4), 6).unwrap();
+        e15.reset_drill_with(Drill::Keeper);
+        e30.reset_drill_with(Drill::Keeper);
+        assert_eq!((e15.max_steps(), e30.max_steps()), (90, 180));
+        // Épisode ordinaire : max_steps du palier (400 décisions de 1/15 s = 26,7 s) doublé.
+        e15.reset();
+        e30.reset();
+        let (a, b) = (e15.max_steps(), e30.max_steps());
+        assert!(a <= 400, "{a}");
+        if a == 400 {
+            assert_eq!(b, 800);
+        }
+    }
+
+    #[test]
+    fn coup_d_envoi_dure_autant_de_secondes_a_30_hz() {
+        assert!(setup());
+        let duree = |ts: u32| {
+            let mut e = Env::new(EnvConfig::kickoff_eval(true).with_tick_skip(ts), 3).unwrap();
+            e.reset_kickoff(Some(0));
+            for n in 1..1000 {
+                // Action 4 : ne rien faire ; l'adversaire est immobile aussi → jugé au délai maximal.
+                if e.step_vs(4, None).kickoff.is_some() {
+                    return n as f32 * ts as f32 / 120.0;
+                }
+            }
+            panic!("le coup d'envoi ne finit pas");
+        };
+        let (d15, d30) = (duree(8), duree(4));
+        assert!(
+            (d15 - 6.0).abs() < 0.2 && (d30 - 6.0).abs() < 0.2,
+            "{d15} {d30}"
+        );
+    }
+
+    /// Même récompense dense « par seconde de jeu » aux deux rythmes (prime d'approche et pénalité de boost vide).
+    #[test]
+    fn recompenses_denses_par_seconde_de_jeu() {
+        assert!(setup());
+        let total = |ts: u32, seed: u64, secs: f32| {
+            let cfg = EnvConfig {
+                end_on_touch: false,
+                touch_reward: 0.0,
+                approach_weight: 0.1,
+                start_boost: 0.0,
+                max_steps: 10_000,
+                ..EnvConfig::default()
+            }
+            .with_tick_skip(ts);
+            let mut e = Env::new(cfg, seed).unwrap();
+            e.reset();
+            let a = e.expert_action(0.0);
+            let mut r = 0.0f32;
+            for _ in 0..(secs * e.cfg.hz()) as u32 {
+                r += e.step(a).reward;
+            }
+            r
+        };
+        let mut vu = 0;
+        for seed in 1..20 {
+            let (r15, r30) = (total(8, seed, 1.0), total(4, seed, 1.0));
+            if r15.abs() > 0.05 {
+                vu += 1;
+                let rel = (r30 - r15).abs() / r15.abs();
+                assert!(rel < 0.25, "seed {seed} : {r15} vs {r30}");
+            }
+        }
+        assert!(vu >= 3, "trop peu de tirages exploitables : {vu}");
+    }
+
+    #[test]
+    fn penalite_de_boost_vide_par_seconde_de_jeu() {
+        assert!(setup());
+        let somme = |ts: u32, seed: u64| {
+            let cfg = EnvConfig {
+                end_on_touch: false,
+                touch_reward: 0.0,
+                approach_weight: 0.0,
+                start_boost: 0.0,
+                random_start_boost: false,
+                empty_boost_penalty: EMPTY_BOOST_PENALTY,
+                max_steps: 10_000,
+                ..EnvConfig::default()
+            }
+            .with_tick_skip(ts);
+            let mut e = Env::new(cfg, seed).unwrap();
+            e.reset();
+            let mut r = 0.0f32;
+            for _ in 0..(2.0 * e.cfg.hz()) as u32 {
+                r += e.step(4).reward;
+            }
+            r
+        };
+        let mut vu = 0;
+        for seed in 1..30 {
+            let (r15, r30) = (somme(8, seed), somme(4, seed));
+            if r15 < -0.05 {
+                vu += 1;
+                // 2 s × 15 décisions/s × 0,003 = 0,09 ; identique à 30 Hz (0,0015 × 60 décisions).
+                assert!(
+                    (r30 / r15 - 1.0).abs() < 0.1,
+                    "seed {seed} : {r15} vs {r30}"
+                );
+                assert!((r15 + 0.09).abs() < 0.02, "{r15}");
+            }
+        }
+        assert!(vu >= 1, "aucun tirage balle loin");
     }
 }

@@ -14,3 +14,7 @@ sim-core = { path = "../sim-core" }
 [[example]]
 name = "bench"
 path = "examples/bench.rs"
+
+[[example]]
+name = "speed_flip_bench"
+path = "examples/speed_flip_bench.rs"

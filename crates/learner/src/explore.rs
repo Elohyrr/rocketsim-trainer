@@ -36,6 +36,10 @@ pub const LR0: f64 = 3e-4;
 pub const LR_MIN: f64 = 5e-5;
 /// Pas cumulés pour diviser le lr par 2 (≈ 1 jour de prod à 420 M pas/jour).
 pub const LR_SCALE: f64 = 5e8;
+/// Changement de rythme de décision (15 → 30 Hz ou retour) : pendant `ADAPT_ITERS` itérations le lr est plafonné à
+/// `ADAPT_LR` (les actions sont tenues 2 fois moins longtemps, la politique reprise doit s'y adapter sans dérive).
+pub const ADAPT_ITERS: u64 = 500;
+pub const ADAPT_LR: f64 = 1e-4;
 /// Coefficient d'entropie initial (celui de la prod avant la PR #15).
 pub const ENT_INIT: f64 = 0.01;
 /// Plus petite valeur de `scale` (cible et plafond réduits au quart).
@@ -68,6 +72,8 @@ pub struct Explore {
     pub steps: u64,
     /// Réduction de la cible et du plafond par le garde-fou, dans `[SCALE_MIN, 1]`.
     pub scale: f64,
+    /// Itérations restantes d'adaptation après un changement de rythme (lr plafonné) ; 0 = hors adaptation.
+    pub adapt_iters: u64,
 }
 
 impl Default for Explore {
@@ -76,13 +82,28 @@ impl Default for Explore {
             ent_coef: ENT_INIT,
             steps: 0,
             scale: 1.0,
+            adapt_iters: 0,
         }
     }
 }
 
 impl Explore {
     pub fn lr(&self) -> f64 {
-        lr_at(self.steps)
+        let lr = lr_at(self.steps);
+        if self.adapt_iters > 0 {
+            lr.min(ADAPT_LR)
+        } else {
+            lr
+        }
+    }
+
+    /// Bascule de rythme de décision : coefficient d'entropie remis à sa valeur de départ (l'entropie par décision
+    /// change : une action tenue 2 fois moins longtemps), garde-fou à pleine échelle, lr plafonné `ADAPT_ITERS`
+    /// itérations. `steps` (en pas de 1/15 s, voir [`Trainer::iteration`](crate::ppo::Trainer)) reste valable.
+    pub fn begin_adaptation(&mut self) {
+        self.ent_coef = ENT_INIT.clamp(ENT_MIN, ENT_MAX);
+        self.scale = 1.0;
+        self.adapt_iters = ADAPT_ITERS;
     }
 
     /// Plafond courant du coefficient.
@@ -98,6 +119,7 @@ impl Explore {
     /// Fin d'itération : `steps` pas de plus, entropie mesurée `h` sur `n_actions` actions.
     pub fn update(&mut self, steps: u64, h: f64, n_actions: usize) {
         self.steps += steps;
+        self.adapt_iters = self.adapt_iters.saturating_sub(1);
         if h.is_finite() {
             self.ent_coef =
                 next_ent_coef(self.ent_coef, h, self.target(n_actions), self.coef_max());
@@ -117,8 +139,8 @@ impl Explore {
 
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
         let s = format!(
-            "{{\"ent_coef\":{},\"steps\":{},\"scale\":{}}}\n",
-            self.ent_coef, self.steps, self.scale
+            "{{\"ent_coef\":{},\"steps\":{},\"scale\":{},\"adapt_iters\":{}}}\n",
+            self.ent_coef, self.steps, self.scale, self.adapt_iters
         );
         std::fs::write(dir.join("explore.json"), s)
     }
@@ -140,6 +162,7 @@ impl Explore {
             ent_coef: ENT_INIT,
             steps: v["steps"].as_u64().unwrap_or(0),
             scale,
+            adapt_iters: v["adapt_iters"].as_u64().unwrap_or(0),
         };
         e.ent_coef = v["ent_coef"]
             .as_f64()
@@ -317,6 +340,7 @@ mod tests {
             ent_coef: 0.0037,
             steps: 123_456_789,
             scale: 0.5,
+            adapt_iters: 17,
         };
         e.save(&dir).unwrap();
         assert_eq!(Explore::load(&dir), e);
