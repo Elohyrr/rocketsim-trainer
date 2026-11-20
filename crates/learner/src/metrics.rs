@@ -18,6 +18,8 @@ const BUCKETS: [f64; 7] = [0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0];
 pub struct Metrics {
     pub steps_total: u64,
     pub steps_per_second: f64,
+    /// Ticks de simulation par décision (8 = 15 Hz, 4 = 30 Hz) ; 0 tant que le learner ne l'a pas fixé.
+    pub tick_skip: u32,
     pub episodes_total: u64,
     pub reward_mean: f64,
     pub episode_length_mean: f64,
@@ -125,6 +127,13 @@ impl Metrics {
         };
         g("trainer_steps_total", "counter", self.steps_total as f64);
         g("trainer_steps_per_second", "gauge", self.steps_per_second);
+        g("trainer_tick_skip", "gauge", f64::from(self.tick_skip));
+        // Secondes de jeu simulées par seconde réelle (= décisions/s × tick_skip / 120).
+        g(
+            "trainer_game_seconds_per_second",
+            "gauge",
+            self.steps_per_second * f64::from(self.tick_skip) / 120.0,
+        );
         g(
             "trainer_episodes_total",
             "counter",
@@ -452,17 +461,25 @@ pub fn serve_with_dir(
                 ("200 OK", "text/html; charset=utf-8", INDEX_HTML.as_bytes().to_vec())
             } else if req.starts_with("GET /healthz") {
                 ("200 OK", "text/plain", b"ok\n".to_vec())
-            } else if req.starts_with("GET /policy.safetensors") {
-                match dir.as_deref().and_then(|d| std::fs::read(d.join("policy.safetensors")).ok()) {
-                    Some(b) => ("200 OK", "application/octet-stream", b),
-                    None => ("404 Not Found", "text/plain", Vec::new()),
+            } else if req.starts_with("GET /policy.safetensors") || req.starts_with("GET /v2/policy.safetensors") {
+                if legacy_refused(&req, dir.as_deref()) {
+                    ("410 Gone", "text/plain", LEGACY_GONE.as_bytes().to_vec())
+                } else {
+                    match dir.as_deref().and_then(|d| std::fs::read(d.join("policy.safetensors")).ok()) {
+                        Some(b) => ("200 OK", "application/octet-stream", b),
+                        None => ("404 Not Found", "text/plain", Vec::new()),
+                    }
                 }
             } else if let Some(r) = crate::clips::route(&req, dir.as_deref()) {
                 r
-            } else if req.starts_with("GET /policy.json") {
-                match dir.as_deref().and_then(policy_info) {
-                    Some(j) => ("200 OK", "application/json", j.into_bytes()),
-                    None => ("404 Not Found", "text/plain", Vec::new()),
+            } else if req.starts_with("GET /policy.json") || req.starts_with("GET /v2/policy.json") {
+                if legacy_refused(&req, dir.as_deref()) {
+                    ("410 Gone", "text/plain", LEGACY_GONE.as_bytes().to_vec())
+                } else {
+                    match dir.as_deref().and_then(policy_info) {
+                        Some(j) => ("200 OK", "application/json", j.into_bytes()),
+                        None => ("404 Not Found", "text/plain", Vec::new()),
+                    }
                 }
             } else {
                 ("404 Not Found", "text/plain", Vec::new())
@@ -478,7 +495,26 @@ pub fn serve_with_dir(
     Ok(local)
 }
 
-/// Métadonnées de la politique exportée : `{"stage":S,"bytes":N,"updated_unix":T}` (`None` sans politique).
+/// Corps du refus d'une politique au rythme non standard par les anciens chemins (clients 0.4.0 : ils jouent à 15 Hz).
+const LEGACY_GONE: &str =
+    "politique a un rythme de decision different de 15 Hz : mettre a jour le client (rst update)\n";
+
+/// `tick_skip` de la politique exportée (`policy.json` voisin des poids ; 8 s'il manque : politique 15 Hz).
+fn exported_tick_skip(dir: &Path) -> u32 {
+    std::fs::read_to_string(dir.join("policy.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v["tick_skip"].as_u64())
+        .map_or(8, |t| t as u32)
+}
+
+/// Vrai si la requête vise les anciens chemins (`/policy.*`, sans `/v2`) alors que la politique n'est pas à 15 Hz :
+/// un client 0.4.0 ne sait pas la jouer au bon rythme, il reçoit 410 et garde sa politique installée.
+fn legacy_refused(req: &str, dir: Option<&Path>) -> bool {
+    !req.starts_with("GET /v2/") && dir.is_some_and(|d| exported_tick_skip(d) != 8)
+}
+
+/// Métadonnées de la politique exportée : `{"stage":S,"bytes":N,"updated_unix":T,"tick_skip":K}` (`None` sans politique).
 /// `updated_unix` sert de version (la politique est réécrite à chaque checkpoint).
 fn policy_info(dir: &Path) -> Option<String> {
     let meta = std::fs::metadata(dir.join("policy.safetensors")).ok()?;
@@ -493,8 +529,9 @@ fn policy_info(dir: &Path) -> Option<String> {
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0);
     Some(format!(
-        "{{\"stage\":{stage},\"bytes\":{},\"updated_unix\":{updated}}}\n",
-        meta.len()
+        "{{\"stage\":{stage},\"bytes\":{},\"updated_unix\":{updated},\"tick_skip\":{}}}\n",
+        meta.len(),
+        exported_tick_skip(dir)
     ))
 }
 
@@ -707,6 +744,16 @@ mod tests {
             j.contains("\"stage\":4") && j.contains("\"bytes\":3"),
             "{j}"
         );
+        // Politique 15 Hz (sans `tick_skip` voisin) : `/policy.*` et `/v2/policy.*` servent la même chose.
+        assert!(j.contains("\"tick_skip\":8"), "{j}");
+        assert!(get(addr, "/v2/policy.safetensors").starts_with(b"HTTP/1.1 200"));
+        // Politique 30 Hz : l'ancien chemin (clients 0.4.0) est refusé en 410, `/v2` la sert avec son rythme.
+        std::fs::write(dir.join("policy.json"), br#"{"tick_skip":4}"#).unwrap();
+        assert!(get(addr, "/policy.safetensors").starts_with(b"HTTP/1.1 410"));
+        assert!(get(addr, "/policy.json").starts_with(b"HTTP/1.1 410"));
+        assert!(get(addr, "/v2/policy.safetensors").starts_with(b"HTTP/1.1 200"));
+        let j2 = String::from_utf8(get(addr, "/v2/policy.json")).unwrap();
+        assert!(j2.contains("\"tick_skip\":4"), "{j2}");
         assert!(get(addr, "/etc/passwd").starts_with(b"HTTP/1.1 404"));
         for p in ["/", "/index.html", "/?x=1"] {
             let b = String::from_utf8(get(addr, p)).unwrap();

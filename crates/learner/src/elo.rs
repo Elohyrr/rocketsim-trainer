@@ -83,17 +83,26 @@ fn greedy(net: &Mlp, obs: &[f32], n: usize, od: usize, dev: &Device) -> Vec<usiz
 }
 
 /// Joue `n` matchs gloutons de `agent` (voiture bleue) contre `opp`. `agent` et `opp` sur le même `dev`.
-pub fn play(agent: &Mlp, opp: &Opp, n: usize, dev: &Device) -> Result<Score, rl_env::SimError> {
+pub fn play(
+    agent: &Mlp,
+    opp: &Opp,
+    n: usize,
+    dev: &Device,
+    tick_skip: u32,
+) -> Result<Score, rl_env::SimError> {
     let cfg = match opp {
         Opp::Charger => EnvConfig::kickoff_eval(false),
         Opp::Policy(_) => EnvConfig::for_stage(6),
-    };
+    }
+    .with_tick_skip(tick_skip);
     let mut env = VecEnv::new(ENVS, 2, cfg, 4242)?;
     let od = env.obs_dim();
     let mut obs = env.reset();
     let mut s = Score::default();
     let mut guard = 0usize;
-    while (s.total() as usize) < n && guard < 20_000 {
+    while (s.total() as usize) < n
+        && guard < 20_000 * rl_env::REF_TICK_SKIP as usize / tick_skip.max(1) as usize
+    {
         guard += 1;
         let acts = greedy(agent, &obs, ENVS, od, dev);
         let opp_acts = match opp {
@@ -229,13 +238,19 @@ pub fn refs_dir(out: &Path) -> std::path::PathBuf {
 /// Mesure l'Elo de `agent`. Capture au passage la référence du palier 5 si elle manque (politique courante :
 /// à défaut d'avoir été figée à la promotion, on fige ce qu'on a), puis met à jour le record et le « meilleur
 /// ancien ». `template` : réseau de mêmes dimensions (lecture des références).
-pub fn measure(agent: &Mlp, st: &mut EloState, out: &Path, dev: &Device) -> Result<Report, String> {
+pub fn measure(
+    agent: &Mlp,
+    st: &mut EloState,
+    out: &Path,
+    dev: &Device,
+    tick_skip: u32,
+) -> Result<Report, String> {
     let dir = refs_dir(out);
     let sim = |e: rl_env::SimError| e.to_string();
     let mut rep = Report::default();
     let mut parts = Vec::new();
 
-    let c = play(agent, &Opp::Charger, MATCHES, dev).map_err(sim)?;
+    let c = play(agent, &Opp::Charger, MATCHES, dev, tick_skip).map_err(sim)?;
     let p = c.rate();
     let e = CHARGER_ELO + elo_gap(p);
     rep.per_ref[0] = Some((p, e));
@@ -261,14 +276,14 @@ pub fn measure(agent: &Mlp, st: &mut EloState, out: &Path, dev: &Device) -> Resu
             (Some(r), _) => r,
             // Note du palier 5 : son score contre le fonceur, mesuré une seule fois.
             (None, 0) => {
-                let s = play(&net, &Opp::Charger, MATCHES, dev).map_err(sim)?;
+                let s = play(&net, &Opp::Charger, MATCHES, dev, tick_skip).map_err(sim)?;
                 let r = CHARGER_ELO + elo_gap(s.rate());
                 st.rating_stage5 = Some(r);
                 r
             }
             (None, _) => continue,
         };
-        let s = play(agent, &Opp::Policy(&net), MATCHES, dev).map_err(sim)?;
+        let s = play(agent, &Opp::Policy(&net), MATCHES, dev, tick_skip).map_err(sim)?;
         let (p, e) = (s.rate(), rating + elo_gap(s.rate()));
         rep.per_ref[i + 1] = Some((p, e));
         parts.push((p, e));
@@ -293,9 +308,9 @@ mod tests {
         let dev = Device::flex();
         let od = rl_env::OBS_DIM;
         let net = Mlp::new(od, 16, rl_env::ActionTable::rlgym().len(), &dev);
-        let c = play(&net, &Opp::Charger, 5, &dev).expect("meshes (ROCKETSIM_MESHES_DIR)");
+        let c = play(&net, &Opp::Charger, 5, &dev, 8).expect("meshes (ROCKETSIM_MESHES_DIR)");
         assert_eq!(c.total(), 5);
-        let p = play(&net, &Opp::Policy(&net), 3, &dev).expect("meshes");
+        let p = play(&net, &Opp::Policy(&net), 3, &dev, 8).expect("meshes");
         assert_eq!(p.total(), 3);
     }
 
