@@ -454,13 +454,13 @@ pub fn sample_at(drill: Drill, unit: &mut dyn FnMut() -> f32, level: f32) -> Dri
                 17.0,
             ];
             s.car_yaw = yaw;
-            let ahead = range(unit, mix(0.0, 300.0), mix(200.0, 900.0));
+            let ahead = range(unit, mix(0.0, 300.0), mix(80.0, 900.0));
             s.ball_pos = [
                 s.car_pos[0] + h[0] * ahead,
                 s.car_pos[1] + h[1] * ahead,
-                range(unit, mix(300.0, 800.0), mix(500.0, 1600.0)),
+                range(unit, mix(250.0, 800.0), mix(330.0, 1600.0)),
             ];
-            let vs = mix(0.2, 1.0);
+            let vs = mix(0.0, 1.0);
             s.ball_vel = [
                 range(unit, -200.0, 200.0) * vs,
                 range(unit, 0.0, 400.0) * vs,
@@ -704,18 +704,21 @@ pub fn sample_at(drill: Drill, unit: &mut dyn FnMut() -> f32, level: f32) -> Dri
             s.ball_pos = [
                 range(unit, mix(-1500.0, -3000.0), mix(1500.0, 3000.0)),
                 range(unit, mix(-3300.0, -3500.0), mix(-2800.0, 0.0)),
-                range(unit, 93.0, mix(250.0, 600.0)),
+                range(unit, 93.0, mix(110.0, 600.0)),
             ];
             let target = [
                 range(unit, -mix(400.0, 800.0), mix(400.0, 800.0)),
                 -5120.0,
                 range(unit, 100.0, mix(300.0, 600.0)),
             ];
+            // Niveau bas : tir roulé à plat (vitesse ≥ KEEPER_THREAT_SPEED de rl-env, sinon pas de « menace ») ; la
+            // cloche balistique de `aim` passerait au-dessus d'une voiture qui n'a pas appris à sauter.
             s.ball_vel = aim(
                 s.ball_pos,
                 target,
-                range(unit, mix(450.0, 900.0), mix(800.0, 2200.0)),
+                range(unit, mix(520.0, 900.0), mix(800.0, 2200.0)),
             );
+            s.ball_vel[2] *= l;
             loop {
                 s.car_pos = [
                     range(unit, -1500.0, 1500.0),
@@ -741,15 +744,15 @@ pub fn sample_at(drill: Drill, unit: &mut dyn FnMut() -> f32, level: f32) -> Dri
             s.ball_pos = [
                 range(unit, -2500.0, 2500.0),
                 range(unit, -1500.0, 2500.0),
-                range(unit, mix(400.0, 900.0), mix(700.0, 1700.0)),
+                range(unit, mix(250.0, 900.0), mix(330.0, 1700.0)),
             ];
-            let vs = mix(0.2, 1.0);
+            let vs = mix(0.0, 1.0);
             s.ball_vel = [
                 range(unit, -600.0, 600.0) * vs,
                 range(unit, 200.0, 900.0) * vs,
                 range(unit, -300.0, 500.0) * vs,
             ];
-            let away = range(unit, mix(400.0, 800.0), mix(900.0, 2200.0));
+            let away = range(unit, mix(0.0, 800.0), mix(80.0, 2200.0));
             let a = range(unit, -PI, PI);
             s.car_pos = clamp_xy([
                 s.ball_pos[0] + a.cos() * away,
@@ -1203,7 +1206,7 @@ mod tests {
             assert!(k.car_pos[1] < -3500.0, "{:?}", k.car_pos);
             let a = sample_at(Drill::AerialTouch, &mut u, 0.0);
             assert!(
-                a.ball_pos[2] >= 300.0 && a.ball_pos[2] <= 500.0,
+                a.ball_pos[2] >= 250.0 && a.ball_pos[2] <= 330.0,
                 "{:?}",
                 a.ball_pos
             );

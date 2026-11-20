@@ -1236,6 +1236,7 @@ impl Env {
                     car_vel: car.vel,
                     car_forward: car.forward,
                     car_boost: car.boost,
+                    level: self.cfg.drill_levels.get(d),
                 },
                 cap,
                 ledger,
@@ -2113,6 +2114,87 @@ mod tests {
         let rep = e.take_drill_report();
         // Réussite = arrêt sans but encaissé ensuite : jamais plus que d'arrêts.
         assert!(rep.success[Drill::Keeper.index()] <= rep.saves);
+    }
+
+    #[test]
+    fn keeper_level_zero_is_solvable_by_a_driving_script() {
+        assert!(setup());
+        let levels = Arc::new(scenarios::DrillLevels::default());
+        levels.set(Drill::Keeper, 0.0);
+        let cfg = EnvConfig {
+            drill_prob: 1.0,
+            drill_levels: levels,
+            ..EnvConfig::for_stage(6)
+        };
+        let mut e = Env::new(cfg, 6).unwrap();
+        for _ in 0..30 {
+            e.reset_drill_with(Drill::Keeper);
+            for _ in 0..e.max_steps() {
+                let s = e.sim.snapshot();
+                let a = e.expert_action(charger_steer(&s, e.car));
+                let info = e.step(a);
+                if info.terminated || info.truncated {
+                    break;
+                }
+            }
+        }
+        e.reset();
+        let rep = e.take_drill_report();
+        let (n, ok) = (
+            rep.episodes[Drill::Keeper.index()],
+            rep.success[Drill::Keeper.index()],
+        );
+        eprintln!("gardien niveau 0, fonceur : {ok}/{n}");
+        assert!(ok * 4 >= n, "{ok}/{n}");
+    }
+
+    #[test]
+    fn aerial_level_zero_is_solvable_by_a_jump_script() {
+        assert!(setup());
+        const PITCH: f32 = 1.0; // nez en l'air
+        let find = |e: &Env, jump: bool, pitch: f32| {
+            (0..e.actions.len())
+                .find(|&i| {
+                    let c = e.actions.get(i);
+                    c.jump == jump && c.boost && c.pitch == pitch && c.yaw == 0.0 && c.roll == 0.0
+                })
+                .unwrap()
+        };
+        let mut rates = Vec::new();
+        for level in [0.0f32, 1.0] {
+            let levels = Arc::new(scenarios::DrillLevels::default());
+            levels.set(Drill::AerialTouch, level);
+            let cfg = EnvConfig {
+                drill_prob: 1.0,
+                drill_levels: levels,
+                ..EnvConfig::for_stage(6)
+            };
+            let mut e = Env::new(cfg, 6).unwrap();
+            for _ in 0..40 {
+                e.reset_drill_with(Drill::AerialTouch);
+                for t in 0..e.max_steps() {
+                    // Un saut avec boost tout de suite, puis boost nez en l'air (cap déjà vers la balle).
+                    let a = if t < 4 {
+                        find(&e, true, 0.0)
+                    } else {
+                        find(&e, false, PITCH)
+                    };
+                    let info = e.step(a);
+                    if info.terminated || info.truncated {
+                        break;
+                    }
+                }
+            }
+            e.reset();
+            let rep = e.take_drill_report();
+            let i = Drill::AerialTouch.index();
+            eprintln!(
+                "aérien niveau {level} : {}/{}",
+                rep.success[i], rep.episodes[i]
+            );
+            rates.push(rep.success[i]);
+        }
+        assert!(rates[0] >= 10 && rates[0] > 3 * rates[1], "{rates:?}");
     }
 
     #[test]

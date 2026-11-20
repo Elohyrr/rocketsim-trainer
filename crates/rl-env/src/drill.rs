@@ -273,6 +273,8 @@ pub struct StepEvents<'a> {
     pub car_forward: [f32; 3],
     /// Boost de la voiture (0–100) après ce pas.
     pub car_boost: f32,
+    /// Niveau de difficulté courant du drill (1 hors curriculum, voir `scenarios::CURRICULUM`).
+    pub level: f32,
 }
 
 /// Vitesse de la balle vers SA cage (−Y), uu/s.
@@ -429,7 +431,9 @@ impl EpisodeBonus {
                 }
             }
             Drill::AerialTouch | Drill::AirDribble | Drill::AerialHigh => {
-                if e.touched && e.car_airborne && e.ball.0[2] > 300.0 {
+                // Hauteur de toucher : 300 uu au niveau complet, 130 au niveau 0 (la balle facile, 250–330 et immobile,
+                // tombe sur la voiture : un simple saut la touche).
+                if e.touched && e.car_airborne && e.ball.0[2] > 130.0 + 170.0 * e.level {
                     self.success = true;
                 }
             }
@@ -979,6 +983,7 @@ mod tests {
             car_vel: [0.0; 3],
             car_forward: [0.0, 1.0, 0.0],
             car_boost: 0.0,
+            level: 1.0,
         }
     }
 
