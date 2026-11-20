@@ -388,6 +388,67 @@ fn main() {
             }
         }
     }
+    // Démonstrations (clonage de comportement mélangé à PPO, voir docs/demonstration.md) : `--demo-lambda L` (ou
+    // DEMO_LAMBDA, 0 = désactivé, défaut), `--demo-decay-steps N` (30 M), `--demo-per-kind N` (150 séquences par
+    // mécanique), `--demo-batch N` (128 par minibatch), `--demo-anchor A` (50 : poids de l'ancre KL sur les états de match, multiple de λ), `--demo-buffer N` (50 000 échantillons). À chaud : un fichier
+    // `<out>/demo-off` coupe le clonage, `<out>/demo-lambda` (un nombre) remplace λ0.
+    let demo_lambda: f32 = arg("--demo-lambda")
+        .or_else(|| std::env::var("DEMO_LAMBDA").ok())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
+    tr.bc.lambda0 = demo_lambda;
+    if let Some(n) = arg("--demo-decay-steps")
+        .or_else(|| std::env::var("DEMO_DECAY_STEPS").ok())
+        .and_then(|s| s.parse().ok())
+    {
+        tr.bc.decay_steps = n;
+    }
+    if let Some(a) = arg("--demo-anchor").and_then(|s| s.parse().ok()) {
+        tr.bc.anchor = a;
+    }
+    if let Some(n) = arg("--demo-batch").and_then(|s| s.parse().ok()) {
+        tr.bc.batch = n;
+    }
+    if demo_lambda > 0.0 {
+        tr.set_reference();
+        let per_kind = arg("--demo-per-kind")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(150);
+        let cap = arg("--demo-buffer")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(50_000);
+        let t = Instant::now();
+        match rl_env::demo::build_pool(per_kind, 60, 0xDE40 ^ tr.cfg.seed) {
+            Ok((demos, rep)) => {
+                tr.demo = learner::ppo::DemoBuffer::new(tr.obs_dim(), cap);
+                for d in &demos {
+                    for (i, &a) in d.actions.iter().enumerate() {
+                        tr.demo
+                            .push(&d.obs[i * tr.obs_dim()..(i + 1) * tr.obs_dim()], a);
+                    }
+                }
+                for (i, k) in rl_env::demo::DemoKind::ALL.iter().enumerate() {
+                    eprintln!(
+                        "démonstrations {} : {} séquences vérifiées sur {} essais, {} échantillons",
+                        k.label(),
+                        rep.kept[i],
+                        rep.tried[i],
+                        rep.samples[i]
+                    );
+                }
+                eprintln!(
+                    "démonstrations : {} échantillons en mémoire en {:.0} s ; λ0 {demo_lambda}, décroissance sur {} pas",
+                    tr.demo.len(),
+                    t.elapsed().as_secs_f64(),
+                    tr.bc.decay_steps
+                );
+            }
+            Err(e) => eprintln!("démonstrations : génération en échec ({e}), clonage coupé"),
+        }
+        if resume && let Ok(t) = std::fs::read_to_string(out.join("demo-steps")) {
+            tr.bc_steps = t.trim().parse().unwrap_or(0);
+        }
+    }
     // Points de restauration : l'état relu (avant toute itération) et, s'il n'y en a pas, le « meilleur » du palier.
     let mut best_by_stage = Best::load(&out);
     if loaded {
@@ -471,8 +532,21 @@ fn main() {
         }
 
         let ti = Instant::now();
+        if demo_lambda > 0.0 {
+            tr.bc.lambda0 = if out.join("demo-off").exists() {
+                0.0
+            } else {
+                std::fs::read_to_string(out.join("demo-lambda"))
+                    .ok()
+                    .and_then(|t| t.trim().parse().ok())
+                    .unwrap_or(demo_lambda)
+            };
+        }
         let s = tr.iteration();
         it += 1;
+        if demo_lambda > 0.0 && it % 50 == 0 {
+            let _ = std::fs::write(out.join("demo-steps"), tr.bc_steps.to_string());
+        }
         if tr.freeze_policy && it >= warmup {
             tr.freeze_policy = false;
             eprintln!("échauffement du critique terminé");
@@ -672,6 +746,8 @@ fn main() {
             m.entropy_scale = tr.explore.scale;
             m.entropy_backoffs = backoffs;
             m.ent_coef = s.ent_coef;
+            m.bc_loss = s.bc_loss;
+            m.bc_lambda = s.bc_lambda;
             m.learning_rate = s.lr;
             m.touch_total = touches;
             mech_total.add(&s.mechanics);

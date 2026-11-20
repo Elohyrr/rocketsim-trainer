@@ -263,6 +263,9 @@ pub struct IterStats {
     pub boost: rl_env::BoostReport,
     /// Clips rejouables finis pendant l'itération (vide sans `EnvConfig::record_clips`).
     pub clips: Vec<rl_env::clip::Clip>,
+    /// Perte de clonage moyenne (entropie croisée sur les démonstrations) et poids λ utilisé (0 si coupé).
+    pub bc_loss: f64,
+    pub bc_lambda: f64,
     /// Coefficient d'entropie et lr utilisés, époques PPO effectivement faites (plafond de KL).
     pub ent_coef: f64,
     pub lr: f64,
@@ -273,8 +276,95 @@ pub struct IterStats {
     pub train_seconds: f64,
 }
 
+/// Mémoire tampon bornée des états de démonstration (anneau : au-delà de `cap`, les plus anciens sont écrasés).
+#[derive(Clone, Debug)]
+pub struct DemoBuffer {
+    od: usize,
+    cap: usize,
+    obs: Vec<f32>,
+    act: Vec<u8>,
+    next: usize,
+}
+
+impl DemoBuffer {
+    pub fn new(od: usize, cap: usize) -> Self {
+        Self {
+            od,
+            cap: cap.max(1),
+            obs: Vec::new(),
+            act: Vec::new(),
+            next: 0,
+        }
+    }
+    pub fn len(&self) -> usize {
+        self.act.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.act.is_empty()
+    }
+    pub fn push(&mut self, obs: &[f32], action: u8) {
+        debug_assert_eq!(obs.len(), self.od);
+        if self.act.len() < self.cap {
+            self.obs.extend_from_slice(obs);
+            self.act.push(action);
+        } else {
+            let i = self.next % self.cap;
+            self.obs[i * self.od..(i + 1) * self.od].copy_from_slice(obs);
+            self.act[i] = action;
+        }
+        self.next += 1;
+    }
+    /// `m` échantillons tirés au hasard : observations à plat et actions.
+    pub fn sample(&self, rng: &mut Rng, m: usize) -> (Vec<f32>, Vec<usize>) {
+        let (mut o, mut a) = (Vec::with_capacity(m * self.od), Vec::with_capacity(m));
+        for _ in 0..m {
+            let i = (rng.next_u64() % self.act.len() as u64) as usize;
+            o.extend_from_slice(&self.obs[i * self.od..(i + 1) * self.od]);
+            a.push(self.act[i] as usize);
+        }
+        (o, a)
+    }
+}
+
+/// Perte de clonage de comportement mélangée à PPO (voir `docs/demonstration.md`).
+#[derive(Clone, Debug)]
+pub struct BcConfig {
+    /// Poids initial λ0 (0 = désactivé).
+    pub lambda0: f32,
+    /// Pas de collecte au bout desquels λ atteint 0 (décroissance linéaire).
+    pub decay_steps: u64,
+    /// Échantillons de démonstration par minibatch PPO.
+    pub batch: usize,
+    /// Ancre : poids (multiple de λ) de KL(π_réf ‖ π) sur les états de MATCH de la collecte (π_réf = politique au
+    /// démarrage du clonage, gelée) ; elle retient la politique là où elle joue déjà bien pendant que la perte de
+    /// clonage la déplace sur les états de démonstration.
+    pub anchor: f32,
+}
+
+impl Default for BcConfig {
+    fn default() -> Self {
+        Self {
+            lambda0: 0.0,
+            decay_steps: 30_000_000,
+            batch: 128,
+            anchor: 50.0,
+        }
+    }
+}
+
+impl BcConfig {
+    /// Poids après `steps` pas de collecte.
+    pub fn lambda(&self, steps: u64) -> f32 {
+        if self.decay_steps == 0 {
+            return 0.0;
+        }
+        (self.lambda0 * (1.0 - steps as f32 / self.decay_steps as f32)).max(0.0)
+    }
+}
+
 /// Statistiques de perte de l'acteur sur un minibatch.
 struct PolStats {
+    bc: f64,
     en_match: f64,
     en_n: f64,
     en_all: f64,
@@ -305,6 +395,12 @@ pub struct Trainer {
     pub explore: Explore,
     /// Échauffement du critique : la politique n'est pas mise à jour (voir [`Trainer::load_actor`]).
     pub freeze_policy: bool,
+    /// Démonstrations et réglage du clonage ; pas de collecte déjà passés sous clonage (décroissance de λ).
+    pub demo: DemoBuffer,
+    pub bc: BcConfig,
+    pub bc_steps: u64,
+    /// Politique de référence de l'ancre (voir [`BcConfig::anchor`]).
+    ref_policy: Option<Mlp>,
 }
 
 /// Itérations entre deux mises à jour de la copie gelée en self-play.
@@ -342,6 +438,10 @@ impl Trainer {
             rng: Rng::new(cfg.seed ^ 0xA5A5),
             explore: Explore::default(),
             freeze_policy: false,
+            demo: DemoBuffer::new(obs_dim, 50_000),
+            bc: BcConfig::default(),
+            bc_steps: 0,
+            ref_policy: None,
             cfg,
             env,
             model,
@@ -561,6 +661,12 @@ impl Trainer {
         // Entropie du garde-fou : seulement sur les décisions de match (les drills l'entraînent mais ne la mesurent pas).
         let (mut en_match, mut en_n, mut en_all) = (0.0f64, 0.0f64, 0.0f64);
         let (ent_coef, lr) = (self.explore.ent_coef as f32, self.explore.lr());
+        let bc_lambda = if self.demo.is_empty() {
+            0.0
+        } else {
+            self.bc.lambda(self.bc_steps)
+        };
+        let mut bc_sum = 0.0f64;
         for _ in 0..self.cfg.epochs {
             let (kl_before, cnt_before) = (kl, cnt);
             for i in (1..total).rev() {
@@ -582,6 +688,19 @@ impl Trainer {
                 }
                 let d = &self.device;
                 let device_p = d.clone();
+                let n_match = match_w.iter().sum::<f32>().max(1.0);
+                // Ancre : log-probabilités de la politique de référence sur ces états (sans gradient).
+                let ref_lp = self
+                    .ref_policy
+                    .as_ref()
+                    .filter(|_| bc_lambda > 0.0 && !self.freeze_policy)
+                    .map(|r| {
+                        let lp = to_vec(log_softmax(
+                            r.forward(tensor2(ob.clone(), m, od, &self.plain)),
+                            1,
+                        ));
+                        tensor2(lp, m, na, d)
+                    });
                 let x = tensor2(ob, m, od, d);
                 let onehot = tensor2(oh, m, na, d);
                 let old_lp = tensor2(olp, m, 1, d);
@@ -591,6 +710,17 @@ impl Trainer {
                 // Acteur et critique sont indépendants (pertes et optimiseurs séparés) : un thread chacun.
                 // Mêmes gradients et même Adam que sur une seule perte somme : les paramètres ne se croisent pas.
                 let (freeze, clip, vf_coef) = (self.freeze_policy, self.cfg.clip, self.cfg.vf_coef);
+                let anchor = self.bc.anchor;
+                // Démonstrations : un lot tiré au hasard, perte appliquée à elles seules (jamais aux états de match).
+                let bc_batch = (bc_lambda > 0.0 && !freeze).then(|| {
+                    let bm = self.bc.batch.max(1);
+                    let (bo, ba) = self.demo.sample(&mut self.rng, bm);
+                    let mut oh = vec![0.0f32; bm * na];
+                    for (j, &a) in ba.iter().enumerate() {
+                        oh[j * na + a.min(na - 1)] = 1.0;
+                    }
+                    (tensor2(bo, bm, od, d), tensor2(oh, bm, na, d))
+                });
                 let (policy, value) = (self.model.policy.clone(), self.model.value.clone());
                 let (opt_p, opt_v) = (&mut self.opt, &mut self.opt_value);
                 let (xp, xv) = (x.clone(), x);
@@ -604,20 +734,36 @@ impl Trainer {
                         let s1 = ratio.clone() * adv_t.clone();
                         let s2 = ratio.clamp(1.0 - clip, 1.0 + clip) * adv_t;
                         let pol_loss = -(s1.min_pair(s2)).mean();
-                        let ent_vec = -(logp_all.clone().exp() * logp_all).sum_dim(1);
+                        let ent_vec = -(logp_all.clone().exp() * logp_all.clone()).sum_dim(1);
                         let w = tensor2(match_w, m, 1, &device_p);
+                        let mut bc_val = 0.0;
                         let stats = PolStats {
+                            bc: 0.0,
                             en_match: scalar((ent_vec.clone() * w.clone()).sum().reshape([1])),
-                            en_n: scalar(w.sum().reshape([1])),
+                            en_n: scalar(w.clone().sum().reshape([1])),
                             en_all: scalar(ent_vec.clone().sum().reshape([1])),
                             pl: scalar(pol_loss.clone().reshape([1])),
-                            kl: scalar((old_lp - logp).mean().reshape([1])),
+                            kl: scalar((old_lp - logp.clone()).mean().reshape([1])),
                         };
                         let entropy = ent_vec.mean();
                         if freeze {
                             return (policy, stats);
                         }
-                        let loss = pol_loss - entropy * ent_coef;
+                        let mut loss = pol_loss - entropy * ent_coef;
+                        if let Some((bx, boh)) = bc_batch {
+                            if let Some(rlp) = ref_lp {
+                                let kl_ref = (rlp.clone().exp() * (rlp - logp_all)).sum_dim(1);
+                                loss = loss + (kl_ref * w).sum() * (bc_lambda * anchor / n_match);
+                            }
+                            let lp = log_softmax(policy.forward(bx), 1);
+                            let ce = -(lp * boh).sum_dim(1).mean();
+                            bc_val = scalar(ce.clone().reshape([1]));
+                            loss = loss + ce * bc_lambda;
+                        }
+                        let stats = PolStats {
+                            bc: bc_val,
+                            ..stats
+                        };
                         let grads = GradientsParams::from_grads(loss.backward(), &policy);
                         (opt_p.step(lr, policy, grads), stats)
                     });
@@ -636,6 +782,7 @@ impl Trainer {
                 en_match += stats.en_match;
                 en_n += stats.en_n;
                 en_all += stats.en_all;
+                bc_sum += stats.bc;
                 pl += stats.pl;
                 kl += stats.kl;
                 vl += vloss;
@@ -658,6 +805,11 @@ impl Trainer {
             en_all / total as f64
         };
         st.kl = kl / cnt;
+        st.bc_loss = bc_sum / cnt;
+        st.bc_lambda = f64::from(bc_lambda);
+        if bc_lambda > 0.0 {
+            self.bc_steps += total as u64;
+        }
         st.ent_coef = f64::from(ent_coef);
         st.lr = lr;
         self.explore.update(total as u64, st.entropy, na);
@@ -668,6 +820,16 @@ impl Trainer {
             st.goal_rate = st.goals as f64 / st.episodes as f64;
         }
         st
+    }
+
+    /// Fige la politique actuelle comme référence de l'ancre du clonage.
+    pub fn set_reference(&mut self) {
+        self.ref_policy = Some(self.model.valid().policy.clone());
+    }
+
+    /// Taille de l'observation.
+    pub fn obs_dim(&self) -> usize {
+        self.obs_dim
     }
 
     /// Nombre d'actions discrètes (table d'actions de l'env).
@@ -781,5 +943,41 @@ impl Trainer {
             }
         }
         Err("checkpoint illisible (formats actuel et historiques)".to_string())
+    }
+}
+
+#[cfg(test)]
+mod bc_tests {
+    use super::*;
+
+    #[test]
+    fn lambda_decroit_lineairement_jusqu_a_zero() {
+        let c = BcConfig {
+            lambda0: 0.1,
+            decay_steps: 1000,
+            batch: 8,
+            anchor: 50.0,
+        };
+        assert!((c.lambda(0) - 0.1).abs() < 1e-7);
+        assert!((c.lambda(500) - 0.05).abs() < 1e-7);
+        assert_eq!(c.lambda(1000), 0.0);
+        assert_eq!(c.lambda(5000), 0.0);
+        let off = BcConfig { lambda0: 0.0, ..c };
+        assert_eq!(off.lambda(0), 0.0);
+    }
+
+    #[test]
+    fn la_memoire_tampon_est_bornee_et_ecrase_les_plus_anciens() {
+        let mut b = DemoBuffer::new(2, 3);
+        for i in 0..5u8 {
+            b.push(&[f32::from(i), 0.0], i);
+        }
+        assert_eq!(b.len(), 3);
+        let mut rng = Rng::new(1);
+        let (o, a) = b.sample(&mut rng, 50);
+        assert_eq!(o.len(), 100);
+        // Restent les actions 2, 3, 4 (0 et 1 écrasées) ; l'observation suit l'action.
+        assert!(a.iter().all(|&x| (2..5).contains(&x)));
+        assert!(a.iter().enumerate().all(|(j, &x)| o[j * 2] == x as f32));
     }
 }
