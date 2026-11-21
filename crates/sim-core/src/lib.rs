@@ -392,6 +392,7 @@ impl Sim {
             world_contact: c.world_contact.has_contact,
             pitch_input: c.last_controls.pitch,
             roll_input: c.last_controls.roll,
+            yaw_input: c.last_controls.yaw,
             ball_hit_tick: c
                 .ball_hit_info
                 .is_valid

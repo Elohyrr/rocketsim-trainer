@@ -24,11 +24,10 @@
 //! - `fast_aerial` : saut (JUMP) puis second saut sans dodge (DOUBLE_JUMP) ≤ 0,35 s après, avec du boost et un
 //!   tangage vers le haut (`pitch_input` > 0,3 ; −1 = nez vers le bas) vus entre les deux (inclus) ; une fois par
 //!   phase aérienne. Approximation : ni le maintien continu du boost ni la direction prise ne sont vérifiés.
-//! - `stall` : en l'air (z > 300), dodge latéral ou arrière (|latéral| ≥ 0,3 ou avant ≤ −0,3) avec roulis
-//!   commandé (|roll| ≥ 0,5) ou voiture inversée (`up.z` < 0), puis la vitesse de la voiture chute de plus de
-//!   40 % (vs tick d'avant le dodge, ≥ 300 uu/s) dans les 0,3 s, sans toucher ni terrain. Approximation : le vrai
-//!   stall est un flip annulé par l'air roll (lacet + roulis opposés) qui garde la voiture « suspendue » ; sans
-//!   lacet en entrée ni couple de flip, on le reconnaît à la perte d'élan qu'il produit.
+//! - `stall` : en l'air (z > 300), dodge annulé par les entrées : lacet et roulis opposés (≥ 0,5 chacun,
+//!   |somme| < 0,1) sans tangage, ET par la physique : couple de dodge nul (aucune rotation), vitesse horizontale
+//!   inchangée au dodge (pas d'impulsion), puis 0,2 s plus tard toujours en l'air (ni toucher, ni choc, ni terrain)
+//!   avec |vz| < 120 uu/s (RocketSim amortit la vitesse verticale d'un flip sans direction).
 //! - `tornado_spin` : en l'air depuis ≥ 0,25 s, rotation autour de l'axe `up` de la voiture |ω·up| > 4 rad/s
 //!   maintenue ≥ 0,3 s (36 ticks consécutifs), sans terrain ; une fois par phase aérienne. Approximation : seule
 //!   la vitesse de rotation compte (pas la trajectoire en spirale autour de la balle).
@@ -85,8 +84,8 @@ pub(crate) struct Group {
     fa_boost: bool,
     fa_pitch: bool,
     fa_done: bool,
-    // Stall : tick du dodge et vitesse avant.
-    st_dodge: Option<(u64, f32)>,
+    // Stall : tick d'un dodge annulé par les entrées et par la physique.
+    st_dodge: Option<u64>,
     // Tornado spin.
     ts_run: u32,
     ts_done: bool,
@@ -216,24 +215,30 @@ impl Group {
             }
         }
 
-        // --- Stall : dodge latéral/arrière avec roulis (ou voiture inversée) qui tue l'élan.
-        if let Some((t, before)) = self.st_dodge {
-            if n - t > STALL_WINDOW_TICKS || cx.touch || cx.on_terrain || cx.tainted {
+        // --- Stall : flip annulé (lacet et roulis opposés) qui garde la voiture en l'air, sans rotation de dodge.
+        if let Some(t) = self.st_dodge {
+            if cx.touch || cx.on_terrain || cx.tainted || car.world_contact || car.on_ground {
                 self.st_dodge = None;
-            } else if speed(car.vel) < STALL_MAX_SPEED_RATIO * before {
-                out.emit(Mechanic::Stall, 0.0, Support::None);
+            } else if n - t >= STALL_CHECK_TICKS {
+                if car.vel[2].abs() < STALL_MAX_VZ {
+                    out.emit(Mechanic::Stall, 0.0, Support::None);
+                }
                 self.st_dodge = None;
             }
         }
         if cx.dodge_now && !cx.on_terrain && car.pos[2] > STALL_MIN_Z {
-            if let Some(d) = cx.dodge {
-                let sideways =
-                    d.lat.abs() >= DIAGONAL_MIN_COMPONENT || d.fwd <= -DIAGONAL_MIN_COMPONENT;
-                let rolled = car.roll_input.abs() >= STALL_MIN_ROLL || car.up[2] < 0.0;
-                let before = speed(cx.prev_car.vel);
-                if sideways && rolled && before >= STALL_MIN_SPEED_BEFORE {
-                    self.st_dodge = Some((n, before));
-                }
+            let (y, r) = (car.yaw_input, car.roll_input);
+            let inputs = y.abs() >= STALL_MIN_YAW_ROLL
+                && r.abs() >= STALL_MIN_YAW_ROLL
+                && y * r < 0.0
+                && (y + r).abs() < STALL_MAX_YAW_ROLL_SUM
+                && car.pitch_input.abs() < STALL_MAX_PITCH;
+            let t = car.flip_rel_torque;
+            let no_spin = t[0].hypot(t[1]) < STALL_MAX_FLIP_TORQUE;
+            let (pv, cv) = (cx.prev_car.vel, car.vel);
+            let no_impulse = (cv[0] - pv[0]).hypot(cv[1] - pv[1]) < STALL_MAX_HSPEED_JUMP;
+            if inputs && no_spin && no_impulse {
+                self.st_dodge = Some(n);
             }
         }
 
