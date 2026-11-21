@@ -269,16 +269,43 @@ fn fast_aerial(boost: bool, gap: usize, pitch: f32) -> Vec<Frame> {
     s.frames()
 }
 
-/// En l'air à z = 800 et 671 uu/s (chute), dodge (avant, latéral) avec roulis, vitesse ensuite `after`.
-fn stall(fwd: f32, lat: f32, after: [f32; 3]) -> Vec<Frame> {
-    let mut s = Script::new(car_in_air([300.0, 0.0, -600.0]), ball_far());
+/// Entrées et couple d'un dodge en l'air au tick du dodge d'un stall : `inputs` = (tangage, lacet, roulis),
+/// `torque` = couple de dodge (avant, latéral), `after` = vitesse juste après (la vitesse horizontale ne doit
+/// pas bouger pour un vrai stall).
+struct StallSpec {
+    inputs: (f32, f32, f32),
+    torque: (f32, f32),
+    before: [f32; 3],
+    after: [f32; 3],
+    up: [f32; 3],
+}
+
+/// En l'air à z = 800, dodge selon `spec`, puis 0,25 s sans rien d'autre.
+fn stall(spec: StallSpec) -> Vec<Frame> {
+    let mut car = car_in_air(spec.before);
+    car.up = spec.up;
+    let mut s = Script::new(car, ball_far());
     s.hold(5).once(|c, _| {
-        dodge(c, fwd, lat);
-        c.vel = after;
+        c.has_flipped = true;
+        c.is_flipping = true;
+        c.has_flip_or_jump = false;
+        c.flip_rel_torque = [spec.torque.0, spec.torque.1, 0.0];
+        (c.pitch_input, c.yaw_input, c.roll_input) = spec.inputs;
+        c.vel = spec.after;
     });
-    s.run(5, |_, c, _| c.pitch_input = 0.0);
     s.hold(30);
     s.frames()
+}
+
+/// Le vrai geste : lacet droit + roulis gauche, flip annulé (couple nul), vitesse verticale tuée.
+fn real_stall() -> StallSpec {
+    StallSpec {
+        inputs: (0.0, 1.0, -1.0),
+        torque: (0.0, 0.0),
+        before: [300.0, 0.0, -600.0],
+        after: [300.0, 0.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    }
 }
 
 /// En l'air, rotation autour de l'axe `up` à `spin` rad/s pendant `ticks`, puis plus de rotation.
@@ -482,25 +509,79 @@ pub fn cases() -> Vec<Case> {
             &[],
         ),
         // Stall.
+        case("stall", Stall, true, stall(real_stall()), &[(Stall, 1)]),
+        // Même geste avec lacet à gauche et roulis à droite.
         case(
-            "stall",
+            "stall_mirrored",
             Stall,
             true,
-            stall(0.0, 1.0, [300.0, 0.0, 0.0]),
+            stall(StallSpec {
+                inputs: (0.0, -1.0, 1.0),
+                ..real_stall()
+            }),
             &[(Stall, 1)],
         ),
+        // Faux positif d'origine : backflip (tangage +1) retourné dont l'impulsion freine la voiture.
+        case(
+            "stall_negative_inverted_backflip",
+            Stall,
+            false,
+            stall(StallSpec {
+                inputs: (1.0, 0.0, 0.0),
+                torque: (-1.0, 0.0),
+                before: [900.0, 0.0, -300.0],
+                after: [300.0, 0.0, -300.0],
+                up: [0.0, 0.0, -1.0],
+            }),
+            &[],
+        ),
+        // Flip latéral avec roulis : couple non nul, rotation de dodge.
         case(
             "stall_negative_side_flip",
             Stall,
             false,
-            stall(0.0, 1.0, [300.0, 500.0, -100.0]),
+            stall(StallSpec {
+                inputs: (0.0, 0.0, 1.0),
+                torque: (0.0, 1.0),
+                before: [300.0, 0.0, -600.0],
+                after: [300.0, 500.0, -100.0],
+                up: [0.0, 0.0, 1.0],
+            }),
             &[],
         ),
         case(
             "stall_negative_front_flip",
             Stall,
             false,
-            stall(1.0, 0.0, [300.0, 0.0, 0.0]),
+            stall(StallSpec {
+                inputs: (-1.0, 0.0, 0.0),
+                torque: (1.0, 0.0),
+                before: [300.0, 0.0, -600.0],
+                after: [300.0, 0.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+            }),
+            &[],
+        ),
+        // Entrées opposées mais la voiture continue de tomber : pas de vitesse verticale annulée.
+        case(
+            "stall_negative_still_falling",
+            Stall,
+            false,
+            stall(StallSpec {
+                after: [300.0, 0.0, -600.0],
+                ..real_stall()
+            }),
+            &[],
+        ),
+        // Lacet et roulis du même signe : ils ne s'annulent pas.
+        case(
+            "stall_negative_same_sign",
+            Stall,
+            false,
+            stall(StallSpec {
+                inputs: (0.0, 1.0, 1.0),
+                ..real_stall()
+            }),
             &[],
         ),
         // Tornado spin.

@@ -89,6 +89,10 @@ pub const SPEED_FLIP_MIN_HEADING_COS: f32 = 0.9;
 /// Wave dash : retour au sol au plus 6 ticks après le dodge, gain de vitesse horizontale > 250 uu/s.
 pub const WAVE_DASH_MAX_LAND_TICKS: u64 = 6;
 pub const WAVE_DASH_MIN_GAIN: f32 = 250.0;
+/// Wave dash : voiture quasi à plat (`up.z` au-dessus de ce seuil) au tick du dodge, avec au plus ce nombre de
+/// roues au contact (typiquement 2 roues arrière posées, l'avant en l'air ; jamais toutes au sol).
+pub const WAVE_DASH_MIN_UP_Z: f32 = 0.9;
+pub const WAVE_DASH_MAX_WHEELS: u8 = 2;
 
 /// Half flip : dodge essentiellement arrière (composante avant normalisée < −0,7), annulation, roulis
 /// (|roll| ≥ 0,5 après l'annulation), retour au sol en 1,5 s, cap tourné de plus de ≈ 143° (cos < −0,8).
@@ -280,14 +284,20 @@ pub const FAST_AERIAL_MAX_GAP_TICKS: u64 = 42;
 pub const FAST_AERIAL_MIN_PITCH: f32 = 0.3;
 /// Stall : voiture au-dessus de cette hauteur (uu) au dodge…
 pub const STALL_MIN_Z: f32 = 300.0;
-/// … roulis commandé d'au moins cette amplitude (sauf voiture inversée)…
-pub const STALL_MIN_ROLL: f32 = 0.5;
-/// … vitesse avant le dodge d'au moins (uu/s)…
-pub const STALL_MIN_SPEED_BEFORE: f32 = 300.0;
-/// … puis vitesse tombée sous cette fraction de la vitesse avant le dodge (chute > 40 %)…
-pub const STALL_MAX_SPEED_RATIO: f32 = 0.6;
-/// … au plus 0,3 s (ticks) après le dodge.
-pub const STALL_WINDOW_TICKS: u64 = 36;
+/// … lacet et roulis commandés d'au moins cette amplitude, de signes opposés…
+pub const STALL_MIN_YAW_ROLL: f32 = 0.5;
+/// … qui s'annulent (|lacet + roulis| sous ce seuil, comme RocketSim : direction de dodge nulle)…
+pub const STALL_MAX_YAW_ROLL_SUM: f32 = 0.1;
+/// … sans tangage (|tangage| sous ce seuil)…
+pub const STALL_MAX_PITCH: f32 = 0.1;
+/// … couple de dodge (norme avant/latéral) sous ce seuil : aucune rotation de dodge…
+pub const STALL_MAX_FLIP_TORQUE: f32 = 0.1;
+/// … vitesse horizontale presque inchangée au tick du dodge (pas d'impulsion), écart max (uu/s)…
+pub const STALL_MAX_HSPEED_JUMP: f32 = 100.0;
+/// … puis, à ce nombre de ticks après le dodge (0,2 s), toujours en l'air sans toucher ni choc…
+pub const STALL_CHECK_TICKS: u64 = 24;
+/// … avec une vitesse verticale annulée (|vz| sous ce seuil, uu/s).
+pub const STALL_MAX_VZ: f32 = 120.0;
 /// Tornado spin : en l'air depuis au moins 0,25 s (ticks)…
 pub const TORNADO_MIN_AIR_TICKS: u32 = 30;
 /// … rotation autour de l'axe `up` de la voiture au-delà de cette vitesse (rad/s)…

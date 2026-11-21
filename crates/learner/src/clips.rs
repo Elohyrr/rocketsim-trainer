@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use rl_env::clip::{Clip, Trajectory};
+use rl_env::clip::{Clip, Ctl, Trajectory};
 use serde::{Deserialize, Serialize};
 use sim_core::clip::{ClipDetail, ClipLabel, ClipQuality};
 use sim_core::{Sim, SimError};
@@ -458,6 +458,10 @@ struct TrajectoryReply<'a> {
     labels: Vec<LabelAt>,
     combo: bool,
     agent: usize,
+    /// Entrées tenues à chaque décision, par voiture : 6 flottants par décision (gaz, direction, tangage,
+    /// lacet, roulis, bits boost 1 / saut 2 / frein à main 4). Décision `s` = temps `s * ctl_dt`.
+    ctl: Vec<Vec<f32>>,
+    ctl_dt: f32,
     #[serde(flatten)]
     t: &'a Trajectory,
 }
@@ -466,6 +470,19 @@ struct TrajectoryReply<'a> {
 struct LabelAt {
     mechanic: String,
     t: f32,
+}
+
+/// Entrées du clip rangées par voiture (6 flottants par décision), pour le lecteur.
+fn ctl_tracks(steps: &[Vec<Ctl>]) -> Vec<Vec<f32>> {
+    let n = steps.first().map_or(0, Vec::len);
+    (0..n)
+        .map(|c| {
+            steps
+                .iter()
+                .flat_map(|s| [s[c].0, s[c].1, s[c].2, s[c].3, s[c].4, f32::from(s[c].5)])
+                .collect()
+        })
+        .collect()
 }
 
 /// JSON de la trajectoire de `<clips>/<id>.json` à `hz`, d'après le cache ou un rejeu à la demande.
@@ -496,6 +513,7 @@ fn trajectory_json(clips: &Path, id: &str, hz: u32) -> Option<Result<Arc<[u8]>, 
             clip.trigger_step,
         );
         let combo = clip.combo;
+        let ctl = ctl_tracks(&clip.steps);
         let labels: Vec<LabelAt> = if clip.mechanics.is_empty() {
             vec![LabelAt {
                 mechanic: clip.mechanic.clone(),
@@ -524,6 +542,8 @@ fn trajectory_json(clips: &Path, id: &str, hz: u32) -> Option<Result<Arc<[u8]>, 
             labels,
             combo,
             agent: 0,
+            ctl,
+            ctl_dt: meta.3 as f32 / sim_core::TICK_RATE as f32,
             t: &t,
         };
         let b: Arc<[u8]> = serde_json::to_vec(&reply).map_err(|_| Fail::Bad)?.into();
@@ -600,7 +620,7 @@ pub fn route(req: &str, dir: Option<&Path>) -> Option<Reply> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rl_env::clip::{BallFull, Ctl, Keyframe};
+    use rl_env::clip::{BallFull, Keyframe};
 
     fn clip(mech: &str) -> Clip {
         // Un clip minimal suffit : le magasin ne le rejoue pas (voiture absente, donc `from_json` le refuserait).
@@ -960,6 +980,9 @@ mod tests {
         assert_eq!(v["ball_ang"].as_array().unwrap().len(), frames * 3);
         assert_eq!(v["cars"][0]["vel"].as_array().unwrap().len(), frames * 3);
         assert_eq!(v["cars"][1]["ang"].as_array().unwrap().len(), frames * 3);
+        assert_eq!(v["ctl"].as_array().unwrap().len(), 2);
+        assert_eq!(v["ctl"][0].as_array().unwrap().len(), e.steps as usize * 6);
+        assert!((v["ctl_dt"].as_f64().unwrap() - 8.0 / 120.0).abs() < 1e-6);
         assert_eq!(v["pads"]["big"].as_array().unwrap().len(), 34);
         assert_eq!(v["pads"]["pos"].as_array().unwrap().len(), 34 * 3);
         assert_eq!(v["pads"]["active0"].as_array().unwrap().len(), 34);

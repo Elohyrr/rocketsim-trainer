@@ -118,7 +118,7 @@ vitesse due à un choc à deux ne gonfle pas le score. Les clips portent `detect
 | `dribble` | balle dans le repère voiture : `up` ∈ [110, 190], \|avant\| < 110, \|côté\| < 80, vitesse relative < 400, `on_ground`, `up.z > 0,7`, maintenu 60 ticks (trous ≤ 6 ticks tolérés) ; une fois par dribble |
 | `flick` | dodge ≤ 0,4 s après un dribble validé, puis toucher et balle > 1 500 uu/s ≤ 0,3 s après le dodge |
 | `speed_flip` | dodge diagonal avant (composantes normalisées > 0,3), annulation (tangage opposé ≥ 0,5, ≤ 18 ticks), retour au sol ≤ 1,25 s (150 ticks), vitesse horizontale > 1 750 (seuils révisés, mesures dans `docs/trente-hz.md`) |
-| `wave_dash` | dodge puis retour au sol ≤ 6 ticks, gain de vitesse horizontale > 250 (vs tick avant le dodge) |
+| `wave_dash` | dodge puis retour au sol ≤ 6 ticks, gain de vitesse horizontale > 250 (vs tick avant le dodge) ; au dodge : voiture à plat (`up.z` > 0,9) et pas toutes roues au sol (≤ 2 roues au contact, typiquement les 2 arrière posées ; `wheels_contact` de RocketSim, pas de contact par roue), detector 5 |
 | `half_flip` | dodge arrière (avant < −0,7), annulation, roulis ≥ 0,5 après l'annulation, retour au sol ≤ 1,5 s, cap tourné (cos < −0,8) |
 
 Seuils de la spec conservés tels quels ; ajouts du détecteur (non chiffrés dans la spec) : fusion des touchers
@@ -167,7 +167,7 @@ le toucher (uu/s, jugée sur les 4 ticks qui suivent) ; la colonne « record » 
 | `chain_dash` (zap dash) | b | 2 wave dashes à ≤ 1,5 s | |
 | `wall_dash` | b | dodge ≤ 0,3 s après le mur, retour au terrain ≤ 1 s, gain > 200 uu/s | |
 | `fast_aerial` | b | saut puis second saut sans dodge ≤ 0,35 s, boost et nez vers le haut entre les deux | |
-| `stall` | b | dodge en l'air (z > 300) latéral/arrière avec roulis, vitesse < 60 % de l'avant dans les 0,3 s (le lacet n'est pas lu) | |
+| `stall` | b | dodge en l'air (z > 300) annulé : lacet et roulis opposés (≥ 0,5, somme < 0,1), sans tangage, couple de dodge nul, vitesse horizontale inchangée au dodge, puis \|vz\| < 120 uu/s 0,2 s plus tard sans toucher (detector 5) | |
 | `tornado_spin` | b | \|ω·haut\| > 4 rad/s ≥ 0,3 s en l'air | |
 | `recovery` | b | atterrissage à plat après ≥ 0,6 s en l'air dont un moment renversé/de côté, en gardant ≥ 60 % de la vitesse | |
 

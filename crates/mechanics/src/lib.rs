@@ -335,6 +335,8 @@ pub struct CarTick {
     /// Commandes du tick, -1..1 (tangage : −1 = nez vers le bas, comme RocketSim).
     pub pitch_input: f32,
     pub roll_input: f32,
+    /// Lacet commandé au tick, -1..1.
+    pub yaw_input: f32,
     /// Tick du dernier toucher balle de cette voiture (None si jamais). Ne change pas quand seules les roues
     /// touchent la balle.
     pub ball_hit_tick: Option<u64>,

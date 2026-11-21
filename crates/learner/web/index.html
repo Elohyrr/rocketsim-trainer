@@ -36,6 +36,22 @@
   #ballhud { margin-top:4px; background:#0009; border-radius:6px; padding:4px 8px; font-size:12px; font-variant-numeric:tabular-nums; }
   #ballhud b { font-size:15px; } #ballhud small { opacity:.7; font-size:10.5px; }
   #adv { position:absolute; left:8px; bottom:8px; background:#000a; border-radius:6px; padding:4px 8px; font:11.5px/1.35 ui-monospace,monospace; pointer-events:none; white-space:pre; display:none; max-width:calc(100% - 16px); overflow:hidden; text-shadow:0 1px 3px #000; }
+  #inp { position:absolute; right:8px; bottom:8px; display:none; flex-direction:column; gap:6px; align-items:flex-end; pointer-events:none; font-size:11.5px; text-shadow:0 1px 3px #000; }
+  .ip { background:#000b; border-radius:6px; padding:5px 8px; width:210px; font-variant-numeric:tabular-nums; }
+  .ip.agent { outline:1px solid #fffa; }
+  .ip .nm { font-weight:600; margin-bottom:2px; } .ip.blue .nm { color:#7db4ff; } .ip.orange .nm { color:#ffb070; }
+  .ip .r { display:flex; align-items:center; gap:6px; height:15px; }
+  .ip .r span:first-child { width:46px; color:var(--dim); }
+  .ip .ax { position:relative; flex:1; height:7px; background:#ffffff22; border-radius:3px; }
+  .ip .ax::after { content:''; position:absolute; left:50%; top:-1px; width:1px; height:9px; background:#fff8; }
+  .ip .ax i { position:absolute; top:0; height:100%; background:var(--acc); border-radius:3px; }
+  .ip .ax i.neg { background:#ffb347; }
+  .ip .bt { display:flex; gap:4px; margin-top:3px; }
+  .ip .bt b { flex:1; text-align:center; padding:2px 0; border-radius:4px; background:#ffffff18; color:#fff6; font-size:11px; }
+  .ip .bt b.on { color:#000; } .ip .bt b.j.on { background:#fff; } .ip .bt b.bo.on { background:#ffd23f; } .ip .bt b.hb.on { background:#ff6b6b; }
+  .ip .ev { min-height:21px; margin-top:4px; padding:3px 6px; border-radius:5px; font-weight:700; font-size:13px; text-align:center; background:#ffffff10; color:#fff5; }
+  .ip .ev.flip { background:#ff3b6b; color:#fff; } .ip .ev.dj { background:#3bd1ff; color:#000; } .ip .ev.cancel { background:#b266ff; color:#fff; }
+  .mk.fl { background:#ff3b6b; height:12px; }
   #advbtn.on { background:var(--blue); color:#fff; }
   .gauge.agent { outline:1px solid #fffa; }
   #msg { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--dim); text-align:center; padding:20px; pointer-events:none; }
@@ -92,6 +108,7 @@
       <div id="view"></div>
       <div id="hud"><div id="tags" style="position:absolute;top:34px;left:8px;z-index:2;pointer-events:none"></div><div class="g"><div class="b" id="hudl"></div><div id="ballhud"></div></div><div class="g r" id="gauges"></div></div>
       <div id="adv"></div>
+      <div id="inp"></div>
       <div id="msg">Choisis un clip dans la liste.</div>
     </main>
     <section id="ctl">
@@ -352,6 +369,8 @@ function setTraj(t) {
   for (const l of t.labels || []) { const m = document.createElement('div'); m.className = 'mk'; m.title = labels(l.mechanic); m.style.left = `${(l.t / end) * 100}%`; $('bar').appendChild(m); }
   $('hudl').title = (t.labels || []).map(l => `${l.t.toFixed(1)} s ${labels(l.mechanic)}`).join(' · ');
   $('tags').innerHTML = (t.labels || []).map(l => `<span class="chip">${labels(l.mechanic)} ${l.t.toFixed(1)} s</span>`).join('') + (t.combo ? '<span class="chip combo">combo</span>' : '');
+  evs = inputEvents(t);
+  for (const e of (evs && evs[t.agent]) || []) { const m = document.createElement('div'); m.className = 'mk fl'; m.title = e.txt; m.style.left = `${(e.t / end) * 100}%`; $('bar').appendChild(m); }
   time = 0; playing = true; $('play').textContent = '⏸';
   if (camMode === 'free') { orbit.target.set(0, 300, 0); camera.position.set(0, 3800, 7600); }
 }
@@ -449,11 +468,58 @@ function updateExtras(t, i, j, k, x, bp) {
     pp.needsUpdate = true; A.pred.geometry.setDrawRange(0, A.predN);
   } else A.pred.geometry.setDrawRange(0, 0);
 }
+/* ---------- Entrées du bot (mode avancé) : jauges, boutons, flips / doubles sauts synchronisés ---------- */
+const FLIP_SHOW = 0.9; // durée d'affichage de l'indicateur après l'événement (s)
+function dodgeLabel(c) { // c = [gaz, dir, tangage, lacet, roulis, bits] ; sens d'après les entrées (tangage - = avant)
+  const [, , p, y, r] = c, dz = 0.3, parts = [];
+  if (p < -dz) parts.push('avant'); else if (p > dz) parts.push('arrière');
+  const lat = Math.abs(y) >= Math.abs(r) ? y : r;
+  if (Math.abs(lat) > dz) parts.push(lat > 0 ? 'droite' : 'gauche');
+  return parts.join('-');
+}
+function inputEvents(t) { // [{t, kind:'flip'|'dj'|'cancel', txt}] par voiture
+  if (!t.ctl || !t.ctl_dt) return null;
+  return t.ctl.map((raw, n) => {
+    const out = [], fl = t.cars[n].flags, ns = Math.floor(raw.length / 6);
+    for (let s = 1; s < ns; s++) {
+      const c = raw.slice(s * 6, s * 6 + 6), prev = raw[(s - 1) * 6 + 5];
+      if (!(c[5] & 2) || (prev & 2)) continue; // front montant du saut
+      const f0 = Math.min(Math.round(s * t.ctl_dt / t.dt), t.frames - 1), f1 = Math.min(Math.round((s + 1) * t.ctl_dt / t.dt) + 1, t.frames - 1);
+      if (fl[f0] & 1) continue; // saut depuis le sol : pas un dash/flip
+      let flipped = false; for (let f = f0; f <= f1; f++) if (fl[f] & 8) flipped = true;
+      if (!flipped && !(fl[f0] & 4)) continue;
+      const d = dodgeLabel(c), time = s * t.ctl_dt;
+      const stall = Math.abs(c[3]) > 0.3 && Math.abs(c[4]) > 0.3 && c[3] * c[4] < 0 && Math.abs(c[2]) < 0.3;
+      if (!flipped) out.push({ t: time, kind: 'dj', txt: 'DOUBLE SAUT' });
+      else if (stall) out.push({ t: time, kind: 'cancel', txt: 'FLIP ANNULÉ (lacet ≠ roulis)' });
+      else out.push({ t: time, kind: 'flip', txt: 'FLIP' + (d ? ' ' + d.toUpperCase() : '') });
+    }
+    return out;
+  });
+}
+const axis = v => { const w = Math.min(Math.abs(v), 1) * 50; return `<i class="${v < 0 ? 'neg' : ''}" style="${v < 0 ? 'right' : 'left'}:50%;width:${w}%"></i>`; };
+const AXES = ['Gaz', 'Direction', 'Tangage', 'Lacet', 'Roulis'];
+function updateInputs(t, time) {
+  const box = $('inp');
+  if (!adv || !t.ctl || !t.ctl_dt || !t.ctl.length) { box.style.display = 'none'; return; }
+  box.style.display = 'flex';
+  const order = t.cars.map((_, n) => n).sort((a, b) => (a === t.agent ? -1 : b === t.agent ? 1 : a - b));
+  box.innerHTML = order.map(n => {
+    const raw = t.ctl[n], ns = Math.floor(raw.length / 6), s = Math.min(Math.floor(time / t.ctl_dt + 1e-6), ns - 1), c = raw.slice(s * 6, s * 6 + 6);
+    const ev = (evs && evs[n] || []).filter(e => time >= e.t && time < e.t + FLIP_SHOW).pop();
+    const car = t.cars[n], bits = c[5];
+    return `<div class="ip ${car.blue ? 'blue' : 'orange'}${n === t.agent ? ' agent' : ''}"><div class="nm">${n === t.agent ? 'Agent' : (car.blue ? 'Bleu' : 'Orange')} · entrées</div>`
+      + AXES.map((a, q) => `<div class="r"><span>${a}</span><span class="ax">${axis(c[q])}</span><span>${c[q].toFixed(1)}</span></div>`).join('')
+      + `<div class="bt"><b class="j${bits & 2 ? ' on' : ''}">SAUT</b><b class="bo${bits & 1 ? ' on' : ''}">BOOST</b><b class="hb${bits & 4 ? ' on' : ''}">DRIFT</b></div>`
+      + `<div class="ev${ev ? ' ' + ev.kind : ''}">${ev ? ev.txt : '—'}</div></div>`;
+  }).join('');
+}
+let evs = null;
 function setAdv(on) {
   adv = on; $('advbtn').classList.toggle('on', on);
   try { localStorage.setItem('adv', on ? '1' : '0'); } catch (e) { /* stockage indisponible */ }
   if (A) advGroup.visible = on;
-  if (!on) $('adv').style.display = 'none';
+  if (!on) { $('adv').style.display = 'none'; $('inp').style.display = 'none'; }
 }
 $('advbtn').onclick = () => setAdv(!adv);
 setAdv(adv);
@@ -506,6 +572,7 @@ function frame(now) {
       }
     });
     if (A) updateExtras(traj, i, i + 1, k, x, _bp);
+    updateInputs(traj, time);
     updatePads(traj, x, now);
     if (!seeking) $('seek').value = Math.round(time / end * 1000);
     $('time').textContent = `${time.toFixed(1)} / ${end.toFixed(1)} s`;

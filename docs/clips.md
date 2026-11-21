@@ -21,7 +21,7 @@ fenêtre (`mechanic`, `step`, `t` en s) ; absent des anciens clips (étiquette u
 familles distinctes (`Mechanic::family`) à moins de 2 s ; la note de qualité gagne 0,1 (plafond 1). `/clips` et
 `/clips/top` renvoient ces champs ; `/clips/top?mechanic=` inclut les clips dont une étiquette correspond ; la
 trajectoire renvoie `labels[{mechanic,t}]` et `combo` ; la page affiche des puces et un repère par mécanique.
-`detector` = 4 (phase de coup d'envoi : pas de clip de kickoff sauf speed flip ou car pinch ≥ 3 000 uu/s, `--kickoff-clips` pour tout garder) ; 3 = collisions.
+`detector` = 5 (stall et wave dash resserrés : entrées + physique) ; 4 = (phase de coup d'envoi : pas de clip de kickoff sauf speed flip ou car pinch ≥ 3 000 uu/s, `--kickoff-clips` pour tout garder) ; 3 = collisions.
 
 ## Rejeu et tolérance
 
@@ -80,6 +80,12 @@ pas (suspension, contacts de Bullet). Mesuré (`crates/sim-core/tests/clip_repla
   de chaque voiture, traînée de la balle (2,5 s), trajectoire balistique prédite (gravité 650, rebond sol à 60 %,
   sans murs ni voitures), anneau rouge au point de détection de la mécanique, panneau texte (hauteur de balle,
   sol/air, boost, distance voiture-balle).
+- **Entrées du bot** : la trajectoire renvoie aussi `ctl[voiture]` (6 flottants par décision : gaz, direction, tangage,
+  lacet, roulis, bits boost 1 / saut 2 / frein à main 4) et `ctl_dt` (= `tick_skip` / 120 s), tirés de `steps` (déjà
+  enregistrés : aucun changement du format de clip, les anciens clips ont leurs entrées). En mode avancé, le lecteur
+  affiche pour chaque voiture les jauges d'entrées, les boutons SAUT / BOOST / DRIFT et un indicateur
+  « FLIP <sens> » / « DOUBLE SAUT » / « FLIP ANNULÉ » pendant 0,9 s après chaque saut en l'air (front montant du
+  saut, voiture en l'air ; flip si `is_flipping` apparaît), avec un repère rouge par flip de l'agent sur la barre de temps.
 - Page web : onglet « 🏆 Top N » en tête (ouvert par défaut) : rang, mécanique, score en %, vitesse de balle (uu/s),
   but oui/non, date ; clic = lecture. Le score est affiché en % partout dans la liste.
 - Métriques : `trainer_clips_saved_total{kind="known"|"novel"}` (`novel` reste à 0 jusqu'à la PR de nouveauté) ;

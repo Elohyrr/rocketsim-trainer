@@ -81,6 +81,8 @@ struct Dodge {
     rolled: bool,
     heading: [f32; 2],
     speed_before: f32,
+    /// Voiture à plat, pas toutes roues au sol (≤ 2 roues au contact) au tick du dodge (wave dash possible).
+    airborne_flat: bool,
 }
 
 /// Historique de la balle sur les `BALL_HISTORY` derniers ticks (lecture de la vitesse d'avant un contact).
@@ -556,6 +558,9 @@ impl Detector {
                 rolled: false,
                 heading: p.heading,
                 speed_before: p.hspeed,
+                airborne_flat: car.up[2] > WAVE_DASH_MIN_UP_Z
+                    && car.wheels_contact <= WAVE_DASH_MAX_WHEELS
+                    && !car.on_ground,
             });
         } else if let Some(d) = self.dodge.as_mut() {
             let dt = n - d.tick;
@@ -811,7 +816,10 @@ impl Detector {
         if let Some(d) = self.dodge {
             let dt = n - d.tick;
             if landed && dt >= 1 {
-                if dt <= WAVE_DASH_MAX_LAND_TICKS && hspeed - d.speed_before > WAVE_DASH_MIN_GAIN {
+                if d.airborne_flat
+                    && dt <= WAVE_DASH_MAX_LAND_TICKS
+                    && hspeed - d.speed_before > WAVE_DASH_MIN_GAIN
+                {
                     counts.inc(Mechanic::WaveDash);
                     base.wave_dash = true;
                 }

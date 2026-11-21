@@ -888,6 +888,17 @@ pub fn speed_flip_negative_forward_sequence() -> Vec<Frame> {
 }
 
 fn wave_dash(land_after: usize, land_speed: f32) -> Vec<Frame> {
+    wave_dash_with(land_after, land_speed, (20, 20), 1.0, 0)
+}
+
+/// `(montée, chute)` en ticks avant le dodge, voiture d'inclinaison `up_z` et `wheels` roues au contact au dodge (4 = au sol).
+fn wave_dash_with(
+    land_after: usize,
+    land_speed: f32,
+    air: (usize, usize),
+    up_z: f32,
+    wheels: u8,
+) -> Vec<Frame> {
     let mut car = car_on_ground();
     car.vel = [1000.0, 0.0, 0.0];
     let mut s = Script::new(car, ball_far());
@@ -895,9 +906,12 @@ fn wave_dash(land_after: usize, land_speed: f32) -> Vec<Frame> {
         jump(c);
         c.vel[2] = 300.0;
     });
-    s.hold(20).run(20, |_, c, _| c.vel[2] = -300.0);
+    s.hold(air.0).run(air.1, |_, c, _| c.vel[2] = -300.0);
     s.once(|c, _| {
         dodge(c, 1.0, 0.0);
+        c.up = [(1.0 - up_z * up_z).sqrt(), 0.0, up_z];
+        c.wheels_contact = wheels;
+        c.on_ground = wheels >= 3;
         c.vel = [land_speed, 0.0, -300.0];
     });
     s.run(land_after - 1, |_, c, _| c.pitch_input = 0.0);
@@ -923,6 +937,21 @@ pub fn wave_dash_negative_late_sequence() -> Vec<Frame> {
 /// Dodge et retour au sol rapide, sans gain de vitesse.
 pub fn wave_dash_negative_no_gain_sequence() -> Vec<Frame> {
     wave_dash(3, 1100.0)
+}
+
+/// Dodge sur 2 roues (voiture inclinée, `up.z` 0,85), comme après un choc : pas un wave dash.
+pub fn wave_dash_negative_tilted_sequence() -> Vec<Frame> {
+    wave_dash_with(3, 1500.0, (20, 20), 0.85, 0)
+}
+
+/// Dodge avec 2 roues arrière posées, l'avant en l'air (le vrai wave dash), atterrissage 3 ticks après.
+pub fn wave_dash_two_wheels_sequence() -> Vec<Frame> {
+    wave_dash_with(3, 1500.0, (0, 0), 1.0, 2)
+}
+
+/// Dodge alors que les 4 roues touchent le sol : un flip au sol, pas un wave dash.
+pub fn wave_dash_negative_all_wheels_sequence() -> Vec<Frame> {
+    wave_dash_with(3, 1500.0, (0, 0), 1.0, 4)
 }
 
 fn half_flip(cancel: bool) -> Vec<Frame> {
@@ -1284,10 +1313,31 @@ pub fn cases() -> Vec<Case> {
             &[(WaveDash, 1)],
         ),
         c(
+            "wave_dash_two_wheels",
+            WaveDash,
+            true,
+            wave_dash_two_wheels_sequence(),
+            &[(WaveDash, 1)],
+        ),
+        c(
             "wave_dash_negative_late",
             WaveDash,
             false,
             wave_dash_negative_late_sequence(),
+            &[],
+        ),
+        c(
+            "wave_dash_negative_tilted",
+            WaveDash,
+            false,
+            wave_dash_negative_tilted_sequence(),
+            &[],
+        ),
+        c(
+            "wave_dash_negative_all_wheels",
+            WaveDash,
+            false,
+            wave_dash_negative_all_wheels_sequence(),
             &[],
         ),
         c(
