@@ -400,10 +400,34 @@ pub fn sample(drill: Drill, unit: &mut dyn FnMut() -> f32) -> DrillSetup {
     sample_at(drill, unit, 1.0)
 }
 
+static AERIAL_EASY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Active (réglé par le learner, `AERIAL_EASY=1`) la version facile des drills aériens aux niveaux bas : voir
+/// [`sample_at_with`]. Les tests passent plutôt `easy` explicitement (pas de course entre tests).
+pub fn set_aerial_easy(on: bool) {
+    AERIAL_EASY.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn aerial_easy() -> bool {
+    AERIAL_EASY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Comme [`sample`] avec un niveau de difficulté `level` dans [0, 1] (voir [`CURRICULUM`]) : 1 = le drill complet
 /// (le tirage est alors identique à [`sample`]), 0 = la version la plus facile. Les drills hors [`CURRICULUM`]
 /// ignorent `level`. Le nombre de tirages `unit()` ne dépend pas du niveau.
 pub fn sample_at(drill: Drill, unit: &mut dyn FnMut() -> f32, level: f32) -> DrillSetup {
+    sample_at_with(drill, unit, level, aerial_easy())
+}
+
+/// Comme [`sample_at`] avec `aerial_easy` explicite. `aerial_easy` : `aerial_touch` et `aerial_high` plus faciles
+/// au niveau 0 (balle plus basse, plus proche, qui monte d'abord ; vitesse de départ de `aerial_high` × niveau),
+/// identiques au niveau 1 ; même nombre de tirages `unit()`.
+pub fn sample_at_with(
+    drill: Drill,
+    unit: &mut dyn FnMut() -> f32,
+    level: f32,
+    aerial_easy: bool,
+) -> DrillSetup {
     let l = level.clamp(0.0, 1.0);
     // Interpolation facile (niveau 0) → complet (niveau 1).
     let mix = |easy: f32, full: f32| easy + (full - easy) * l;
@@ -454,18 +478,28 @@ pub fn sample_at(drill: Drill, unit: &mut dyn FnMut() -> f32, level: f32) -> Dri
                 17.0,
             ];
             s.car_yaw = yaw;
-            let ahead = range(unit, mix(0.0, 300.0), mix(80.0, 900.0));
-            s.ball_pos = [
-                s.car_pos[0] + h[0] * ahead,
-                s.car_pos[1] + h[1] * ahead,
-                range(unit, mix(250.0, 800.0), mix(330.0, 1600.0)),
-            ];
+            let ahead = if aerial_easy {
+                range(unit, mix(0.0, 300.0), mix(60.0, 900.0))
+            } else {
+                range(unit, mix(0.0, 300.0), mix(80.0, 900.0))
+            };
+            let z = if aerial_easy {
+                range(unit, mix(200.0, 800.0), mix(260.0, 1600.0))
+            } else {
+                range(unit, mix(250.0, 800.0), mix(330.0, 1600.0))
+            };
+            s.ball_pos = [s.car_pos[0] + h[0] * ahead, s.car_pos[1] + h[1] * ahead, z];
             let vs = mix(0.0, 1.0);
-            s.ball_vel = [
-                range(unit, -200.0, 200.0) * vs,
-                range(unit, 0.0, 400.0) * vs,
-                range(unit, 0.0, 700.0) * vs,
-            ];
+            let vx = range(unit, -200.0, 200.0) * vs;
+            let vy = range(unit, 0.0, 400.0) * vs;
+            let vz = range(unit, 0.0, 700.0);
+            // Facile : la balle monte d'abord (100 uu/s ; 300 donnait 14/40 au script de saut, 100 donne 40/40) au lieu de partir à plat.
+            let vz = if aerial_easy {
+                vz * vs + 100.0 * (1.0 - vs)
+            } else {
+                vz * vs
+            };
+            s.ball_vel = [vx, vy, vz];
         }
         Drill::AirDribble => {
             let yaw = yaw_to_goal(unit, 0.5);
@@ -741,17 +775,22 @@ pub fn sample_at(drill: Drill, unit: &mut dyn FnMut() -> f32, level: f32) -> Dri
             s.car_vel = [h[0] * sp, h[1] * sp, 0.0];
         }
         Drill::AerialHigh => {
-            s.ball_pos = [
-                range(unit, -2500.0, 2500.0),
-                range(unit, -1500.0, 2500.0),
-                range(unit, mix(250.0, 900.0), mix(330.0, 1700.0)),
-            ];
+            let (x, y) = (range(unit, -2500.0, 2500.0), range(unit, -1500.0, 2500.0));
+            let z = if aerial_easy {
+                range(unit, mix(200.0, 900.0), mix(260.0, 1700.0))
+            } else {
+                range(unit, mix(250.0, 900.0), mix(330.0, 1700.0))
+            };
+            s.ball_pos = [x, y, z];
             let vs = mix(0.0, 1.0);
-            s.ball_vel = [
-                range(unit, -600.0, 600.0) * vs,
-                range(unit, 200.0, 900.0) * vs,
-                range(unit, -300.0, 500.0) * vs,
-            ];
+            let (vx, vy) = (range(unit, -600.0, 600.0), range(unit, 200.0, 900.0));
+            let vz = if aerial_easy {
+                // Facile : la balle monte d'abord ; au niveau 1 : range(−300, 500), comme avant.
+                range(unit, mix(0.0, -300.0), mix(700.0, 500.0)) * vs + 100.0 * (1.0 - vs)
+            } else {
+                range(unit, -300.0, 500.0) * vs
+            };
+            s.ball_vel = [vx * vs, vy * vs, vz];
             let away = range(unit, mix(0.0, 800.0), mix(80.0, 2200.0));
             let a = range(unit, -PI, PI);
             s.car_pos = clamp_xy([
@@ -761,7 +800,7 @@ pub fn sample_at(drill: Drill, unit: &mut dyn FnMut() -> f32, level: f32) -> Dri
             ]);
             s.car_yaw = yaw_towards(s.car_pos, s.ball_pos) + range(unit, -0.4, 0.4);
             let h = heading(s.car_yaw);
-            let sp = range(unit, 0.0, 1200.0);
+            let sp = range(unit, 0.0, 1200.0) * if aerial_easy { l } else { 1.0 };
             s.car_vel = [h[0] * sp, h[1] * sp, 0.0];
         }
         Drill::WallRun => {

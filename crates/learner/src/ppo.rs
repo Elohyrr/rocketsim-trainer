@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::explore::{self, Explore};
+use crate::explore::Explore;
 use crate::pool::{POOL_SHARE, Pool};
 use burn::module::{Module, Param};
 use burn::nn::{Linear, LinearConfig};
@@ -289,6 +289,11 @@ pub struct IterStats {
     pub ent_coef: f64,
     pub lr: f64,
     pub epochs_run: usize,
+    /// Part des décisions avec |ratio − 1| > clip, KL moyenne de la dernière époque faite.
+    pub clip_fraction: f64,
+    pub kl_last_epoch: f64,
+    /// Entropie vue par le régulateur après cette itération (lissée si `--ent-ema`, sinon `entropy`).
+    pub entropy_smoothed: f64,
     pub collect_seconds: f64,
     /// Part de `collect_seconds` passée en inférence (hors simulation).
     pub infer_seconds: f64,
@@ -389,6 +394,8 @@ struct PolStats {
     en_all: f64,
     pl: f64,
     kl: f64,
+    /// Nombre de décisions dont |ratio − 1| dépasse `clip` (avant la mise à jour).
+    clipped: f64,
 }
 
 pub struct Trainer {
@@ -681,6 +688,7 @@ impl Trainer {
         let total = h * n;
         let mut idx: Vec<usize> = (0..total).collect();
         let (mut pl, mut vl, mut kl, mut cnt) = (0.0, 0.0, 0.0, 0.0);
+        let (mut clipped, mut decisions, mut kl_last) = (0.0f64, 0.0f64, 0.0f64);
         // Entropie du garde-fou : seulement sur les décisions de match (les drills l'entraînent mais ne la mesurent pas).
         let (mut en_match, mut en_n, mut en_all) = (0.0f64, 0.0f64, 0.0f64);
         let (ent_coef, lr) = (self.explore.ent_coef as f32, self.explore.lr());
@@ -754,6 +762,14 @@ impl Trainer {
                         let logp_all = log_softmax(logits, 1);
                         let logp = (logp_all.clone() * onehot).sum_dim(1);
                         let ratio = (logp.clone() - old_lp.clone()).exp();
+                        let clipped = scalar(
+                            (ratio.clone() - 1.0)
+                                .abs()
+                                .greater_elem(clip)
+                                .float()
+                                .sum()
+                                .reshape([1]),
+                        );
                         let s1 = ratio.clone() * adv_t.clone();
                         let s2 = ratio.clamp(1.0 - clip, 1.0 + clip) * adv_t;
                         let pol_loss = -(s1.min_pair(s2)).mean();
@@ -767,6 +783,7 @@ impl Trainer {
                             en_all: scalar(ent_vec.clone().sum().reshape([1])),
                             pl: scalar(pol_loss.clone().reshape([1])),
                             kl: scalar((old_lp - logp.clone()).mean().reshape([1])),
+                            clipped,
                         };
                         let entropy = ent_vec.mean();
                         if freeze {
@@ -808,12 +825,15 @@ impl Trainer {
                 bc_sum += stats.bc;
                 pl += stats.pl;
                 kl += stats.kl;
+                clipped += stats.clipped;
+                decisions += m as f64;
                 vl += vloss;
                 cnt += 1.0;
             }
             st.epochs_run += 1;
+            kl_last = (kl - kl_before) / (cnt - cnt_before);
             // Plafond de KL : la politique a trop bougé sur cette époque, on garde les données pour la suivante.
-            if (kl - kl_before) / (cnt - cnt_before) > explore::KL_MAX {
+            if kl_last > self.explore.cfg.kl_max {
                 break;
             }
         }
@@ -828,6 +848,12 @@ impl Trainer {
             en_all / total as f64
         };
         st.kl = kl / cnt;
+        st.kl_last_epoch = kl_last;
+        st.clip_fraction = if decisions > 0.0 {
+            clipped / decisions
+        } else {
+            0.0
+        };
         st.bc_loss = bc_sum / cnt;
         st.bc_lambda = f64::from(bc_lambda);
         if bc_lambda > 0.0 {
@@ -840,6 +866,7 @@ impl Trainer {
         // `explore.steps` compte des pas de 1/15 s : à 30 Hz, 2 décisions valent un pas (même lr par seconde de jeu).
         let ref_steps = total as u64 * u64::from(self.tick_skip) / u64::from(rl_env::REF_TICK_SKIP);
         self.explore.update(ref_steps, st.entropy, na);
+        st.entropy_smoothed = self.explore.entropy_smoothed().unwrap_or(st.entropy);
         if st.episodes > 0 {
             st.reward_mean = ret_sum / st.episodes as f64;
             st.length_mean = len_sum / st.episodes as f64;

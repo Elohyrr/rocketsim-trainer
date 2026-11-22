@@ -35,7 +35,7 @@ use learner::best::{self, Best, OPPONENT_OBS_MARKER};
 use learner::clips::{ClipStore, DEFAULT_MAX_CLIPS, DEFAULT_TOP};
 use learner::curriculum::{Curriculum, IterResult, Move};
 use learner::elo;
-use learner::explore::{Explore, Guard, GuardEvent};
+use learner::explore::{Explore, ExploreConfig, Guard, GuardEvent};
 use learner::jellyfin::Jellyfin;
 use learner::metrics::{Metrics, serve_with_dir};
 use learner::pause::PauseGate;
@@ -188,6 +188,52 @@ fn main() {
     let tick_skip = tick_skip_arg();
     // γ, λ, horizon et minibatch suivent le rythme de décision (même horizon en secondes de jeu).
     let mut cfg = PpoConfig::for_tick_skip(tick_skip);
+    // Réglages PPO / exploration : flag ou variable d'env (défauts = comportement historique). Voir docs/exploration.md.
+    // `--minibatch` est donné à 15 Hz et mis à l'échelle par `for_tick_skip`.
+    let num = |flag: &str, var: &str| -> Option<f64> {
+        arg(flag)
+            .or_else(|| std::env::var(var).ok())
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|v| v.is_finite())
+    };
+    if let Some(n) = num("--minibatch", "PPO_MINIBATCH").filter(|n| *n >= 1.0) {
+        let r = f64::from(tick_skip.max(1)) / f64::from(rl_env::REF_TICK_SKIP);
+        cfg.minibatch = ((n / r).round() as usize).max(1);
+    }
+    if let Some(n) = num("--epochs", "PPO_EPOCHS").filter(|n| *n >= 1.0) {
+        cfg.epochs = n as usize;
+    }
+    if let Some(c) = num("--clip", "PPO_CLIP").filter(|c| *c > 0.0) {
+        cfg.clip = c as f32;
+    }
+    let explore_cfg = {
+        let d = ExploreConfig::default();
+        ExploreConfig {
+            lr0: num("--lr0", "LR0").filter(|v| *v > 0.0).unwrap_or(d.lr0),
+            lr_min: num("--lr-min", "LR_MIN")
+                .filter(|v| *v >= 0.0)
+                .unwrap_or(d.lr_min),
+            kl_max: num("--kl-max", "KL_MAX")
+                .filter(|v| *v > 0.0)
+                .unwrap_or(d.kl_max),
+            ent_min: num("--ent-min", "ENT_MIN")
+                .filter(|v| *v >= 0.0)
+                .unwrap_or(d.ent_min),
+            ent_gain_up: num("--ent-gain-up", "ENT_GAIN_UP")
+                .filter(|v| *v >= 0.0)
+                .unwrap_or(d.ent_gain_up),
+            ent_gain_down: num("--ent-gain-down", "ENT_GAIN_DOWN")
+                .filter(|v| *v >= 0.0)
+                .unwrap_or(d.ent_gain_down),
+            ent_ema_iters: num("--ent-ema", "ENT_EMA_ITERS")
+                .filter(|v| *v >= 0.0)
+                .map_or(0, |v| v as u32),
+        }
+    };
+    eprintln!(
+        "PPO : minibatch {}, {} époques, clip {}, {:?}",
+        cfg.minibatch, cfg.epochs, cfg.clip, explore_cfg
+    );
     if let Some(n) = arg("--envs").and_then(|s| s.parse().ok()) {
         cfg.n_envs = n;
     }
@@ -275,8 +321,25 @@ fn main() {
     let drill_curriculum = std::env::args().any(|a| a == "--drill-curriculum")
         || std::env::var("DRILL_CURRICULUM").is_ok_and(|v| v == "1");
     let drill_levels = std::sync::Arc::new(scenarios::DrillLevels::default());
-    let mut drill_curr = drill_curriculum
-        .then(|| learner::drill_curriculum::DrillCurriculum::load(&out, drill_levels.clone()));
+    // `--drill-up-rate` / `--drill-down-rate` / `--drill-min-episodes` (ou DRILL_UP_RATE, DRILL_DOWN_RATE,
+    // DRILL_MIN_EPISODES) : seuils du curriculum (défauts 0,5 / 0,15 / 100 ; prod conseillée 0,30 / 0,10 / 200).
+    let drill_thresholds = {
+        let d = learner::drill_curriculum::DrillThresholds::default();
+        learner::drill_curriculum::DrillThresholds {
+            up_rate: num("--drill-up-rate", "DRILL_UP_RATE").unwrap_or(d.up_rate),
+            down_rate: num("--drill-down-rate", "DRILL_DOWN_RATE").unwrap_or(d.down_rate),
+            min_episodes: num("--drill-min-episodes", "DRILL_MIN_EPISODES")
+                .filter(|v| *v >= 1.0)
+                .map_or(d.min_episodes, |v| v as u64),
+        }
+    };
+    let mut drill_curr = drill_curriculum.then(|| {
+        learner::drill_curriculum::DrillCurriculum::load_with(
+            &out,
+            drill_levels.clone(),
+            drill_thresholds,
+        )
+    });
     // `--drill-level L` (ou DRILL_LEVEL) : fige tous les drills du curriculum au niveau L (0..1), sans curriculum
     // automatique ; sert aux essais (mesure au niveau 0) et à désamorcer un curriculum emballé.
     if let Some(l) = arg("--drill-level")
@@ -288,6 +351,22 @@ fn main() {
         }
         drill_curr = None;
     }
+    // Drills aériens (`aerial_touch`, `aerial_high`), tout coupé par défaut : `AERIAL_SUCCESS_BONUS` (bonus à la
+    // première réussite, plafonné à 10 % d'un but), `AERIAL_END_ON_SUCCESS=1` (fin d'épisode à la réussite),
+    // `AERIAL_SHAPING` (poids du shaping par potentiel), `AERIAL_EASY=1` (niveau 0 plus facile). Flags `--aerial-*`.
+    let aerial_flag = |flag: &str, var: &str| -> bool {
+        std::env::args().any(|a| a == flag) || std::env::var(var).is_ok_and(|v| v == "1")
+    };
+    let aerial = rl_env::AerialConfig {
+        success_bonus: num("--aerial-success-bonus", "AERIAL_SUCCESS_BONUS")
+            .map_or(0.0, |v| v.clamp(0.0, 10.0) as f32),
+        end_on_success: aerial_flag("--aerial-end-on-success", "AERIAL_END_ON_SUCCESS"),
+        easy: aerial_flag("--aerial-easy", "AERIAL_EASY"),
+        shaping: num("--aerial-shaping", "AERIAL_SHAPING")
+            .map_or(0.0, |v| v.clamp(0.0, 10.0) as f32),
+        gamma: cfg.gamma,
+    };
+    scenarios::set_aerial_easy(aerial.easy);
     let fixed_boost = std::env::args().any(|a| a == "--fixed-boost");
     // `--drill-weights label=poids,…` (ou DRILL_WEIGHTS) : poids de tirage des drills, par-dessus les défauts
     // (`scenarios::Drill::DEFAULT_WEIGHTS`) ; ex. `dribble_turn=5,keeper=0`.
@@ -340,6 +419,7 @@ fn main() {
             drill_prob: if c.end_on_touch { 0.0 } else { drill_prob },
             drill_weights,
             drill_clips,
+            aerial,
             drill_levels: drill_levels.clone(),
             bonus_ledger: ledger.clone(),
             boost_reward: boost_reward.map_or(c.boost_reward, |b| {
@@ -371,6 +451,7 @@ fn main() {
         eprintln!("{e}");
         std::process::exit(2);
     });
+    tr.explore.cfg = explore_cfg;
     let mut loaded = false;
     if resume {
         let ckpt = out.join("checkpoint");
@@ -378,7 +459,7 @@ fn main() {
             Ok(()) => {
                 eprintln!("reprise depuis {} (palier {stage})", ckpt.display());
                 loaded = true;
-                tr.explore = Explore::load(&out);
+                tr.explore = Explore::load_with(&out, explore_cfg);
                 eprintln!(
                     "exploration : ent_coef {:.4}, {} pas cumulés, lr {:.2e}",
                     tr.explore.ent_coef,
@@ -828,6 +909,10 @@ fn main() {
             m.entropy_scale = tr.explore.scale;
             m.entropy_backoffs = backoffs;
             m.ent_coef = s.ent_coef;
+            m.clip_fraction = s.clip_fraction;
+            m.epochs_run = s.epochs_run as f64;
+            m.kl_last_epoch = s.kl_last_epoch;
+            m.entropy_smoothed = s.entropy_smoothed;
             m.bc_loss = s.bc_loss;
             m.bc_lambda = s.bc_lambda;
             m.learning_rate = s.lr;

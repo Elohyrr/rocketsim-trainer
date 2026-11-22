@@ -30,6 +30,11 @@ pub struct Metrics {
     /// Entropie visée (nat), coefficient d'entropie adaptatif et lr courant (exploration, `explore.rs`).
     pub entropy_target: f64,
     pub ent_coef: f64,
+    /// PPO : part des décisions écrêtées, époques faites, KL de la dernière époque, entropie vue par le régulateur.
+    pub clip_fraction: f64,
+    pub epochs_run: f64,
+    pub kl_last_epoch: f64,
+    pub entropy_smoothed: f64,
     /// Clonage de comportement : perte (entropie croisée sur les démonstrations) et poids λ courant.
     pub bc_loss: f64,
     pub bc_lambda: f64,
@@ -151,6 +156,10 @@ impl Metrics {
         g("trainer_kl", "gauge", self.kl);
         g("trainer_entropy_target", "gauge", self.entropy_target);
         g("trainer_entropy_coef", "gauge", self.ent_coef);
+        g("trainer_clip_fraction", "gauge", self.clip_fraction);
+        g("trainer_epochs_run", "gauge", self.epochs_run);
+        g("trainer_kl_last_epoch", "gauge", self.kl_last_epoch);
+        g("trainer_entropy_smoothed", "gauge", self.entropy_smoothed);
         g("trainer_bc_loss", "gauge", self.bc_loss);
         g("trainer_bc_lambda", "gauge", self.bc_lambda);
         g("trainer_learning_rate", "gauge", self.learning_rate);
@@ -548,8 +557,8 @@ mod tests {
         }
         let n = count_series(&m.render());
         assert!(
-            n < 250,
-            "objectif < 250 séries (plafond dur : 500), obtenu {n}"
+            n < 260,
+            "objectif < 260 séries (plafond dur : 500), obtenu {n}"
         );
         assert!(n < MAX_SERIES);
     }

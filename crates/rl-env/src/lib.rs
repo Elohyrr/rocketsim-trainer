@@ -194,6 +194,41 @@ impl ActionTable {
 
 // ---------------------------------------------------------------- configuration
 
+/// Récompenses des drills aériens (variables `AERIAL_SUCCESS_BONUS`, `AERIAL_END_ON_SUCCESS`, `AERIAL_SHAPING`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AerialConfig {
+    /// Bonus payé une fois par épisode à la première réussite (plafonné à 10 % d'un but ; 0 = rien).
+    pub success_bonus: f32,
+    /// L'épisode se termine à la réussite (horizon de 5 s pour `aerial_touch`).
+    pub end_on_success: bool,
+    /// Version facile des drills aériens au niveau bas (`scenarios::sample_at_with`).
+    pub easy: bool,
+    /// Poids w du shaping par potentiel (0 = coupé).
+    pub shaping: f32,
+    /// γ du shaping (celui du PPO ; le learner le fixe).
+    pub gamma: f32,
+}
+
+impl Default for AerialConfig {
+    fn default() -> Self {
+        Self {
+            success_bonus: 0.0,
+            end_on_success: false,
+            easy: false,
+            shaping: 0.0,
+            gamma: 0.99,
+        }
+    }
+}
+
+/// Échelle du potentiel du shaping aérien (uu) et hauteur de balle au-delà de laquelle il s'active au sol.
+pub const AERIAL_SHAPING_DIST: f32 = 3000.0;
+pub const AERIAL_SHAPING_BALL_Z: f32 = 200.0;
+
+fn dir_len(a: [f32; 3], b: [f32; 3]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
 #[derive(Clone, Debug)]
 pub struct EnvConfig {
     /// Ticks de simulation par décision (action repeat). RLGym : 8 (soit 15 décisions/s) ; 4 = 30 Hz. Les champs
@@ -259,6 +294,8 @@ pub struct EnvConfig {
     pub drill_weights: [f32; scenarios::DRILL_COUNT],
     /// Enregistre aussi les clips des drills de dribble (jamais les autres).
     pub drill_clips: bool,
+    /// Récompenses des drills aériens (`aerial_touch`, `aerial_high`), toutes coupées par défaut.
+    pub aerial: AerialConfig,
     /// Niveaux de difficulté des drills du curriculum ([`scenarios::CURRICULUM`]), mis à jour par le learner.
     pub drill_levels: Arc<scenarios::DrillLevels>,
     /// Registre partagé des bonus de méca payés (décroissance sur 1 h glissante) ; à partager entre les paliers.
@@ -316,6 +353,7 @@ impl Default for EnvConfig {
             drill_prob: 0.0,
             drill_weights: Drill::DEFAULT_WEIGHTS,
             drill_clips: false,
+            aerial: AerialConfig::default(),
             drill_levels: Arc::default(),
             bonus_ledger: Arc::default(),
         }
@@ -903,7 +941,12 @@ impl Env {
         }
         let rng = &mut self.rng;
         let level = self.cfg.drill_levels.get(d);
-        let s = scenarios::sample_at(d, &mut || rng.unit(), level);
+        let s = scenarios::sample_at_with(
+            d,
+            &mut || rng.unit(),
+            level,
+            self.cfg.aerial.easy || scenarios::aerial_easy(),
+        );
         match s.car_axes {
             Some(axes) => self
                 .sim
@@ -1219,6 +1262,19 @@ impl Env {
         let mut drill_done = false;
         if let Some((d, bonus)) = self.drill.as_mut() {
             let d = *d;
+            // Shaping aérien par potentiel w·(γΦ' − Φ), Φ = −‖voiture − balle‖ / 3000, seulement en l'air ou balle haute.
+            let aerial = &self.cfg.aerial;
+            if aerial.shaping != 0.0 && matches!(d, Drill::AerialTouch | Drill::AerialHigh) {
+                if !car.on_ground || snap.ball.pos[2] > AERIAL_SHAPING_BALL_Z {
+                    let phi = -dir_len(car.pos, snap.ball.pos) / AERIAL_SHAPING_DIST;
+                    if let Some(prev) = bonus.aerial_phi {
+                        reward += aerial.shaping * (aerial.gamma * phi - prev);
+                    }
+                    bonus.aerial_phi = Some(phi);
+                } else {
+                    bonus.aerial_phi = None;
+                }
+            }
             // Bonus de méca : seulement en drill, plafonné à 10 % d'un but.
             let cap = drill::MAX_FRACTION_OF_GOAL * self.cfg.goal_reward;
             let tick = self.sim.tick_count();
@@ -1271,6 +1327,8 @@ impl Env {
                     car_forward: car.forward,
                     car_boost: car.boost,
                     level: self.cfg.drill_levels.get(d),
+                    aerial_bonus: self.cfg.aerial.success_bonus,
+                    aerial_end: self.cfg.aerial.end_on_success,
                 },
                 cap,
                 ledger,
@@ -1435,6 +1493,7 @@ impl Env {
             Some(Drill::Turnaround) => 6.0,
             Some(Drill::Rings) => 20.0,
             Some(Drill::BoostRun) => 12.0,
+            Some(Drill::AerialTouch) if self.cfg.aerial.end_on_success => 5.0,
             _ => return self.cfg.decisions(self.cfg.max_steps),
         };
         let steps = (secs * TICKS_PER_SECOND / self.cfg.tick_skip.max(1) as f32) as u32;
@@ -2231,6 +2290,204 @@ mod tests {
             rates.push(rep.success[i]);
         }
         assert!(rates[0] >= 10 && rates[0] > 3 * rates[1], "{rates:?}");
+    }
+
+    /// Script « saut + boost nez en l'air » sur `drill`, 40 épisodes au niveau 0 ; renvoie les réussites.
+    /// `script = false` : action nulle (voiture immobile au sol).
+    fn aerial_script(
+        drill: Drill,
+        tick_skip: u32,
+        aerial: AerialConfig,
+        script: bool,
+        jump_steps: u32,
+        pitch_steps: u32,
+    ) -> (u64, u64) {
+        let levels = Arc::new(scenarios::DrillLevels::default());
+        levels.set(drill, 0.0);
+        let cfg = EnvConfig {
+            drill_prob: 1.0,
+            drill_levels: levels,
+            tick_skip,
+            aerial,
+            ..EnvConfig::for_stage(6)
+        };
+        let mut e = Env::new(cfg, 6).unwrap();
+        let find = |e: &Env, jump: bool, pitch: f32| {
+            (0..e.actions.len())
+                .find(|&i| {
+                    let c = e.actions.get(i);
+                    c.jump == jump && c.boost && c.pitch == pitch && c.yaw == 0.0 && c.roll == 0.0
+                })
+                .unwrap()
+        };
+        for _ in 0..40 {
+            e.reset_drill_with(drill);
+            for t in 0..e.max_steps() {
+                let a = match (script, t < jump_steps) {
+                    (false, _) => 0,
+                    (true, true) => find(&e, true, 0.0),
+                    (true, false) if t < jump_steps + pitch_steps => find(&e, false, 1.0),
+                    (true, false) => find(&e, false, 0.0),
+                };
+                let info = e.step(a);
+                if info.terminated || info.truncated {
+                    break;
+                }
+            }
+        }
+        e.reset();
+        let rep = e.take_drill_report();
+        (rep.success[drill.index()], rep.episodes[drill.index()])
+    }
+
+    #[test]
+    fn easy_aerial_level_zero_is_solvable_by_the_script_and_not_by_idling() {
+        assert!(setup());
+        let easy = AerialConfig {
+            easy: true,
+            ..AerialConfig::default()
+        };
+        for drill in [Drill::AerialTouch, Drill::AerialHigh] {
+            for ts in [8u32, 4] {
+                // Saut de 32 ticks, puis nez en l'air 64 ticks, puis boost à plat (mesuré : 40/40 aux deux rythmes).
+                let (jump, pitch) = (32 / ts, 64 / ts);
+                let (ok, n) = aerial_script(drill, ts, easy, true, jump, pitch);
+                eprintln!("aérien facile {drill:?} ts {ts} script : {ok}/{n}");
+                assert!(ok >= 28, "{drill:?} ts {ts} : {ok}/{n}");
+                let (idle, n) = aerial_script(drill, ts, easy, false, jump, pitch);
+                eprintln!("aérien facile {drill:?} ts {ts} action nulle : {idle}/{n}");
+                assert!(idle <= 4, "{drill:?} ts {ts} : {idle}/{n}");
+            }
+        }
+    }
+
+    /// Joue `n` épisodes aériens scriptés ; renvoie, par épisode, (récompenses par pas, terminé par réussite).
+    fn aerial_rewards(aerial: AerialConfig, n: usize) -> Vec<(Vec<f32>, bool)> {
+        let levels = Arc::new(scenarios::DrillLevels::default());
+        levels.set(Drill::AerialTouch, 0.0);
+        let cfg = EnvConfig {
+            drill_prob: 1.0,
+            drill_levels: levels,
+            aerial: AerialConfig {
+                easy: true,
+                ..aerial
+            },
+            ..EnvConfig::for_stage(6)
+        };
+        let mut e = Env::new(cfg, 6).unwrap();
+        let find = |e: &Env, jump: bool, pitch: f32| {
+            (0..e.actions.len())
+                .find(|&i| {
+                    let c = e.actions.get(i);
+                    c.jump == jump && c.boost && c.pitch == pitch && c.yaw == 0.0 && c.roll == 0.0
+                })
+                .unwrap()
+        };
+        let mut out = Vec::new();
+        for _ in 0..n {
+            e.reset_drill_with(Drill::AerialTouch);
+            let mut r = Vec::new();
+            let mut ended = false;
+            for t in 0..e.max_steps() {
+                let a = if t < 4 {
+                    find(&e, true, 0.0)
+                } else if t < 12 {
+                    find(&e, false, 1.0)
+                } else {
+                    find(&e, false, 0.0)
+                };
+                let info = e.step(a);
+                r.push(info.reward);
+                if info.terminated || info.truncated {
+                    ended = info.terminated;
+                    break;
+                }
+            }
+            out.push((r, ended));
+        }
+        out
+    }
+
+    #[test]
+    fn aerial_success_bonus_is_paid_once_and_ends_the_episode() {
+        assert!(setup());
+        let off = aerial_rewards(AerialConfig::default(), 6);
+        // Sans bonus ni shaping ni fin anticipée : récompenses d'avant, pas à pas (même graine, même simulation).
+        let explicit = aerial_rewards(
+            AerialConfig {
+                success_bonus: 0.0,
+                end_on_success: false,
+                shaping: 0.0,
+                ..AerialConfig::default()
+            },
+            6,
+        );
+        assert_eq!(off, explicit);
+        // Bonus seul : mêmes récompenses sauf, une fois par épisode réussi, le pas de réussite (+ bonus, le
+        // premier paiement du registre est au tarif plein).
+        let on = aerial_rewards(
+            AerialConfig {
+                success_bonus: 0.5,
+                ..AerialConfig::default()
+            },
+            6,
+        );
+        let mut paid = 0;
+        for ((a, _), (b, _)) in off.iter().zip(&on) {
+            assert_eq!(a.len(), b.len());
+            let diffs: Vec<f32> = a
+                .iter()
+                .zip(b)
+                .map(|(x, y)| y - x)
+                .filter(|d| d.abs() > 1e-6)
+                .collect();
+            assert!(diffs.len() <= 1, "{diffs:?}");
+            paid += diffs.len();
+            if paid == diffs.len()
+                && let Some(d) = diffs.first()
+            {
+                assert!((d - 0.5).abs() < 1e-4, "premier bonus {d}");
+            }
+        }
+        assert!(paid >= 1, "au moins une réussite sur 6 épisodes");
+        // Fin à la réussite : épisode terminé (pas tronqué) plus court, bonus reçu.
+        let end = aerial_rewards(
+            AerialConfig {
+                success_bonus: 0.5,
+                end_on_success: true,
+                ..AerialConfig::default()
+            },
+            6,
+        );
+        let mut ended = 0;
+        for ((a, _), (b, terminated)) in off.iter().zip(&end) {
+            if *terminated {
+                ended += 1;
+                assert!(b.len() <= a.len());
+                // Le bonus (0,5) moins le terme d'approche du pas (≤ 0,05 en valeur absolue).
+                assert!(b.last().copied().unwrap() >= 0.4, "{:?}", b.last());
+            }
+        }
+        assert!(ended >= 1);
+    }
+
+    #[test]
+    fn aerial_shaping_is_a_potential_difference_and_off_by_default() {
+        assert!(setup());
+        let off = aerial_rewards(AerialConfig::default(), 2);
+        let on = aerial_rewards(
+            AerialConfig {
+                shaping: 1.0,
+                gamma: 1.0,
+                ..AerialConfig::default()
+            },
+            1,
+        );
+        assert_ne!(off[0].0, on[0].0);
+        // γ = 1 : la somme des écarts télescope en Φ_final − Φ_initial, bornée par la distance max / 3000.
+        let total: f32 =
+            on[0].0.iter().sum::<f32>() - off[0].0.iter().take(on[0].0.len()).sum::<f32>();
+        assert!(total.abs() < 3.0, "{total}");
     }
 
     #[test]

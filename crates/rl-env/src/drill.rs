@@ -62,7 +62,9 @@ pub const RINGS_SLOT: usize = mechanics::MECH_COUNT + 4;
 pub const RINGS_TIME_SLOT: usize = mechanics::MECH_COUNT + 5;
 pub const BOOST_PAD_SLOT: usize = mechanics::MECH_COUNT + 6;
 pub const BOOST_RUN_SLOT: usize = mechanics::MECH_COUNT + 7;
-const EXTRA_SLOTS: usize = 8;
+/// Case du bonus de réussite des drills aériens (`AERIAL_SUCCESS_BONUS`).
+pub const AERIAL_SLOT: usize = mechanics::MECH_COUNT + 8;
+const EXTRA_SLOTS: usize = 9;
 /// Gain de boost en une décision à partir duquel on a pris un gros pad (une petite en donne 12).
 pub const BIG_PAD_GAIN: f32 = 40.0;
 /// Bonus du gros pad pris à vide, puis du toucher utile qui suit (balle vers le but à plus de [`BOOST_RUN_USEFUL_SPEED`]).
@@ -253,6 +255,10 @@ pub struct EpisodeBonus {
     pub rings: Option<RingTrack>,
     /// Suivi de la course au boost (drill `boost_run`).
     pub boost_run: Option<BoostRunTrack>,
+    /// Bonus de réussite aérien déjà payé (une fois par épisode).
+    pub aerial_paid: bool,
+    /// Potentiel Φ du pas précédent du shaping aérien (`None` : shaping inactif au pas précédent).
+    pub aerial_phi: Option<f32>,
 }
 
 /// Ce qu'un pas de drill a produit, pour [`EpisodeBonus::on_events`].
@@ -275,6 +281,9 @@ pub struct StepEvents<'a> {
     pub car_boost: f32,
     /// Niveau de difficulté courant du drill (1 hors curriculum, voir `scenarios::CURRICULUM`).
     pub level: f32,
+    /// Réglages aériens (`AERIAL_SUCCESS_BONUS`, `AERIAL_END_ON_SUCCESS`), voir [`crate::AerialConfig`].
+    pub aerial_bonus: f32,
+    pub aerial_end: bool,
 }
 
 /// Vitesse de la balle vers SA cage (−Y), uu/s.
@@ -435,6 +444,16 @@ impl EpisodeBonus {
                 // tombe sur la voiture : un simple saut la touche).
                 if e.touched && e.car_airborne && e.ball.0[2] > 130.0 + 170.0 * e.level {
                     self.success = true;
+                    // `air_dribble` garde son barème : bonus et fin anticipée seulement pour les touchers purs.
+                    if d != Drill::AirDribble {
+                        if !self.aerial_paid {
+                            self.aerial_paid = true;
+                            reward += ledger.pay_slot(AERIAL_SLOT, e.aerial_bonus.min(bonus_cap));
+                        }
+                        if e.aerial_end {
+                            done = true;
+                        }
+                    }
                 }
             }
             Drill::FlipReset => {
@@ -984,6 +1003,8 @@ mod tests {
             car_forward: [0.0, 1.0, 0.0],
             car_boost: 0.0,
             level: 1.0,
+            aerial_bonus: 0.0,
+            aerial_end: false,
         }
     }
 
