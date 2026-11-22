@@ -117,13 +117,22 @@ fn flip_shot_seq(
 // ---------------------------------------------------------------- cushion
 
 /// Voiture au sol à 500 uu/s, balle qui arrive à `vx_before` (vers la voiture) et repart à `v_after`.
+/// Même amorti, mais la voiture est en vrille (haut presque horizontal, `up.z` < 0,5) : pas un amorti voulu.
+fn cushion_tumbling() -> Vec<Frame> {
+    let mut f = cushion_seq(-1500.0, [600.0, 0.0, 0.0]);
+    for (c, _) in f.iter_mut() {
+        c.up = [0.95, 0.0, 0.3];
+    }
+    f
+}
+
 fn cushion_seq(vx_before: f32, v_after: [f32; 3]) -> Vec<Frame> {
     let mut car = car_on_ground();
     car.vel = [500.0, 0.0, 0.0];
     let mut s = Script::new(
         car,
         BallTick {
-            pos: [400.0, 0.0, 93.0],
+            pos: [300.0, 0.0, 93.0],
             vel: [vx_before, 0.0, 0.0],
         },
     );
@@ -131,11 +140,19 @@ fn cushion_seq(vx_before: f32, v_after: [f32; 3]) -> Vec<Frame> {
         hit(c);
         b.vel = v_after;
     });
-    s.hold(10);
+    s.hold(45);
     s.frames()
 }
 
 // ---------------------------------------------------------------- redirect, air roll shot
+
+/// Même séquence sans aucun saut pressé : la voiture tombe (mur, plafond).
+fn no_jump(mut f: Vec<Frame>) -> Vec<Frame> {
+    for (c, _) in f.iter_mut() {
+        c.has_jumped = false;
+    }
+    f
+}
 
 /// Voiture en l'air à z = 600 (vitesse angulaire `ang_vel`, roulis commandé `roll`) qui touche une balle de
 /// vitesse `v_before` et l'envoie à `v_after` ; `side_dodge` : dodge latéral 10 ticks avant.
@@ -147,6 +164,8 @@ fn air_hit(
     v_after: [f32; 3],
 ) -> Vec<Frame> {
     let mut car = air_car([0.0, 0.0, 600.0]);
+    // Le saut est pressé en vol (tick 1) : le détecteur le voit comme un décollage voulu.
+    car.has_jumped = false;
     car.ang_vel = ang_vel;
     car.roll_input = roll;
     let mut s = Script::new(
@@ -156,7 +175,8 @@ fn air_hit(
             vel: v_before,
         },
     );
-    s.hold(10);
+    s.hold(1).once(|c, _| c.has_jumped = true);
+    s.hold(30);
     if side_dodge {
         s.once(|c, _| dodge(c, 0.0, 1.0)).hold(9);
     } else {
@@ -254,16 +274,24 @@ fn wall_double(back: bool) -> Vec<Frame> {
 /// Voiture au sol à 1 000 uu/s ; la balle tombe à −600, rebondit au sol à +500, frappe `wait` ticks après le
 /// rebond (balle envoyée à `v_after`).
 fn half_volley_seq(wait: usize, v_after: [f32; 3]) -> Vec<Frame> {
+    half_volley_v6(wait, v_after, 400.0, true)
+}
+
+/// `start_z` : hauteur de départ de la balle (apogée avant le rebond) ; `jump` : saut pressé au rebond.
+fn half_volley_v6(wait: usize, v_after: [f32; 3], start_z: f32, jump: bool) -> Vec<Frame> {
     let mut car = car_on_ground();
     car.vel = [1000.0, 0.0, 0.0];
     let mut s = Script::new(
         car,
         BallTick {
-            pos: [300.0, 0.0, 103.0],
+            pos: [300.0, 0.0, start_z],
             vel: [0.0, 0.0, -600.0],
         },
     );
-    s.hold(1).once(|_, b| {
+    s.hold(2).once(move |c, b| {
+        if jump {
+            crate::script::jump(c);
+        }
         b.pos[2] = 93.0;
         b.vel[2] = 500.0;
     });
@@ -283,8 +311,16 @@ pub fn cases() -> Vec<Case> {
             "power_shot",
             PowerShot,
             true,
-            ground_shot([3300.0, 0.0, 200.0]),
+            ground_shot([300.0, 3300.0, 200.0]),
             &[(Touch, 1), (PowerShot, 1)],
+        ),
+        // Detector 6 : vitesse de balle sans dodge ni visée du but adverse (voiture supersonique) = pas un tir voulu.
+        case(
+            "power_shot_negative_unaimed_no_dodge",
+            PowerShot,
+            false,
+            ground_shot([3300.0, 0.0, 200.0]),
+            &[(Touch, 1)],
         ),
         case(
             "power_shot_negative_2900",
@@ -355,7 +391,7 @@ pub fn cases() -> Vec<Case> {
                 [3800.0, 0.0, 300.0],
                 false,
             ),
-            &[(Touch, 1), (PowerShot, 1)],
+            &[(Touch, 1)],
         ),
         case(
             "pinch_negative_fast_ball_low_gain",
@@ -381,14 +417,14 @@ pub fn cases() -> Vec<Case> {
                 [-500.0, 3700.0, 300.0],
                 false,
             ),
-            &[(Touch, 1), (PowerShot, 1)],
+            &[(Touch, 1)],
         ),
         case(
             "pinch_negative_too_slow",
             Pinch,
             false,
             pinch_seq(WALL_BALL, WALL_CAR, [0.0; 3], [-3300.0, 0.0, 300.0], false),
-            &[(Touch, 1), (PowerShot, 1)],
+            &[(Touch, 1)],
         ),
         // --- Kuxir pinch.
         case(
@@ -439,6 +475,13 @@ pub fn cases() -> Vec<Case> {
             &[(Touch, 1), (Cushion, 1)],
         ),
         case(
+            "cushion_negative_car_tumbling",
+            Cushion,
+            false,
+            cushion_tumbling(),
+            &[(Touch, 1)],
+        ),
+        case(
             "cushion_negative_slow_ball",
             Cushion,
             false,
@@ -466,6 +509,34 @@ pub fn cases() -> Vec<Case> {
             ),
             &[(Touch, 1), (Redirect, 1)],
         ),
+        // Detector 6 : balle déviée vers son propre but, sans gain de vitesse, ou sans saut/dodge = contact fortuit.
+        case(
+            "redirect_negative_toward_own_goal",
+            Redirect,
+            false,
+            air_hit([0.0; 3], 0.0, false, [1800.0, 0.0, 0.0], [0.0, -1900.0, 300.0]),
+            &[(Touch, 1)],
+        ),
+        case(
+            "redirect_negative_no_gain",
+            Redirect,
+            false,
+            air_hit([0.0; 3], 0.0, false, [1800.0, 0.0, 0.0], [0.0, 1700.0, 0.0]),
+            &[(Touch, 1)],
+        ),
+        case(
+            "redirect_negative_no_jump",
+            Redirect,
+            false,
+            no_jump(air_hit(
+                [0.0; 3],
+                0.0,
+                false,
+                [0.0, -1800.0, 0.0],
+                [1800.0, 0.0, 300.0],
+            )),
+            &[(Touch, 1)],
+        ),
         case(
             "redirect_negative_30deg",
             Redirect,
@@ -484,8 +555,22 @@ pub fn cases() -> Vec<Case> {
             "air_roll_shot",
             AirRollShot,
             true,
-            air_hit([4.0, 0.0, 0.0], 0.0, false, [0.0; 3], [1800.0, 0.0, 300.0]),
+            air_hit([0.0; 3], 1.0, false, [0.0; 3], [1800.0, 0.0, 300.0]),
             &[(Touch, 1), (AirRollShot, 1)],
+        ),
+        case(
+            "air_roll_shot_negative_no_jump_fall",
+            AirRollShot,
+            false,
+            no_jump(air_hit([0.0; 3], 1.0, false, [0.0; 3], [1800.0, 0.0, 300.0])),
+            &[(Touch, 1)],
+        ),
+        case(
+            "air_roll_shot_negative_toward_own_goal",
+            AirRollShot,
+            false,
+            air_hit([0.0; 3], 1.0, false, [0.0; 3], [0.0, -1800.0, 300.0]),
+            &[(Touch, 1)],
         ),
         case(
             "air_roll_shot_negative_yaw_spin",
@@ -550,6 +635,20 @@ pub fn cases() -> Vec<Case> {
             true,
             half_volley_seq(4, [2000.0, 0.0, 400.0]),
             &[(Touch, 1), (HalfVolley, 1)],
+        ),
+        case(
+            "half_volley_negative_no_jump",
+            HalfVolley,
+            false,
+            half_volley_v6(4, [2000.0, 0.0, 400.0], 400.0, false),
+            &[(Touch, 1)],
+        ),
+        case(
+            "half_volley_negative_rolling_ball",
+            HalfVolley,
+            false,
+            half_volley_v6(4, [2000.0, 0.0, 400.0], 103.0, true),
+            &[(Touch, 1)],
         ),
         case(
             "half_volley_negative_late",

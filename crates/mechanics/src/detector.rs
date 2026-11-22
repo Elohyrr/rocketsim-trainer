@@ -128,6 +128,9 @@ pub struct Detector {
     ad_last_counted: bool,
     // Plafond, mur.
     ceil_last: Option<u64>,
+    /// Dernier saut, double saut ou dodge (action voulue), et toucher du plafond en attente de jugement.
+    last_jump_n: Option<u64>,
+    ceil_pending: Option<u64>,
     wall_last: Option<u64>,
     // Double touch.
     dt_first: Option<u64>,
@@ -302,6 +305,15 @@ impl Detector {
 
     /// Vitesse de la balle vers le but adverse (+ = vers le but).
     #[inline]
+    /// Vrai si `y` est dans son tiers défensif (au-delà de `WALL_SHOT_OWN_THIRD_Y` côté son but).
+    fn in_own_third(&self, y: f32) -> bool {
+        if self.attack_neg {
+            y > WALL_SHOT_OWN_THIRD_Y
+        } else {
+            y < -WALL_SHOT_OWN_THIRD_Y
+        }
+    }
+
     fn toward_goal(&self, vel: [f32; 3]) -> f32 {
         if self.attack_neg { -vel[1] } else { vel[1] }
     }
@@ -452,9 +464,11 @@ impl Detector {
         }
         if car.has_jumped && !p.has_jumped {
             ev |= Events::JUMP;
+            self.last_jump_n = Some(n);
         }
         if car.has_double_jumped && !p.has_double_jumped {
             ev |= Events::DOUBLE_JUMP;
+            self.last_jump_n = Some(n);
         }
         if car.supersonic && !p.supersonic {
             ev |= Events::SUPERSONIC;
@@ -528,6 +542,7 @@ impl Detector {
             || (car.is_flipping && !p.is_flipping && !car.has_flipped);
         if dodge {
             ev |= Events::DODGE;
+            self.last_jump_n = Some(n);
             let (mut f, mut l) = (car.flip_rel_torque[0], car.flip_rel_torque[1]);
             let mut m = (f * f + l * l).sqrt();
             if m < 1e-3 {
@@ -676,12 +691,28 @@ impl Detector {
         } else if on_terrain {
             self.ceil_last = None;
         }
-        if air_touch && car.has_flip_or_jump && within(self.ceil_last, n, CEILING_SHOT_WINDOW_TICKS)
+        // Detector 6 : le saut/dodge VOULU doit suivre le décollage du plafond (≤ 1 s avant le toucher), et le toucher
+        // envoie la balle vers le but adverse (> 1 000 uu/s, jugé dans les 6 ticks) : une chute libre n'est pas un tir.
+        if air_touch
+            && car.has_flip_or_jump
+            && within(self.ceil_last, n, CEILING_SHOT_WINDOW_TICKS)
+            && self.last_jump_n.is_some_and(|j| {
+                j + VOLUNTARY_JUMP_TICKS as u64 >= self.ceil_last.unwrap_or(0)
+                    && n - j <= CEILING_SHOT_JUMP_TICKS
+            })
         {
-            counts.inc(Mechanic::CeilingShot);
-            base.ceiling_shot = true;
-            self.note(counts, Mechanic::CeilingShot, norm2(ball.vel).sqrt());
-            self.ceil_last = None;
+            self.ceil_pending = Some(n);
+        }
+        if let Some(t) = self.ceil_pending {
+            if self.toward_goal(ball.vel) > CEILING_SHOT_MIN_GOAL_SPEED {
+                counts.inc(Mechanic::CeilingShot);
+                base.ceiling_shot = true;
+                self.note(counts, Mechanic::CeilingShot, norm2(ball.vel).sqrt());
+                self.ceil_last = None;
+                self.ceil_pending = None;
+            } else if n - t >= WALL_SHOT_JUDGE_TICKS {
+                self.ceil_pending = None;
+            }
         }
 
         // --- Wall shot : toucher sur le mur ou peu après l'avoir quitté (sans retour au sol).
@@ -695,7 +726,7 @@ impl Detector {
                 counts.inc(Mechanic::WallShot);
                 base.wall_shot = true;
                 self.note(counts, Mechanic::WallShot, norm2(ball.vel).sqrt());
-            } else {
+            } else if !self.in_own_third(ball.pos[1]) {
                 self.ws_pending = Some((n, self.toward_goal(p.ball_vel)));
             }
             self.wall_last = None;
@@ -723,7 +754,10 @@ impl Detector {
             self.dt_back = self.bounce.is_some_and(|(_, b)| b);
         }
         if air_touch {
-            if self.dt_bounced && within(self.dt_first, n, DOUBLE_TOUCH_WINDOW_TICKS) {
+            if self.dt_bounced
+                && within(self.dt_first, n, DOUBLE_TOUCH_WINDOW_TICKS)
+                && self.dt_first.is_some_and(|t| n - t >= DOUBLE_TOUCH_MIN_GAP_TICKS)
+            {
                 counts.inc(Mechanic::DoubleTouch);
                 base.double_touch = true;
                 base.double_touch_back = self.dt_back;
@@ -844,6 +878,7 @@ impl Detector {
                     && d.rolled
                     && dt <= HALF_FLIP_MAX_LAND_TICKS
                     && turned < HALF_FLIP_MAX_HEADING_COS
+                    && hspeed >= HALF_FLIP_KEEP * d.speed_before
                 {
                     counts.inc(Mechanic::HalfFlip);
                 }
@@ -869,6 +904,7 @@ impl Detector {
                 air_ticks: self.air_ticks,
                 dodge: self.last_dodge,
                 dodge_age: self.last_dodge.map(|d| n - d.tick),
+                jump_age: self.last_jump_n.map(|j| n - j),
                 wall_age: self.wall_seen.map(|t| n - t),
                 ceiling_age: self.ceil_seen.map(|t| n - t),
                 ball_bounce_back: self.bounce.is_some_and(|(_, b)| b),

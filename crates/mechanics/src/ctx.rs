@@ -34,6 +34,8 @@ pub struct Hit {
     /// Dernier dodge avant le toucher et son âge en ticks.
     pub dodge: Option<DodgeInfo>,
     pub dodge_age: Option<u64>,
+    /// Âge du dernier saut, double saut ou dodge (action voulue ; jamais effacé au sol).
+    pub jump_age: Option<u64>,
     /// Ticks depuis que la voiture roulait sur un mur / le plafond (None si pas depuis le dernier sol).
     pub wall_age: Option<u64>,
     pub ceiling_age: Option<u64>,

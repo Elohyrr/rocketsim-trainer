@@ -19,14 +19,14 @@ fn tous_les_cas_scriptes() {
                 seen.nonzero()
             ));
         }
-        assert_eq!(
-            got.get(case.mechanic) > 0,
-            case.positive,
-            "{} : la mécanique visée {:?} doit être {}",
-            case.name,
-            case.mechanic,
-            if case.positive { "reconnue" } else { "absente" }
-        );
+        if (got.get(case.mechanic) > 0) != case.positive {
+            failures.push(format!(
+                "{} : la mécanique visée {:?} doit être {}",
+                case.name,
+                case.mechanic,
+                if case.positive { "reconnue" } else { "absente" }
+            ));
+        }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
@@ -289,11 +289,12 @@ fn phase_de_kickoff_ne_garde_que_le_propre_au_kickoff() {
     let f = case_frames("power_shot");
     assert_eq!(script::replay(&f).get(Mechanic::PowerShot), 1);
     assert_eq!(replay_kickoff(&f).get(Mechanic::PowerShot), 0);
-    // Speed flip et car pinch survivent.
+    // Le speed flip survit.
     let f = case_frames("speed_flip");
     assert_eq!(replay_kickoff(&f).get(Mechanic::SpeedFlip), 1);
-    let f = case_frames("car_pinch_kickoff");
-    assert_eq!(replay_kickoff(&f).get(Mechanic::Pinch), 1);
+    // Le 50/50 de voitures n'est plus un pinch (detector 6).
+    let f = case_frames("pinch_negatif_50_50_voiture_adverse");
+    assert_eq!(replay_kickoff(&f).get(Mechanic::Pinch), 0);
 }
 
 #[test]

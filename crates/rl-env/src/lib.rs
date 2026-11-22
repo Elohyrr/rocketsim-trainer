@@ -7,6 +7,9 @@
 //!
 //! Les unités sont celles de RocketSim (unreal units, 120 Hz).
 
+/// Version des règles du détecteur écrite dans les clips (6 : mécaniques = actions voulues, audit des clips).
+pub const DETECTOR_VERSION: u32 = 6;
+
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
@@ -706,7 +709,7 @@ impl Env {
         let q = self.quality.take();
         if let (Some(mut c), Some(t)) = (self.clip_wait.take(), q) {
             let q = t.quality();
-            c.detector = if self.cfg.detector_v1 { 1 } else { 5 };
+            c.detector = if self.cfg.detector_v1 { 1 } else { DETECTOR_VERSION };
             c.detail = self.clip_detail.take();
             c.quality = Some(clip::ClipQuality {
                 ball_speed_to_goal: q.speed,

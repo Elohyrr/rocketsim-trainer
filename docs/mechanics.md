@@ -197,6 +197,37 @@ Faux positifs connus : un tir au sol très puissant (balle à l'arrêt près d'u
 sans vrai pincement ; le critère « voiture côté intérieur » les limite. Les seuils sont des valeurs de départ à ajuster sur
 de vraies parties.
 
+## Detector 6 : une mécanique est une action voulue (audit des clips)
+
+Audit de 145 clips (`docs/audit-clips.md`) : 77 % de faux positifs (chute d'un mur ou du plafond, vitesse de la voiture
+prise pour un geste, collisions au coup d'envoi). Règle : une mécanique est une action **VOULUE**, lisible dans les
+entrées du bot (saut, dodge, boost, roulis…) ; le passif (chute, vitesse héritée, contact fortuit) ne compte pas. Les
+mécas qui partent d'un mur restent valables si elles s'y appuient sur un saut. Version écrite dans les clips : `detector` = 6
+(`rl-env::DETECTOR_VERSION`). Seuils : fin de `thresholds.rs`. Ne touche ni récompenses ni apprentissage.
+
+- `power_shot` : gain ≥ 1 000 (au lieu de 500) ET (dodge ≤ 0,3 s avant OU balle > 3 000 à ≤ 20° du centre du but adverse).
+- `pinch` : ni coup d'envoi, ni voiture adverse à < 250 uu de la balle ; le car pinch (50/50) n'est plus un pinch (reste exclu de power_shot).
+- `redirect` : saut/dodge ≤ 0,5 s avant, gain de vitesse > 0, balle pas dirigée vers son but.
+- `squishy_save` : balle ≥ 600 uu/s vers son but (800 dans l'audit ; 600 car le clip validé 311 en a 733, le faux 3319 en a 540).
+- `aerial_save` : saut/dodge ≤ 0,5 s avant, ou z > 300 sans mur dans les 0,5 s avant (pas une chute).
+- `air_roll_shot` : saut pressé dans ce vol, roulis tenu ≥ 24 ticks (≈ 3 décisions) de même signe, balle > 1 500 qui ne va pas vers son but.
+- `backboard_read` : voiture en l'air, balle > 800 uu/s avant le toucher, mur du fond ADVERSE.
+- `bounce_dribble` : ≥ 4 touchers (3 rebonds), apogée de la balle > 200 uu entre deux touchers.
+- `ceiling_shot` : saut/dodge ≤ 1 s avant le toucher, après le décollage du plafond ; balle > 1 000 uu/s vers le but adverse.
+- `cushion` : balle collée (< 220 uu) ≥ 0,3 s après le toucher, voiture à plat (up.z > 0,5), pas de rebond de mur ≤ 6 ticks avant.
+- `recovery` : saut/dodge pressé dans le vol et entrée de roulis/tangage pendant la phase renversée (up.z < 0,2) ≥ 6 ticks.
+- `tornado_spin` : roulis tenu (|roll| ≥ 0,8) ≥ 32 ticks, rotation > 4 rad/s ≥ 0,5 s, pas de choc ni contact (cadre du but compris).
+- `wall_shot` : hors saut depuis le mur, pas dans son tiers défensif (|y| > 1 700 côté son but).
+- `half_flip` : vitesse horizontale à l'atterrissage ≥ 80 % de celle d'avant le dodge.
+- `double_touch` / `backboard_double` : deux touchers séparés ≥ 0,25 s.
+- `dribble_turn` : portage ≥ 1 s, voiture à plat (up.z > 0,9), 45° de virage.
+- `half_volley` : balle tombée de > 150 uu, rebond ≥ 300 uu/s, saut/dodge ≤ 0,3 s avant le toucher.
+- `fast_aerial` : pas depuis un mur, nez ≥ 30° au 2ᵉ saut, boost tenu ≥ 0,5 s après, gain d'altitude ≥ 400 uu (ou balle z > 400 touchée ≤ 2 s).
+- `save` : toucher à < 1 800 uu de la ligne ; `clear` : balle précédemment cadrée vers son but, sinon sortie du tiers défensif (y côté but < 1 700) 1 s après.
+
+Approximations : pas de « contrôle de la balle avant » pour `save` ; `half_flip` juge la vitesse à l'atterrissage (≤ 1,5 s) ;
+`wave_dash`, `stall`, dribble, air dribble inchangés.
+
 ## Conventions d'entrée (câblage)
 
 - `flip_rel_torque` est attendu comme **direction du dodge** : `[0]` avant (+) / arrière (−), `[1]` latéral

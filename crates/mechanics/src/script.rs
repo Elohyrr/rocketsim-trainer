@@ -519,7 +519,7 @@ pub fn flip_reset_negative_unused_sequence() -> Vec<Frame> {
     s.frames()
 }
 
-fn ceiling(touch_delay: usize, flip_available: bool) -> Vec<Frame> {
+fn ceiling(touch_delay: usize, flip_available: bool, jumped: bool) -> Vec<Frame> {
     let car = CarTick {
         pos: [0.0, 0.0, 2010.0],
         vel: [800.0, 0.0, 0.0],
@@ -537,13 +537,13 @@ fn ceiling(touch_delay: usize, flip_available: bool) -> Vec<Frame> {
         c.wheels_contact = 0;
         c.vel = [300.0, 0.0, -50.0];
         c.has_flip_or_jump = flip_available;
-        c.has_jumped = !flip_available;
+        c.has_jumped = jumped || !flip_available;
         c.has_flipped = !flip_available;
     });
     s.hold(touch_delay).once(|c, b| {
         hit(c);
         b.pos = add(c.pos, [120.0, 0.0, -40.0]);
-        b.vel = [1500.0, 0.0, -800.0];
+        b.vel = [0.0, 1500.0, -800.0];
     });
     s.hold(10);
     s.frames()
@@ -551,17 +551,22 @@ fn ceiling(touch_delay: usize, flip_available: bool) -> Vec<Frame> {
 
 /// Conduite au plafond, décrochage, toucher en l'air 0,5 s plus tard avec le flip disponible.
 pub fn ceiling_shot_sequence() -> Vec<Frame> {
-    ceiling(60, true)
+    ceiling(60, true, true)
+}
+
+/// Décrochage du plafond sans aucun saut (chute libre) puis contact fortuit : pas un ceiling shot.
+pub fn ceiling_shot_negative_fall_sequence() -> Vec<Frame> {
+    ceiling(60, true, false)
 }
 
 /// Même décrochage, mais toucher 4 s plus tard : simple toucher aérien.
 pub fn ceiling_shot_negative_late_sequence() -> Vec<Frame> {
-    ceiling(480, true)
+    ceiling(480, true, true)
 }
 
 /// Même décrochage, toucher à 0,5 s mais flip déjà utilisé : simple toucher aérien.
 pub fn ceiling_shot_negative_no_flip_sequence() -> Vec<Frame> {
-    ceiling(60, false)
+    ceiling(60, false, true)
 }
 
 fn on_wall_car() -> CarTick {
@@ -1149,14 +1154,21 @@ pub fn cases() -> Vec<Case> {
             CeilingShot,
             true,
             ceiling_shot_sequence(),
-            &[(Touch, 1), (CeilingShot, 1)],
+            &[(Touch, 1), (AerialTouch, 1), (CeilingShot, 1)],
+        ),
+        c(
+            "ceiling_shot_negative_fall",
+            CeilingShot,
+            false,
+            ceiling_shot_negative_fall_sequence(),
+            &[(Touch, 1)],
         ),
         c(
             "ceiling_shot_negative_late",
             CeilingShot,
             false,
             ceiling_shot_negative_late_sequence(),
-            &[(Touch, 1)],
+            &[(Touch, 1), (AerialTouch, 1)],
         ),
         c(
             "ceiling_shot_negative_no_flip",
