@@ -224,7 +224,10 @@ impl Group {
                 self.fa_boost |= car.boosting;
                 self.fa_pitch |= car.pitch_input > FAST_AERIAL_MIN_PITCH;
                 if cx.ev.has(Events::DOUBLE_JUMP) && !cx.dodge_now {
-                    if self.fa_boost && self.fa_pitch && !self.fa_done && !self.fa_wall
+                    if self.fa_boost
+                        && self.fa_pitch
+                        && !self.fa_done
+                        && !self.fa_wall
                         && car.forward[2] >= FAST_AERIAL_MIN_NOSE_Z
                     {
                         self.fa_second = Some(n);
@@ -249,7 +252,9 @@ impl Group {
                     self.fa_boost_run = 0;
                 }
                 if car.pos[2] - self.fa_z0 >= FAST_AERIAL_MIN_GAIN_Z
-                    || (cx.touch && cx.ball.pos[2] > FAST_AERIAL_BALL_Z && n - t <= FAST_AERIAL_TOUCH_TICKS)
+                    || (cx.touch
+                        && cx.ball.pos[2] > FAST_AERIAL_BALL_Z
+                        && n - t <= FAST_AERIAL_TOUCH_TICKS)
                 {
                     self.fa_gain_ok = true;
                 }
@@ -293,7 +298,9 @@ impl Group {
         // --- Tornado spin : rotation rapide autour de l'axe vertical de la voiture, maintenue. Detector 6 : le roulis
         // commandé (|roll| ≥ 0,8, même signe) est tenu ≥ 4 décisions, vol ≥ 0,5 s, sans choc (cadre du but compris).
         let roll = car.roll_input;
-        if roll.abs() >= TORNADO_MIN_ROLL && (self.ts_roll_run == 0 || roll * self.ts_roll_sign > 0.0) {
+        if roll.abs() >= TORNADO_MIN_ROLL
+            && (self.ts_roll_run == 0 || roll * self.ts_roll_sign > 0.0)
+        {
             self.ts_roll_sign = roll;
             self.ts_roll_run += 1;
         } else {
@@ -350,7 +357,8 @@ impl Group {
             self.rc_hit = false;
         } else {
             // Détecteur 6 : la reprise est VOULUE si le bot a donné du roulis ou du tangage en l'air.
-            if cx.ev.has(Events::JUMP) || cx.ev.has(Events::DOUBLE_JUMP) || cx.ev.has(Events::DODGE) {
+            if cx.ev.has(Events::JUMP) || cx.ev.has(Events::DOUBLE_JUMP) || cx.ev.has(Events::DODGE)
+            {
                 self.rc_jump = true;
             }
             if car.up[2] < RECOVERY_FLIPPED_UP_Z

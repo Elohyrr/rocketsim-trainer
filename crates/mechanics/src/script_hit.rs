@@ -514,7 +514,13 @@ pub fn cases() -> Vec<Case> {
             "redirect_negative_toward_own_goal",
             Redirect,
             false,
-            air_hit([0.0; 3], 0.0, false, [1800.0, 0.0, 0.0], [0.0, -1900.0, 300.0]),
+            air_hit(
+                [0.0; 3],
+                0.0,
+                false,
+                [1800.0, 0.0, 0.0],
+                [0.0, -1900.0, 300.0],
+            ),
             &[(Touch, 1)],
         ),
         case(
@@ -562,7 +568,13 @@ pub fn cases() -> Vec<Case> {
             "air_roll_shot_negative_no_jump_fall",
             AirRollShot,
             false,
-            no_jump(air_hit([0.0; 3], 1.0, false, [0.0; 3], [1800.0, 0.0, 300.0])),
+            no_jump(air_hit(
+                [0.0; 3],
+                1.0,
+                false,
+                [0.0; 3],
+                [1800.0, 0.0, 300.0],
+            )),
             &[(Touch, 1)],
         ),
         case(

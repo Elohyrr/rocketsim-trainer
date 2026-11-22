@@ -709,7 +709,11 @@ impl Env {
         let q = self.quality.take();
         if let (Some(mut c), Some(t)) = (self.clip_wait.take(), q) {
             let q = t.quality();
-            c.detector = if self.cfg.detector_v1 { 1 } else { DETECTOR_VERSION };
+            c.detector = if self.cfg.detector_v1 {
+                1
+            } else {
+                DETECTOR_VERSION
+            };
             c.detail = self.clip_detail.take();
             c.quality = Some(clip::ClipQuality {
                 ball_speed_to_goal: q.speed,

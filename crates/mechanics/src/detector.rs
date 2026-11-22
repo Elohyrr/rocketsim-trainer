@@ -756,7 +756,9 @@ impl Detector {
         if air_touch {
             if self.dt_bounced
                 && within(self.dt_first, n, DOUBLE_TOUCH_WINDOW_TICKS)
-                && self.dt_first.is_some_and(|t| n - t >= DOUBLE_TOUCH_MIN_GAP_TICKS)
+                && self
+                    .dt_first
+                    .is_some_and(|t| n - t >= DOUBLE_TOUCH_MIN_GAP_TICKS)
             {
                 counts.inc(Mechanic::DoubleTouch);
                 base.double_touch = true;

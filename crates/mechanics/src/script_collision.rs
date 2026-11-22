@@ -409,12 +409,7 @@ pub(crate) fn cases() -> Vec<Case> {
             SquishySave,
             true,
             squish_net(&NetStart::BACK_NET, 30),
-            &[
-                (Touch, 1),
-                (Save, 1),
-                (AerialSave, 1),
-                (SquishySave, 1),
-            ],
+            &[(Touch, 1), (Save, 1), (AerialSave, 1), (SquishySave, 1)],
         ),
         case(
             "squishy_save_plafond_du_but",

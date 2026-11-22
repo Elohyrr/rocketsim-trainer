@@ -299,9 +299,7 @@ impl Group {
             // Aérien voulu : saut/dodge récent, ou voiture haute qui ne vient pas d'un mur (pas une chute).
             let voluntary = h.jump_age.is_some_and(|a| a <= INTENT_JUMP_TICKS);
             let from_wall = h.wall_age.is_some_and(|a| a <= INTENT_JUMP_TICKS);
-            if !h.car.on_ground
-                && (voluntary || (h.car.pos[2] > AERIAL_SAVE_MIN_Z && !from_wall))
-            {
+            if !h.car.on_ground && (voluntary || (h.car.pos[2] > AERIAL_SAVE_MIN_Z && !from_wall)) {
                 out.emit(Mechanic::AerialSave, after, Support::None);
             }
         }

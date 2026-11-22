@@ -257,7 +257,14 @@ fn fast_aerial(boost: bool, gap: usize, pitch: f32) -> Vec<Frame> {
 }
 
 /// `nose_z` : composante verticale du nez au 2ᵉ saut ; `vz` : vitesse verticale après ; `wall` : départ d'un mur.
-fn fast_aerial_v6(boost: bool, gap: usize, pitch: f32, nose_z: f32, vz: f32, wall: bool) -> Vec<Frame> {
+fn fast_aerial_v6(
+    boost: bool,
+    gap: usize,
+    pitch: f32,
+    nose_z: f32,
+    vz: f32,
+    wall: bool,
+) -> Vec<Frame> {
     let mut car = if wall { wall_car() } else { car_on_ground() };
     car.boosting = boost;
     let mut s = Script::new(car, ball_far());
