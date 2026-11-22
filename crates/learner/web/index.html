@@ -350,7 +350,7 @@ async function select(id) {
 addEventListener('hashchange', () => { const id = location.hash.slice(1); if (id && id !== cur) select(id); });
 
 function setTraj(t) {
-  traj = t; $('msg').style.display = 'none';
+  traj = t; camReset(camState); $('msg').style.display = 'none';
   for (const c of cars) scene.remove(c);
   cars = t.cars.map((c, i) => makeCar(c.blue, i === t.agent));
   buildPads(t);
@@ -534,14 +534,54 @@ $('seek').addEventListener('input', e => { if (!traj) return; seeking = true; ti
 $('seek').addEventListener('change', () => { seeking = false; });
 for (const b of document.querySelectorAll('.cam')) b.onclick = () => {
   camMode = b.dataset.cam; document.querySelectorAll('.cam').forEach(x => x.classList.toggle('on', x === b));
-  orbit.enabled = camMode !== 'agent';
+  orbit.enabled = camMode !== 'agent'; camReset(camState);
 };
 $('share').onclick = async () => {
   const url = location.href;
   try { if (navigator.share) await navigator.share({ url }); else { await navigator.clipboard.writeText(url); $('share').textContent = '✓'; setTimeout(() => $('share').textContent = '🔗', 1200); } } catch (e) { prompt('Lien', url); }
 };
 
-const _bp = new THREE.Vector3(), _cp = new THREE.Vector3(), _want = new THREE.Vector3(), _look = new THREE.Vector3(), _cf = new THREE.Vector3();
+/* ---------- Caméra voiture (car cam RL, ball cam désactivée) ---------- */
+// CAMCORE-BEGIN (maths pures, sans three.js : extrait et testé par crates/learner/web/camera-test.mjs)
+const CAM = { dist: 270, height: 110, pitch: -4 * Math.PI / 180, hfov: 110, tauYaw: 0.12, tauPos: 0.04, vmin: 150, maxYawRate: 6 };
+function camReset(st) { st.init = false; }
+// Cap = direction de déplacement à plat (repère three.js : y haut), repli sur l'avant à plat de la voiture,
+// sinon cap précédent. Jamais l'orientation complète : ni roulis, ni tangage, ni dos.
+function camHeading(st, vel, fwd) {
+  const sp = Math.hypot(vel[0], vel[2]), w = Math.min(1, sp / (2 * CAM.vmin)), nf = Math.hypot(fwd[0], fwd[2]) || 1;
+  const hx = vel[0] / (sp || 1) * w + fwd[0] / nf * (1 - w), hz = vel[2] / (sp || 1) * w + fwd[2] / nf * (1 - w);
+  return Math.hypot(hx, hz) > 0.05 ? Math.atan2(hz, hx) : null;
+}
+// st : état ; pos/vel/fwd : [x,y,z] ; dt : durée de lecture écoulée (s) ; retourne { pos, look } (look = direction unitaire)
+function camStep(st, pos, vel, fwd, dt) {
+  const yaw = camHeading(st, vel, fwd);
+  if (!st.init || dt < 0 || dt > 0.25) {
+    st.yaw = yaw === null ? (st.yaw || 0) : yaw; st.cx = pos[0]; st.cy = pos[1]; st.cz = pos[2]; st.init = true;
+  } else if (dt > 0) {
+    if (yaw !== null) {
+      let d = yaw - st.yaw; d -= 2 * Math.PI * Math.round(d / (2 * Math.PI));
+      const step = d * (1 - Math.exp(-dt / CAM.tauYaw)), lim = CAM.maxYawRate * dt; // rad/s borné : pas de saut brutal
+      st.yaw += Math.max(-lim, Math.min(lim, step));
+    }
+    const a = 1 - Math.exp(-dt / CAM.tauPos);
+    st.cx += (pos[0] - st.cx) * a; st.cy += (pos[1] - st.cy) * a; st.cz += (pos[2] - st.cz) * a;
+  }
+  const hx = Math.cos(st.yaw), hz = Math.sin(st.yaw);
+  const cp = Math.cos(CAM.pitch), sp = Math.sin(CAM.pitch);
+  return {
+    pos: [st.cx - hx * CAM.dist, st.cy + CAM.height, st.cz - hz * CAM.dist],
+    look: [hx * cp, sp, hz * cp], yaw: st.yaw,
+  };
+}
+// FOV horizontal RL -> vertical three.js, borné pour les écrans étroits
+function camVFov(aspect) {
+  const v = 2 * Math.atan(Math.tan(CAM.hfov * Math.PI / 360) / aspect) * 180 / Math.PI;
+  return Math.max(50, Math.min(100, v));
+}
+// CAMCORE-END
+const camState = {}; let camPrevT = null;
+
+const _bp = new THREE.Vector3(), _cp = new THREE.Vector3(), _cv = new THREE.Vector3(), _cf = new THREE.Vector3();
 function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min((now - last) / 1000, 0.1); last = now;
@@ -569,6 +609,8 @@ function frame(now) {
       if (A) A.pos[n].copy(p);
       if (n === traj.agent) {
         _cp.copy(p); _cf.setFromMatrixColumn(cars[n].matrix, 0);
+        const j = Math.min(i + 1, traj.frames - 1), q = (o) => (c.pose[j * 9 + o] - c.pose[i * 9 + o]) / traj.dt;
+        _cv.set(q(0), q(2), -q(1)); // vitesse (repère three.js)
       }
     });
     if (A) updateExtras(traj, i, i + 1, k, x, _bp);
@@ -578,11 +620,15 @@ function frame(now) {
     $('time').textContent = `${time.toFixed(1)} / ${end.toFixed(1)} s`;
     if (camMode === 'ball') { orbit.target.lerp(_bp, 0.2); }
     else if (camMode === 'agent') {
-      _want.copy(_cp).addScaledVector(_cf, -420).add(_look.set(0, 170, 0));
-      camera.position.lerp(_want, 0.15);
-      camera.lookAt(_look.copy(_cp).lerp(_bp, 0.35).add(new THREE.Vector3(0, 60, 0)));
+      const r = camStep(camState, [_cp.x, _cp.y, _cp.z], [_cv.x, _cv.y, _cv.z], [_cf.x, _cf.y, _cf.z],
+        camPrevT === null ? 0 : time - camPrevT);
+      camera.position.set(r.pos[0], r.pos[1], r.pos[2]);
+      camera.lookAt(r.pos[0] + r.look[0], r.pos[1] + r.look[1], r.pos[2] + r.look[2]);
+      const vf = camVFov(camera.aspect); if (Math.abs(camera.fov - vf) > 0.01) { camera.fov = vf; camera.updateProjectionMatrix(); }
     }
+    camPrevT = time;
   }
+  if (camMode !== 'agent' && camera.fov !== 55) { camera.fov = 55; camera.updateProjectionMatrix(); }
   if (camMode !== 'agent') orbit.update();
   renderer.render(scene, camera);
 }
