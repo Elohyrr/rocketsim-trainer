@@ -52,17 +52,55 @@ pub fn ent_target(n_actions: usize) -> f64 {
 
 /// Nouvelle valeur du coefficient d'entropie après une itération d'entropie mesurée `h`, plafond `max`.
 pub fn next_ent_coef(coef: f64, h: f64, target: f64, max: f64) -> f64 {
-    let gain = if h > target {
-        ENT_GAIN_DOWN
-    } else {
-        ENT_GAIN_UP
-    };
-    (coef * (gain * (target - h)).exp()).clamp(ENT_MIN, max.max(ENT_MIN))
+    next_ent_coef_with(&ExploreConfig::default(), coef, h, target, max)
 }
 
-/// lr après `steps` pas cumulés.
+/// Comme [`next_ent_coef`] avec les gains et le plancher de `cfg`.
+pub fn next_ent_coef_with(cfg: &ExploreConfig, coef: f64, h: f64, target: f64, max: f64) -> f64 {
+    let gain = if h > target {
+        cfg.ent_gain_down
+    } else {
+        cfg.ent_gain_up
+    };
+    (coef * (gain * (target - h)).exp()).clamp(cfg.ent_min, max.max(cfg.ent_min))
+}
+
+/// lr après `steps` pas cumulés (réglages par défaut).
 pub fn lr_at(steps: u64) -> f64 {
-    (LR0 / (1.0 + steps as f64 / LR_SCALE)).max(LR_MIN)
+    lr_at_with(&ExploreConfig::default(), steps)
+}
+
+/// lr après `steps` pas cumulés avec `lr0` et `lr_min` de `cfg`.
+pub fn lr_at_with(cfg: &ExploreConfig, steps: u64) -> f64 {
+    (cfg.lr0 / (1.0 + steps as f64 / LR_SCALE)).max(cfg.lr_min)
+}
+
+/// Réglages de l'exploration et de l'optimisation PPO (flags `--lr0`, `--lr-min`, `--kl-max`, `--ent-min`,
+/// `--ent-gain-up`, `--ent-gain-down`, `--ent-ema` du learner) ; les défauts reprennent les constantes ci-dessus.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExploreConfig {
+    pub lr0: f64,
+    pub lr_min: f64,
+    pub kl_max: f64,
+    pub ent_min: f64,
+    pub ent_gain_up: f64,
+    pub ent_gain_down: f64,
+    /// 0 = le régulateur reçoit l'entropie brute ; N > 0 = moyenne exponentielle sur N itérations.
+    pub ent_ema_iters: u32,
+}
+
+impl Default for ExploreConfig {
+    fn default() -> Self {
+        Self {
+            lr0: LR0,
+            lr_min: LR_MIN,
+            kl_max: KL_MAX,
+            ent_min: ENT_MIN,
+            ent_gain_up: ENT_GAIN_UP,
+            ent_gain_down: ENT_GAIN_DOWN,
+            ent_ema_iters: 0,
+        }
+    }
 }
 
 /// État persistant du régulateur.
@@ -74,6 +112,10 @@ pub struct Explore {
     pub scale: f64,
     /// Itérations restantes d'adaptation après un changement de rythme (lr plafonné) ; 0 = hors adaptation.
     pub adapt_iters: u64,
+    /// Moyenne exponentielle de l'entropie (`None` tant qu'aucune itération ; inutilisée si `ent_ema_iters` = 0).
+    pub h_ema: Option<f64>,
+    /// Réglages (non persistés : donnés par les flags à chaque lancement).
+    pub cfg: ExploreConfig,
 }
 
 impl Default for Explore {
@@ -83,13 +125,22 @@ impl Default for Explore {
             steps: 0,
             scale: 1.0,
             adapt_iters: 0,
+            h_ema: None,
+            cfg: ExploreConfig::default(),
         }
     }
 }
 
 impl Explore {
+    pub fn with_config(cfg: ExploreConfig) -> Self {
+        Self {
+            cfg,
+            ..Self::default()
+        }
+    }
+
     pub fn lr(&self) -> f64 {
-        let lr = lr_at(self.steps);
+        let lr = lr_at_with(&self.cfg, self.steps);
         if self.adapt_iters > 0 {
             lr.min(ADAPT_LR)
         } else {
@@ -101,8 +152,9 @@ impl Explore {
     /// change : une action tenue 2 fois moins longtemps), garde-fou à pleine échelle, lr plafonné `ADAPT_ITERS`
     /// itérations. `steps` (en pas de 1/15 s, voir [`Trainer::iteration`](crate::ppo::Trainer)) reste valable.
     pub fn begin_adaptation(&mut self) {
-        self.ent_coef = ENT_INIT.clamp(ENT_MIN, ENT_MAX);
+        self.ent_coef = ENT_INIT.clamp(self.cfg.ent_min, ENT_MAX);
         self.scale = 1.0;
+        self.h_ema = None;
         self.adapt_iters = ADAPT_ITERS;
     }
 
@@ -121,15 +173,40 @@ impl Explore {
         self.steps += steps;
         self.adapt_iters = self.adapt_iters.saturating_sub(1);
         if h.is_finite() {
-            self.ent_coef =
-                next_ent_coef(self.ent_coef, h, self.target(n_actions), self.coef_max());
+            let h = self.smooth(h);
+            self.ent_coef = next_ent_coef_with(
+                &self.cfg,
+                self.ent_coef,
+                h,
+                self.target(n_actions),
+                self.coef_max(),
+            );
         }
+    }
+
+    /// Entropie vue par le régulateur après l'itération de mesure brute `h` (met à jour la moyenne exponentielle).
+    fn smooth(&mut self, h: f64) -> f64 {
+        if self.cfg.ent_ema_iters == 0 {
+            return h;
+        }
+        let a = 1.0 / f64::from(self.cfg.ent_ema_iters);
+        let m = match self.h_ema.filter(|m| m.is_finite()) {
+            Some(prev) => prev + a * (h - prev),
+            None => h,
+        };
+        self.h_ema = Some(m);
+        m
+    }
+
+    /// Entropie lissée courante, `None` si le lissage est coupé ou sans mesure.
+    pub fn entropy_smoothed(&self) -> Option<f64> {
+        (self.cfg.ent_ema_iters > 0).then_some(self.h_ema).flatten()
     }
 
     /// Garde-fou déclenché : cible, plafond et coefficient divisés par 2 (`scale` ≥ `SCALE_MIN`).
     pub fn back_off(&mut self) {
         self.scale = (self.scale * 0.5).max(SCALE_MIN);
-        self.ent_coef = (self.ent_coef * 0.5).clamp(ENT_MIN, self.coef_max());
+        self.ent_coef = (self.ent_coef * 0.5).clamp(self.cfg.ent_min, self.coef_max());
     }
 
     /// Longue période sans alerte : `scale` remonte d'un cran (× 2, ≤ 1).
@@ -138,8 +215,12 @@ impl Explore {
     }
 
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
+        let ema = self
+            .h_ema
+            .filter(|m| m.is_finite())
+            .map_or(String::new(), |m| format!(",\"ent_ema\":{m}"));
         let s = format!(
-            "{{\"ent_coef\":{},\"steps\":{},\"scale\":{},\"adapt_iters\":{}}}\n",
+            "{{\"ent_coef\":{},\"steps\":{},\"scale\":{},\"adapt_iters\":{}{ema}}}\n",
             self.ent_coef, self.steps, self.scale, self.adapt_iters
         );
         std::fs::write(dir.join("explore.json"), s)
@@ -148,11 +229,17 @@ impl Explore {
     /// Lit `<dir>/explore.json` ; valeurs initiales si absent ou illisible. `ent_coef` est ramené dans les bornes
     /// courantes (fichier écrit par une version au plafond plus haut).
     pub fn load(dir: &Path) -> Self {
+        Self::load_with(dir, ExploreConfig::default())
+    }
+
+    /// Comme [`Explore::load`] avec les réglages `cfg` (le plancher `ent_min` configuré borne `ent_coef`). Champs
+    /// absents (fichier d'une version antérieure, dont `ent_ema`) = valeurs par défaut.
+    pub fn load_with(dir: &Path, cfg: ExploreConfig) -> Self {
         let parsed = std::fs::read_to_string(dir.join("explore.json"))
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
         let Some(v) = parsed else {
-            return Self::default();
+            return Self::with_config(cfg);
         };
         let scale = v["scale"]
             .as_f64()
@@ -163,12 +250,14 @@ impl Explore {
             steps: v["steps"].as_u64().unwrap_or(0),
             scale,
             adapt_iters: v["adapt_iters"].as_u64().unwrap_or(0),
+            h_ema: v["ent_ema"].as_f64().filter(|m| m.is_finite()),
+            cfg,
         };
         e.ent_coef = v["ent_coef"]
             .as_f64()
             .filter(|c| c.is_finite())
             .unwrap_or(ENT_INIT)
-            .clamp(ENT_MIN, e.coef_max());
+            .clamp(cfg.ent_min, e.coef_max().max(cfg.ent_min));
         e
     }
 }
@@ -341,6 +430,7 @@ mod tests {
             steps: 123_456_789,
             scale: 0.5,
             adapt_iters: 17,
+            ..Explore::default()
         };
         e.save(&dir).unwrap();
         assert_eq!(Explore::load(&dir), e);
@@ -363,6 +453,75 @@ mod tests {
         assert_eq!(e.steps, 199_659_520);
         assert!((e.scale - 1.0).abs() < 1e-12);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ent_ema_smooths_the_entropy_seen_by_the_regulator() {
+        let cfg = ExploreConfig {
+            ent_ema_iters: 10,
+            ..ExploreConfig::default()
+        };
+        let mut e = Explore::with_config(cfg);
+        assert_eq!(e.entropy_smoothed(), None);
+        e.update(1, 1.0, 78);
+        assert_eq!(e.entropy_smoothed(), Some(1.0));
+        // Un pic isolé d'entropie est amorti à 1/10.
+        e.update(1, 2.0, 78);
+        assert!((e.entropy_smoothed().unwrap() - 1.1).abs() < 1e-12);
+        // Sans lissage : H brut, aucune moyenne conservée.
+        let mut raw = Explore::default();
+        raw.update(1, 1.0, 78);
+        raw.update(1, 2.0, 78);
+        assert_eq!(raw.entropy_smoothed(), None);
+        assert_eq!(raw.h_ema, None);
+        // Le coefficient réagit moins à un pic avec le lissage qu'en brut.
+        let (mut a, mut b) = (Explore::with_config(cfg), Explore::default());
+        for h in [0.5, 0.5, 3.0] {
+            a.update(1, h, 78);
+            b.update(1, h, 78);
+        }
+        assert!(a.ent_coef > b.ent_coef, "{} {}", a.ent_coef, b.ent_coef);
+        // La moyenne est persistée et relue.
+        let dir = tmp("ema");
+        a.save(&dir).unwrap();
+        assert_eq!(Explore::load_with(&dir, cfg).h_ema, a.h_ema);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn old_explore_json_loads_with_defaults_and_configured_floor() {
+        let dir = tmp("old");
+        std::fs::write(
+            dir.join("explore.json"),
+            "{\"ent_coef\":0.0012,\"steps\":5,\"scale\":1.0,\"adapt_iters\":0}\n",
+        )
+        .unwrap();
+        let e = Explore::load(&dir);
+        assert!((e.ent_coef - 0.0012).abs() < 1e-12);
+        assert_eq!((e.h_ema, e.cfg), (None, ExploreConfig::default()));
+        let cfg = ExploreConfig {
+            ent_min: 0.004,
+            ..ExploreConfig::default()
+        };
+        let e = Explore::load_with(&dir, cfg);
+        assert!((e.ent_coef - 0.004).abs() < 1e-12, "{}", e.ent_coef);
+        assert_eq!(e.steps, 5);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn configured_lr_and_gains_apply() {
+        let cfg = ExploreConfig {
+            lr0: 1e-3,
+            lr_min: 2e-4,
+            ent_gain_up: 0.3,
+            ..ExploreConfig::default()
+        };
+        assert!((lr_at_with(&cfg, 0) - 1e-3).abs() < 1e-15);
+        assert!((lr_at_with(&cfg, u64::MAX / 2) - 2e-4).abs() < 1e-15);
+        assert!(
+            next_ent_coef_with(&cfg, 0.01, 0.0, T, ENT_MAX) > next_ent_coef(0.01, 0.0, T, ENT_MAX)
+        );
     }
 
     #[test]

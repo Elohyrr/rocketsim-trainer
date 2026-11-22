@@ -27,6 +27,7 @@ fn adaptation_apres_changement_de_rythme() {
         steps: 2_000_000_000,
         scale: 0.5,
         adapt_iters: 0,
+        ..Explore::default()
     };
     let lr_avant = e.lr();
     assert!(

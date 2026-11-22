@@ -18,7 +18,26 @@ pub const STEP: f32 = 0.05;
 pub const START_LEVEL: f32 = 0.0;
 const FILE: &str = "drill_levels.json";
 
+/// Seuils du curriculum (`DRILL_UP_RATE`, `DRILL_DOWN_RATE`, `DRILL_MIN_EPISODES`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrillThresholds {
+    pub up_rate: f64,
+    pub down_rate: f64,
+    pub min_episodes: u64,
+}
+
+impl Default for DrillThresholds {
+    fn default() -> Self {
+        Self {
+            up_rate: UP_RATE,
+            down_rate: DOWN_RATE,
+            min_episodes: MIN_EPISODES,
+        }
+    }
+}
+
 pub struct DrillCurriculum {
+    pub thresholds: DrillThresholds,
     levels: Arc<DrillLevels>,
     episodes: [u64; DRILL_COUNT],
     success: [u64; DRILL_COUNT],
@@ -40,6 +59,7 @@ impl DrillCurriculum {
             levels.set(d, v);
         }
         let c = Self {
+            thresholds: DrillThresholds::default(),
             levels,
             episodes: [0; DRILL_COUNT],
             success: [0; DRILL_COUNT],
@@ -47,6 +67,14 @@ impl DrillCurriculum {
         };
         c.save();
         c
+    }
+
+    /// Comme [`DrillCurriculum::load`] avec des seuils configurés.
+    pub fn load_with(dir: &Path, levels: Arc<DrillLevels>, thresholds: DrillThresholds) -> Self {
+        Self {
+            thresholds,
+            ..Self::load(dir, levels)
+        }
     }
 
     pub fn level(&self, d: Drill) -> f32 {
@@ -71,14 +99,14 @@ impl DrillCurriculum {
             let i = d.index();
             self.episodes[i] += episodes[i];
             self.success[i] += success[i];
-            if self.episodes[i] < MIN_EPISODES {
+            if self.episodes[i] < self.thresholds.min_episodes {
                 continue;
             }
             let rate = self.success[i] as f64 / self.episodes[i] as f64;
             let l = self.levels.get(d);
-            let next = if rate > UP_RATE {
+            let next = if rate > self.thresholds.up_rate {
                 (l + STEP).min(1.0)
-            } else if rate < DOWN_RATE {
+            } else if rate < self.thresholds.down_rate {
                 (l - STEP).max(0.0)
             } else {
                 l
@@ -140,5 +168,30 @@ mod tests {
         assert_eq!(c2.level(Drill::Keeper), 0.0);
         // Un drill hors curriculum reste au niveau complet.
         assert_eq!(c2.level(Drill::ShotRoll), 1.0);
+    }
+
+    #[test]
+    fn seuils_configurables() {
+        let dir = tempfile::tempdir().unwrap();
+        let th = DrillThresholds {
+            up_rate: 0.3,
+            down_rate: 0.1,
+            min_episodes: 200,
+        };
+        let mut c = DrillCurriculum::load_with(dir.path(), Arc::new(DrillLevels::default()), th);
+        // 150 < 200 épisodes : pas de jugement, même à 100 %.
+        let (e, s) = counts(Drill::Keeper, 150, 150);
+        assert!(!c.update(&e, &s));
+        // 300 cumulés à 60 % : monte (> 0,3 ; aurait été stable avec les défauts 0,5).
+        let (e, s) = counts(Drill::Keeper, 150, 30);
+        assert!(c.update(&e, &s));
+        assert!((c.level(Drill::Keeper) - STEP).abs() < 1e-6);
+        // 12 % : stable (≥ 0,1 ; aurait descendu avec le défaut 0,15).
+        let (e, s) = counts(Drill::Keeper, 200, 24);
+        assert!(!c.update(&e, &s));
+        // 5 % : redescend.
+        let (e, s) = counts(Drill::Keeper, 200, 10);
+        assert!(c.update(&e, &s));
+        assert_eq!(c.level(Drill::Keeper), 0.0);
     }
 }
