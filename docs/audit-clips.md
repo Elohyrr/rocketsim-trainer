@@ -105,12 +105,12 @@ Format : id — raison. Les propositions sont **à implémenter dans une autre P
   distance voiture-balle < 220 pendant ≥ 0,3 s après, voiture à plat (up.z > 0,5), aucun rebond mur dans les 6 ticks.
 - **power_shot** — `1795281183-power_shot-28254`, `…-28196`, `…-28241` : voiture supersonique sans dodge, balle non cadrée.
   Règle : gain dû à la voiture (≥ 1 000) avec dodge ≤ 0,3 s avant ou balle > 3 000 dirigée à ≤ 20° du but adverse.
-- **recovery** — `1795281180-recovery-28252`, `…-28263`(`1795281263-recovery-28287`), `1795281201-recovery-28260` : chute
+- **recovery** — `1795281180-recovery-28252`, `1795281263-recovery-28287`, `1795281201-recovery-28260` : chute
   passive du mur, sans saut, vitesse perdue. Règle : entrée d'air roll/wave dash visible (roulis ou tangage ≠ 0) pendant la phase
   renversée et vitesse au sol ≥ 60 % maintenue, roues d'abord au sol (pas de toit).
 - **tornado_spin** — `1795281270-tornado_spin-28288`, `…-28257`, `…-28239` : chute du plafond/mur ou choc. Règle : entrée de
   roulis tenue (|roll| ≥ 0,8, même signe ≥ 4 décisions), pas de collision (cadre du but) dans la phase, ≥ 0,5 s.
-- **wall_shot** — `1795281096-wall_shot-28216`, `…-28245`(`1795281245-wall_shot-28281`), `1795281053-wall_shot-28197` : toucher
+- **wall_shot** — `1795281096-wall_shot-28216`, `1795281245-wall_shot-28281`, `1795281053-wall_shot-28197` : toucher
   en roulant sur un mur de son camp. Règle : exiger le saut depuis le mur avant le toucher (drapeau saut) **ou** balle
   partie vers le but adverse à > 1 000 uu/s ; exclure son tiers défensif sans saut.
 - **half_flip** — `1795206830-half_flip-1435`, `1795199910-half_flip-946` : vitesse effondrée (1282 → 380 / 77), pas de relance.
@@ -120,7 +120,7 @@ Format : id — raison. Les propositions sont **à implémenter dans une autre P
   entre les deux (vitesse inversée > 500), voiture en l'air entre les deux.
 - **dribble_turn** — `1795266095-dribble_turn-21953`, `…-27132`, `…-22446` : balle au sol ou posée < 0,8 s. Règle : portage
   ≥ 1 s (balle côté toit, dist < 200), voiture à plat (up.z > 0,9), variation de cap ≥ 45° pendant ce portage.
-- **clear** — `1795281115-clear-28224`, `…-28198`(`1795281198-clear-28258`), `1795281218-clear-28271` : poussée au sol sans menace. Règle :
+- **clear** — `1795281115-clear-28224`, `1795281198-clear-28258`, `1795281218-clear-28271` : poussée au sol sans menace. Règle :
   balle partie du tiers défensif vers une zone hors du tiers (y > −1 700) ou balle précédemment cadrée vers son but.
 - **save** (43 %) — `1795281138-save-28235`, `1795280999-save-28177`, `1795281210-save-28265` : balle loin du but (> 2 500 uu)
   ou dribble de son côté. Règle : toucher à < 1 800 uu de la ligne, balle cadrée stable ≥ 500 uu/s avant, voiture sans
