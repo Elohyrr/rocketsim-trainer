@@ -126,6 +126,59 @@ Format : id — raison. Les propositions sont **à implémenter dans une autre P
   ou dribble de son côté. Règle : toucher à < 1 800 uu de la ligne, balle cadrée stable ≥ 500 uu/s avant, voiture sans
   contrôle de la balle avant.
 
+## Après correction : detector 6 (rejeu avant/après)
+
+Règles et seuils : `docs/mechanics.md` (« Detector 6 »). Rejeu : `crates/sim-core/examples/audit_detector.rs`
+(`ROCKETSIM_MESHES_DIR=… cargo run --release -p sim-core --example audit_detector -- <dossier de clips>`), « avant » = code de
+`main` avant cette PR (detector 5), « après » = detector 6, mêmes clips, détecteur démarré au début du clip.
+
+**Limite** : 110 des 145 clips audités (ids ci-dessus) ont quitté l'anneau de prod (404). Rejeu sur les 195 clips
+disponibles à l'API le 22/11/2026 (dont 32 audités et jugés), les autres n'étant pas jugés : pour eux, « reconnu » n'est
+qu'un proxy (la classe est à 100 % faux sauf dribble, hood_dribble, demo).
+
+Clips jugés encore disponibles (32) : **tous les faux** (22 clips : fast_aerial ×7, ceiling_shot ×5, cushion ×4, half_flip ×2,
+double_touch, backboard_double, squishy_save ×7 déjà non reconnus au rejeu) ne sont **plus reconnus**
+(`1795220335-fast_aerial-3230`, `1795222208-fast_aerial-3994`, `1795222494-fast_aerial-4118`, `1795233483-fast_aerial-8511`,
+`1795249358-ceiling_shot-15024`, `1795267084-cushion-22361`, `1795251455-cushion-15889`, `1795206830-half_flip-1435`,
+`1795199910-half_flip-946`, `1795137443-double_touch-6998`, `1795144862-backboard_double-9953`, `1795109128-squishy_save-3319`…) ;
+le vrai `wall_dribble` (`1795231002-wall_dribble-7517`) reste reconnu. Le vrai stall `1795216791-stall-1903` (ancien clip detector 4)
+n'était déjà plus reconnu avant (resserrement PR #39) : inchangé.
+
+| Mécanique | clips rejoués | reconnus avant (detector 5) | reconnus après (detector 6) |
+|---|---|---|---|
+| aerial_save | 9 | 9 | 2 |
+| air_roll_shot | 9 | 9 | 0 |
+| backboard_double | 1 | 1 | 0 |
+| backboard_read | 8 | 8 | 0 |
+| bounce_dribble | 8 | 8 | 0 |
+| ceiling_shot | 9 | 9 | 0 |
+| clear | 9 | 9 | 4 |
+| cushion | 9 | 9 | 2 |
+| demo | 9 | 9 | 9 |
+| double_touch | 1 | 1 | 0 |
+| dribble | 9 | 8 | 8 |
+| dribble_turn | 9 | 6 | 0 |
+| fast_aerial | 9 | 9 | 0 |
+| half_flip | 2 | 2 | 0 |
+| half_volley | 9 | 8 | 0 |
+| hood_dribble | 9 | 9 | 9 |
+| pinch | 8 | 8 | 0 |
+| power_shot | 8 | 8 | 1 |
+| recovery | 9 | 9 | 0 |
+| redirect | 9 | 8 | 0 |
+| save | 9 | 9 | 7 |
+| squishy_save | 9 | 0 | 0 |
+| stall | 3 | 0 | 0 |
+| tornado_spin | 9 | 9 | 0 |
+| wall_dribble | 2 | 2 | 2 |
+| wall_shot | 9 | 8 | 1 |
+| wave_dash | 1 | 1 | 1 |
+| **total** | 195 | 176 | 46 |
+
+Reste reconnu après : demo 9/9, hood_dribble 9/9, dribble 8/9, wall_dribble 2/2 (fiables), save 7/9, clear 4/9, aerial_save 2/9,
+cushion 2/9, power_shot 1/8, wall_shot 1/9 (clips non jugés : possiblement vrais). Les clips detector 6 portent `detector: 6` ;
+la page web a un filtre « detector 6 seulement » et la puce `d6`.
+
 ## Rejouer l'audit
 
 Voir `tools/audit-clips/README.md` : `convert.py --since AAAA-MM-JJ` (plafond `--max`, `--per-mechanic`), consigne du juge
