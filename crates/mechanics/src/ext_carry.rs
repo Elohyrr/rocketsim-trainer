@@ -125,6 +125,8 @@ pub(crate) struct Group {
     bd_touches: u32,
     bd_bounced: bool,
     bd_counted: bool,
+    /// Apogée de la balle depuis le dernier toucher.
+    bd_apex: f32,
     // Flicks : saut (tick, balle portée), état au dernier dodge, rotation au dernier toucher qui suit.
     jump: Option<(u64, bool)>,
     fl_delayed: bool,
@@ -191,6 +193,8 @@ impl Group {
             if !self.turn_counted
                 && self.turn_sum.abs() >= DRIBBLE_TURN_MIN_ANGLE
                 && cx.hspeed > DRIBBLE_TURN_MIN_SPEED
+                && self.ground.ticks >= DRIBBLE_TURN_MIN_TICKS
+                && car.up[2] > DRIBBLE_TURN_MIN_UP_Z
             {
                 self.turn_counted = true;
                 out.emit(Mechanic::DribbleTurn, self.turn_sum.abs(), Support::Ground);
@@ -237,6 +241,7 @@ impl Group {
     #[inline]
     fn bounce(&mut self, cx: &Ctx, out: &mut Out) {
         let b = cx.ball;
+        self.bd_apex = self.bd_apex.max(b.pos[2]);
         if cx.prev_ball.vel[2] < -BALL_FLOOR_BOUNCE_MIN_VZ
             && b.vel[2] > 0.0
             && b.pos[2] < BALL_FLOOR_BOUNCE_MAX_Z
@@ -254,7 +259,8 @@ impl Group {
                     (BOUNCE_DRIBBLE_MIN_GAP_TICKS..=BOUNCE_DRIBBLE_MAX_GAP_TICKS)
                         .contains(&(cx.n - t))
                 });
-                if gap_ok && self.bd_bounced {
+                // Detector 6 : la balle monte vraiment (> 200 uu) entre deux touchers : pas une balle poussée au sol.
+                if gap_ok && self.bd_bounced && self.bd_apex > BOUNCE_DRIBBLE_MIN_APEX {
                     self.bd_touches += 1;
                 } else {
                     self.bd_touches = 1;
@@ -265,6 +271,7 @@ impl Group {
                 self.bd_reset();
             }
             self.bd_bounced = false;
+            self.bd_apex = b.pos[2];
         }
         // Jugement du dernier toucher de la série : doux, sinon la série est cassée.
         if let Some(h) = cx.hit

@@ -278,7 +278,7 @@ function place(obj, a, b, k, f) { // a, b : images voisines ; k : fraction ; f :
 }
 
 /* ---------- Données ---------- */
-let list = [], top = [], showTop = false, filter = '', v2only = false, newest = true, cur = null, traj = null;
+let list = [], top = [], showTop = false, filter = '', v2only = false, d6only = false, newest = true, cur = null, traj = null;
 const labels = m => m.replace(/_/g, ' ');
 // Étiquettes d'un clip : la principale, puis les autres mécaniques validées (anciens clips : la seule principale).
 const tagsOf = c => [...new Set([c.mechanic, ...(c.mechanics || []).map(l => l.mechanic)])];
@@ -304,6 +304,7 @@ function renderList() {
   mk('', `Tout ${list.length}`);
   for (const m of Object.keys(counts).sort((a, b) => counts[b] - counts[a])) mk(m, `${labels(m)} ${counts[m]}`);
   if (list.some(c => (c.detector || 1) < 2)) { const b = document.createElement('button'); b.textContent = 'v2 seulement'; if (v2only) b.className = 'on'; b.onclick = () => { v2only = !v2only; renderList(); }; f.appendChild(b); }
+  if (list.some(c => (c.detector || 1) >= 6) && list.some(c => (c.detector || 1) < 6)) { const b = document.createElement('button'); b.textContent = 'detector 6 seulement'; if (d6only) b.className = 'on'; b.onclick = () => { d6only = !d6only; renderList(); }; f.appendChild(b); }
   if (showTop) {
     $('n').textContent = `Top ${top.length} · meilleurs scores, jamais évincés`;
     $('count').textContent = list.length ? `· ${list.length}` : '';
@@ -319,14 +320,14 @@ function renderList() {
     return;
   }
   $('sort').style.display = '';
-  let rows = list.filter(c => !v2only || (c.detector || 1) >= 2).filter(c => !filter || tagsOf(c).includes(filter)).sort((a, b) => (newest ? b.created_unix - a.created_unix : a.created_unix - b.created_unix));
+  let rows = list.filter(c => !v2only || (c.detector || 1) >= 2).filter(c => !d6only || (c.detector || 1) >= 6).filter(c => !filter || tagsOf(c).includes(filter)).sort((a, b) => (newest ? b.created_unix - a.created_unix : a.created_unix - b.created_unix));
   $('n').textContent = `${rows.length} clip${rows.length > 1 ? 's' : ''}`;
   $('count').textContent = list.length ? `· ${list.length}` : '';
   $('sort').textContent = newest ? 'Plus récents' : 'Plus anciens';
   const it = $('items'); it.innerHTML = '';
   for (const c of rows) {
     const d = document.createElement('div'); d.className = 'item' + (c.id === cur ? ' cur' : '');
-    d.innerHTML = `<b>${labels(c.mechanic)}</b><span>${chips(c)}<br>${fmtDate(c.created_unix)} · ${c.seconds.toFixed(1)} s${c.detail && c.detail.value ? ` · ${Math.round(c.detail.value)} uu/s` : ''}${c.detail && c.detail.support && c.detail.support !== 'none' ? ` · ${c.detail.support}` : ''}${(c.detector || 1) < 2 ? ' · v1' : c.quality ? ` · ${Math.round(c.quality.score * 100)} %${c.quality.goal_3s ? ' · but' : ''}` : ''}</span>`;
+    d.innerHTML = `<b>${labels(c.mechanic)}</b><span>${chips(c)}<br>${fmtDate(c.created_unix)} · ${c.seconds.toFixed(1)} s${c.detail && c.detail.value ? ` · ${Math.round(c.detail.value)} uu/s` : ''}${c.detail && c.detail.support && c.detail.support !== 'none' ? ` · ${c.detail.support}` : ''}${(c.detector || 1) >= 6 ? ' · d6' : ''}${(c.detector || 1) < 2 ? ' · v1' : c.quality ? ` · ${Math.round(c.quality.score * 100)} %${c.quality.goal_3s ? ' · but' : ''}` : ''}</span>`;
     d.onclick = () => { location.hash = c.id; };
     it.appendChild(d);
   }

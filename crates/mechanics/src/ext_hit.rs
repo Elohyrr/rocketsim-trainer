@@ -49,6 +49,7 @@
 //! - `half_volley` : toucher 1 à 8 ticks après un rebond de la balle au sol (centre < 170 uu, vitesse verticale
 //!   < −100 puis > 0, rebond antérieur au tick du toucher), balle z < 300 au toucher, vitesse après > 1 800.
 
+use crate::Events;
 use crate::Mechanic;
 use crate::ctx::{Ctx, Hit};
 use crate::detail::{Out, Support};
@@ -94,6 +95,14 @@ pub(crate) fn pinch_support(ball: [f32; 3], car: [f32; 3]) -> Option<Support> {
     } else {
         None
     }
+}
+
+/// Vrai si la balle part à ≤ 20° du centre du but adverse (3D, depuis la balle au toucher).
+fn aimed_at_goal(h: &Hit, own: f32) -> bool {
+    let goal = [0.0, -own * ARENA_BACK_Y, GOAL_HEIGHT * 0.5];
+    let to = sub(goal, h.ball.pos);
+    let (a, b) = (dot(to, to).sqrt(), dot(h.v_after, h.v_after).sqrt());
+    a > 1.0 && b > 1.0 && dot(to, h.v_after) >= POWER_SHOT_AIM_COS * a * b
 }
 
 /// Surface où se trouve la voiture (roues au contact) au toucher, `None` en l'air.
@@ -176,6 +185,16 @@ pub(crate) struct Group {
     /// si un saut/flip était alors encore disponible (squishy save).
     goal_net_tick: Option<u64>,
     goal_net_flip: bool,
+    /// Detector 6 : saut pressé depuis le dernier terrain, roulis tenu (signe, ticks), apogée de la balle depuis le
+    /// dernier rebond au sol et apogée avant le dernier rebond franc, cushion et clear en attente de jugement.
+    air_jumped: bool,
+    roll_sign: f32,
+    roll_run: u32,
+    ball_apex: f32,
+    bounce_apex: f32,
+    bounce_strong: bool,
+    cushion: Option<(u32, Support)>,
+    clear_at: Option<u64>,
 }
 
 impl Group {
@@ -187,11 +206,55 @@ impl Group {
             self.touch_tick = cx.n;
             self.bounce_before_touch = self.ground_bounce;
         }
+        self.ball_apex = self.ball_apex.max(cx.ball.pos[2]);
         if cx.prev_ball.vel[2] < -HALF_VOLLEY_BOUNCE_MIN_VZ
             && cx.ball.vel[2] > 0.0
             && cx.ball.pos[2] < HALF_VOLLEY_BOUNCE_MAX_Z
         {
             self.ground_bounce = Some(cx.n);
+            self.bounce_strong = cx.prev_ball.vel[2] < -HALF_VOLLEY_MIN_BOUNCE_VZ;
+            self.bounce_apex = self.ball_apex;
+            self.ball_apex = cx.ball.pos[2];
+        }
+
+        // Action voulue : saut pressé dans cette phase aérienne, roulis tenu (même signe).
+        if cx.on_terrain {
+            self.air_jumped = false;
+        }
+        if cx.ev.has(Events::JUMP) {
+            self.air_jumped = true;
+        }
+        let roll = cx.car.roll_input;
+        if roll.abs() >= AIR_ROLL_MIN_INPUT && (self.roll_run == 0 || roll * self.roll_sign > 0.0) {
+            self.roll_sign = roll;
+            self.roll_run += 1;
+        } else if roll.abs() >= AIR_ROLL_MIN_INPUT {
+            self.roll_sign = roll;
+            self.roll_run = 1;
+        } else {
+            self.roll_run = 0;
+        }
+
+        // Cushion en attente : la balle doit rester contre la voiture pendant 0,3 s.
+        if let Some((k, sup)) = self.cushion {
+            if cx.dist >= CUSHION_STAY_DIST {
+                self.cushion = None;
+            } else if k + 1 >= CUSHION_STAY_TICKS {
+                out.emit(Mechanic::Cushion, 0.0, sup);
+                self.cushion = None;
+            } else {
+                self.cushion = Some((k + 1, sup));
+            }
+        }
+        // Clear en attente : 1 s plus tard la balle est sortie du tiers défensif.
+        if let Some(t) = self.clear_at {
+            if cx.n >= t {
+                let own = if cx.attack_neg { 1.0 } else { -1.0 };
+                if cx.ball.pos[1] * own < CLEAR_EXIT_Y {
+                    out.emit(Mechanic::Clear, cx.ball_speed, Support::None);
+                }
+                self.clear_at = None;
+            }
         }
 
         // Squishy save : roues sur le fond du filet ou le plafond de SON but (pas le sol du but).
@@ -228,11 +291,15 @@ impl Group {
             && enters_own_goal(h.pre.pos, h.pre.vel, own)
             && enters_own_goal(h.pre_old.pos, h.pre_old.vel, own);
         let is_save = was_shot
+            && h.ball.pos[1] * own > GOAL_LINE_Y - SAVE_MAX_LINE_DIST
             && enters_own_goal(h.ball.pos, h.v_before, own)
             && !enters_own_goal(h.ball.pos, h.v_after, own);
         if is_save {
             out.emit(Mechanic::Save, after, Support::None);
-            if !h.car.on_ground {
+            // Aérien voulu : saut/dodge récent, ou voiture haute qui ne vient pas d'un mur (pas une chute).
+            let voluntary = h.jump_age.is_some_and(|a| a <= INTENT_JUMP_TICKS);
+            let from_wall = h.wall_age.is_some_and(|a| a <= INTENT_JUMP_TICKS);
+            if !h.car.on_ground && (voluntary || (h.car.pos[2] > AERIAL_SAVE_MIN_Z && !from_wall)) {
                 out.emit(Mechanic::AerialSave, after, Support::None);
             }
         }
@@ -278,6 +345,7 @@ impl Group {
             && let (Some(t0), true) = (self.goal_net_tick, self.goal_net_flip)
             && h.tick > t0
             && h.tick - t0 <= SQUISHY_MAX_LEAVE_TICKS
+            && h.pre.vel[1] * own >= SQUISHY_MIN_TOWARD
             && u64::from(h.air_ticks) + SQUISHY_AIR_SLACK_TICKS >= h.tick - t0
             && !h.car.on_ground
             && h.dodge_age
@@ -294,7 +362,13 @@ impl Group {
             && toward_after < -CLEAR_MIN_AWAY
             && toward_before > -CLEAR_MIN_AWAY
         {
-            out.emit(Mechanic::Clear, after, Support::None);
+            // Detector 6 : balle précédemment cadrée vers son but (menace réelle), sinon elle doit sortir du
+            // tiers défensif dans la seconde qui suit.
+            if h.pre_valid && h.pre.vel[1] * own >= SAVE_MIN_TOWARD {
+                out.emit(Mechanic::Clear, after, Support::None);
+            } else {
+                self.clear_at = Some(h.tick + 120);
+            }
         }
 
         // --- Car pinch : balle coincée entre deux voitures qui la touchent ensemble (kickoff compris) ; reste un
@@ -303,12 +377,11 @@ impl Group {
             && gain >= CAR_PINCH_MIN_GAIN
             && after >= CAR_PINCH_MIN_SPEED
             && h.other_dist < CAR_PINCH_MAX_OTHER_DIST;
-        if car_pinch {
-            out.emit(Mechanic::Pinch, after, Support::Car);
-        }
+        // Detector 6 : le car pinch (50/50, coup d'envoi) n'est plus un pinch ; il reste exclu des tirs.
 
         // --- Pinch, kuxir pinch, power shot (exclusifs : un pinch n'est pas un power shot).
-        let pinch = if !car_pinch && gain > PINCH_MIN_GAIN && after > PINCH_MIN_SPEED {
+        let clean = !h.kickoff_first && h.other_dist >= PINCH_MIN_OTHER_DIST;
+        let pinch = if !car_pinch && gain > PINCH_MIN_GAIN && after > PINCH_MIN_SPEED && clean {
             pinch_support(h.ball.pos, h.car.pos)
         } else {
             None
@@ -326,15 +399,25 @@ impl Group {
             {
                 out.emit(Mechanic::KuxirPinch, after, sup);
             }
-        } else if !car_pinch && after > POWER_SHOT_MIN_SPEED && gain >= POWER_SHOT_MIN_GAIN {
+        } else if !car_pinch
+            && after > POWER_SHOT_MIN_SPEED
+            && gain >= POWER_SHOT_MIN_GAIN_V6
+            && (h.dodge_age.is_some_and(|a| a <= POWER_SHOT_DODGE_TICKS) || aimed_at_goal(h, own))
+        {
             out.emit(Mechanic::PowerShot, after, Support::None);
         }
 
         // --- Cushion : la balle rapide repart avec la voiture.
-        if h.speed_before > CUSHION_MIN_SPEED_BEFORE && after < CUSHION_MAX_RATIO * h.speed_before {
+        if h.speed_before > CUSHION_MIN_SPEED_BEFORE
+            && after < CUSHION_MAX_RATIO * h.speed_before
+            && h.car.up[2] > CUSHION_MIN_UP_Z
+            && !h
+                .ball_bounce_age
+                .is_some_and(|a| a <= CUSHION_WALL_BOUNCE_TICKS)
+        {
             let r = sub(h.v_after, h.car.vel);
             if dot(r, r) < CUSHION_MAX_REL_SPEED * CUSHION_MAX_REL_SPEED {
-                out.emit(Mechanic::Cushion, 0.0, car_support(h));
+                self.cushion = Some((0, car_support(h)));
             }
         }
 
@@ -342,6 +425,9 @@ impl Group {
         if !h.car.on_ground
             && h.car.pos[2] > REDIRECT_MIN_CAR_Z
             && h.speed_before > REDIRECT_MIN_SPEED
+            && after > h.speed_before
+            && toward_after <= 0.0
+            && h.jump_age.is_some_and(|a| a <= REDIRECT_JUMP_TICKS)
             && after > REDIRECT_MIN_SPEED
             && dot(h.v_before, h.v_after) < REDIRECT_MAX_COS * h.speed_before * after
         {
@@ -354,14 +440,19 @@ impl Group {
             && h.ball.pos[2] > AERIAL_BALL_MIN_Z
             && after > AIR_ROLL_MIN_SPEED
             && !h.dodge_age.is_some_and(|a| a <= AIR_ROLL_NO_DODGE_TICKS)
-            && (dot(h.car.ang_vel, h.car.forward).abs() > AIR_ROLL_MIN_RATE
-                || h.car.roll_input.abs() >= AIR_ROLL_MIN_INPUT)
+            && self.air_jumped
+            && self.roll_run >= AIR_ROLL_HOLD_TICKS
+            && toward_after <= 0.0
         {
             out.emit(Mechanic::AirRollShot, after, Support::None);
         }
 
         // --- Backboard read : toucher haut peu après un rebond sur le mur du fond (une fois par rebond).
         if h.ball_bounce_back
+            && !h.car.on_ground
+            && !h.car.world_contact
+            && h.speed_before > BACKBOARD_READ_MIN_SPEED
+            && h.ball.pos[1] * own < 0.0
             && h.ball.pos[2] > BACKBOARD_READ_MIN_Z
             && let Some(age) = h.ball_bounce_age.filter(|a| *a <= BACKBOARD_READ_MAX_TICKS)
         {
@@ -375,6 +466,9 @@ impl Group {
         // --- Half volley : frappe juste après un rebond au sol.
         if h.tick == self.touch_tick
             && h.ball.pos[2] < HALF_VOLLEY_MAX_BALL_Z
+            && self.bounce_strong
+            && self.bounce_apex > HALF_VOLLEY_MIN_APEX
+            && h.jump_age.is_some_and(|a| a <= HALF_VOLLEY_JUMP_TICKS)
             && after > HALF_VOLLEY_MIN_SPEED
             && self
                 .bounce_before_touch

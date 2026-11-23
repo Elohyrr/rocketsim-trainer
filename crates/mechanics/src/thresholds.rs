@@ -237,7 +237,7 @@ pub const CEILING_DRIBBLE_MIN_TICKS: u32 = 48;
 pub const SURFACE_DRIBBLE_MIN_TOUCHES: u32 = 1;
 
 /// Bounce dribble : au moins 3 touchers, espacés de 10 à 60 ticks…
-pub const BOUNCE_DRIBBLE_MIN_TOUCHES: u32 = 3;
+pub const BOUNCE_DRIBBLE_MIN_TOUCHES: u32 = 4;
 pub const BOUNCE_DRIBBLE_MIN_GAP_TICKS: u64 = 10;
 pub const BOUNCE_DRIBBLE_MAX_GAP_TICKS: u64 = 60;
 /// … voiture au sol à plus de 300 uu/s (vitesse horizontale)…
@@ -383,3 +383,72 @@ pub const BALL_HISTORY: usize = 64;
 pub const KICKOFF_PHASE_TICKS: u64 = 180;
 /// `kickoff_won` : vitesse de balle vers le but adverse après le premier toucher (uu/s).
 pub const KICKOFF_WON_MIN_TOWARD: f32 = 1200.0;
+
+// --- Detector 6 (audit des clips) : une mécanique est une action VOULUE, lisible dans les entrées du bot.
+
+/// Saut/dodge « récent » : au plus 0,5 s (ticks) avant le toucher (redirect, aerial save, ceiling shot…).
+pub const INTENT_JUMP_TICKS: u64 = 60;
+/// Power shot : gain dû à la voiture au moins ce montant (uu/s), avec un dodge ≤ 0,3 s avant (ticks) ou une balle
+/// > `POWER_SHOT_MIN_SPEED` dirigée à ≤ 20° du but adverse (cosinus).
+pub const POWER_SHOT_MIN_GAIN_V6: f32 = 1000.0;
+pub const POWER_SHOT_DODGE_TICKS: u64 = 36;
+pub const POWER_SHOT_AIM_COS: f32 = 0.9397;
+/// Pinch : aucune voiture adverse à moins de cette distance (uu) de la balle au toucher ; pas au coup d'envoi.
+pub const PINCH_MIN_OTHER_DIST: f32 = 250.0;
+/// Squishy save : vitesse de la balle vers son but avant le toucher (uu/s). 600 et non 800 : le clip validé 311
+/// avait 733 uu/s vers le but, le faux clip 3319 540.
+pub const SQUISHY_MIN_TOWARD: f32 = 600.0;
+/// Aerial save : voiture plus haute que ceci (uu) hors saut/dodge voulu.
+pub const AERIAL_SAVE_MIN_Z: f32 = 300.0;
+/// Air roll shot : roulis tenu de même signe au moins ce nombre de ticks (≈ 3 décisions du bot à 15 Hz).
+pub const AIR_ROLL_HOLD_TICKS: u32 = 24;
+/// Backboard read : vitesse de la balle avant le toucher (uu/s) et voiture en l'air.
+pub const BACKBOARD_READ_MIN_SPEED: f32 = 800.0;
+/// Half volley : apogée de la balle avant le rebond au moins (uu), vitesse verticale au rebond (uu/s), toucher voulu
+/// (saut/dodge ≤ 0,3 s).
+pub const HALF_VOLLEY_MIN_APEX: f32 = 150.0;
+pub const HALF_VOLLEY_MIN_BOUNCE_VZ: f32 = 300.0;
+pub const HALF_VOLLEY_JUMP_TICKS: u64 = 36;
+/// Cushion : la balle reste contre la voiture (distance < `CUSHION_STAY_DIST` uu) pendant au moins 0,3 s (ticks)
+/// après le toucher, voiture à plat (`up.z` > `CUSHION_MIN_UP_Z`), sans rebond sur un mur dans les 6 ticks avant.
+pub const CUSHION_STAY_DIST: f32 = 220.0;
+pub const CUSHION_STAY_TICKS: u32 = 36;
+pub const CUSHION_MIN_UP_Z: f32 = 0.5;
+pub const CUSHION_WALL_BOUNCE_TICKS: u64 = 6;
+/// Wall shot : sans saut depuis le mur, la balle doit partir à plus de `WALL_SHOT_MIN_GOAL_SPEED` vers le but adverse
+/// (déjà exigé) et le toucher ne se fait pas dans son tiers défensif (|y| côté but au-delà de ce seuil, uu).
+pub const WALL_SHOT_OWN_THIRD_Y: f32 = 1700.0;
+/// Clear : balle sortie du tiers défensif (y côté son but sous −1 700 uu du centre, soit au-delà de ce seuil
+/// vers le centre) ou balle précédemment cadrée vers son but.
+pub const CLEAR_EXIT_Y: f32 = 1700.0;
+/// Fast aerial : nez ≥ 30° au 2ᵉ saut (`forward.z` ≥ sin 30°), boost tenu ≥ 0,5 s après (ticks), gain d'altitude
+/// ≥ 400 uu (ou balle cible z > 400 touchée ≤ 2 s) ; pas depuis un mur.
+pub const FAST_AERIAL_MIN_NOSE_Z: f32 = 0.5;
+pub const FAST_AERIAL_BOOST_TICKS: u32 = 60;
+pub const FAST_AERIAL_MIN_GAIN_Z: f32 = 400.0;
+pub const FAST_AERIAL_BALL_Z: f32 = 400.0;
+pub const FAST_AERIAL_TOUCH_TICKS: u64 = 240;
+/// Tornado spin : roulis tenu (|roll| ≥ 0,8, même signe) ≥ ce nombre de ticks (≈ 4 décisions), vol d'au moins 0,5 s.
+pub const TORNADO_MIN_ROLL: f32 = 0.8;
+pub const TORNADO_HOLD_ROLL_TICKS: u32 = 32;
+pub const TORNADO_V6_MIN_TICKS: u32 = 60;
+/// Recovery : entrée d'air roll/tangage ≠ 0 pendant la phase renversée ; atterrissage roues d'abord, vitesse au sol
+/// ≥ 60 % déjà exigée ; au moins ce nombre de ticks d'entrée.
+pub const RECOVERY_MIN_INPUT_TICKS: u32 = 6;
+/// Half flip : vitesse horizontale 1,5 s après le dodge ≥ 80 % de celle avant (ticks) ; le cap inversé est atteint
+/// dans la seconde.
+pub const HALF_FLIP_KEEP: f32 = 0.8;
+pub const HALF_FLIP_HEADING_TICKS: u64 = 120;
+/// Double touch / backboard double : deux touchers séparés d'au moins 0,25 s (ticks), voiture en l'air entre les deux.
+pub const DOUBLE_TOUCH_MIN_GAP_TICKS: u64 = 30;
+/// Bounce dribble : apogée de la balle entre deux touchers > ce seuil (uu), au moins 3 rebonds contrôlés.
+pub const BOUNCE_DRIBBLE_MIN_APEX: f32 = 200.0;
+/// Dribble turn : portage d'au moins 1 s (ticks), voiture à plat (`up.z` > ce seuil), 45° de virage pendant le portage.
+pub const DRIBBLE_TURN_MIN_TICKS: u32 = 120;
+pub const DRIBBLE_TURN_MIN_UP_Z: f32 = 0.9;
+/// Save : toucher à moins de cette distance de la ligne de but (uu).
+pub const SAVE_MAX_LINE_DIST: f32 = 1800.0;
+/// Ceiling shot : saut/dodge voulu au plus 1 s avant le toucher, balle envoyée vers le but adverse à plus de ce seuil.
+pub const CEILING_SHOT_JUMP_TICKS: u64 = 120;
+pub const CEILING_SHOT_MIN_GOAL_SPEED: f32 = 1000.0;
+pub const REDIRECT_JUMP_TICKS: u64 = 60;

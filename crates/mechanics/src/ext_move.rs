@@ -84,6 +84,20 @@ pub(crate) struct Group {
     fa_boost: bool,
     fa_pitch: bool,
     fa_done: bool,
+    /// Detector 6 : saut depuis un mur, nez au 2ᵉ saut, altitude au 1er saut, boost tenu après, en attente de gain.
+    fa_wall: bool,
+    fa_z0: f32,
+    fa_second: Option<u64>,
+    fa_boost_run: u32,
+    fa_boost_ok: bool,
+    fa_gain_ok: bool,
+    // Tornado : roulis tenu.
+    ts_roll_sign: f32,
+    ts_roll_run: u32,
+    // Recovery : ticks d'entrée d'air roll / tangage pendant le vol.
+    rc_input: u32,
+    /// Saut ou dodge pressé pendant ce vol (décollage voulu, pas une chute du mur).
+    rc_jump: bool,
     // Stall : tick d'un dodge annulé par les entrées et par la physique.
     st_dodge: Option<u64>,
     // Tornado spin.
@@ -190,14 +204,18 @@ impl Group {
             });
         }
 
-        // --- Fast aerial : saut, second saut rapide, boost et nez vers le haut entre les deux.
+        // --- Fast aerial : saut, second saut rapide, boost et nez vers le haut entre les deux. Detector 6 : nez ≥ 30°
+        // au 2ᵉ saut, boost tenu ≥ 0,5 s après, gain d'altitude ≥ 400 uu (ou balle haute touchée ≤ 2 s), pas depuis un mur.
         if cx.on_terrain {
             self.fa_done = false;
+            self.fa_second = None;
         }
         if cx.ev.has(Events::JUMP) {
             self.fa_jump = Some(n);
             self.fa_boost = false;
             self.fa_pitch = false;
+            self.fa_wall = cx.on_wall || within(self.wall_last, n, VOLUNTARY_JUMP_TICKS as u64);
+            self.fa_z0 = car.pos[2];
         }
         if let Some(j) = self.fa_jump {
             if n - j > FAST_AERIAL_MAX_GAP_TICKS {
@@ -206,11 +224,46 @@ impl Group {
                 self.fa_boost |= car.boosting;
                 self.fa_pitch |= car.pitch_input > FAST_AERIAL_MIN_PITCH;
                 if cx.ev.has(Events::DOUBLE_JUMP) && !cx.dodge_now {
-                    if self.fa_boost && self.fa_pitch && !self.fa_done {
-                        out.emit(Mechanic::FastAerial, 0.0, Support::None);
-                        self.fa_done = true;
+                    if self.fa_boost
+                        && self.fa_pitch
+                        && !self.fa_done
+                        && !self.fa_wall
+                        && car.forward[2] >= FAST_AERIAL_MIN_NOSE_Z
+                    {
+                        self.fa_second = Some(n);
+                        self.fa_boost_run = 0;
+                        self.fa_boost_ok = false;
+                        self.fa_gain_ok = false;
                     }
                     self.fa_jump = None;
+                }
+            }
+        }
+        if let Some(t) = self.fa_second {
+            if cx.on_terrain {
+                self.fa_second = None;
+            } else {
+                if car.boosting {
+                    self.fa_boost_run += 1;
+                    if self.fa_boost_run >= FAST_AERIAL_BOOST_TICKS {
+                        self.fa_boost_ok = true;
+                    }
+                } else if !self.fa_boost_ok {
+                    self.fa_boost_run = 0;
+                }
+                if car.pos[2] - self.fa_z0 >= FAST_AERIAL_MIN_GAIN_Z
+                    || (cx.touch
+                        && cx.ball.pos[2] > FAST_AERIAL_BALL_Z
+                        && n - t <= FAST_AERIAL_TOUCH_TICKS)
+                {
+                    self.fa_gain_ok = true;
+                }
+                if self.fa_boost_ok && self.fa_gain_ok {
+                    out.emit(Mechanic::FastAerial, 0.0, Support::None);
+                    self.fa_done = true;
+                    self.fa_second = None;
+                } else if n - t > FAST_AERIAL_TOUCH_TICKS {
+                    self.fa_second = None;
                 }
             }
         }
@@ -242,12 +295,23 @@ impl Group {
             }
         }
 
-        // --- Tornado spin : rotation rapide autour de l'axe vertical de la voiture, maintenue.
+        // --- Tornado spin : rotation rapide autour de l'axe vertical de la voiture, maintenue. Detector 6 : le roulis
+        // commandé (|roll| ≥ 0,8, même signe) est tenu ≥ 4 décisions, vol ≥ 0,5 s, sans choc (cadre du but compris).
+        let roll = car.roll_input;
+        if roll.abs() >= TORNADO_MIN_ROLL
+            && (self.ts_roll_run == 0 || roll * self.ts_roll_sign > 0.0)
+        {
+            self.ts_roll_sign = roll;
+            self.ts_roll_run += 1;
+        } else {
+            self.ts_roll_run = if roll.abs() >= TORNADO_MIN_ROLL { 1 } else { 0 };
+            self.ts_roll_sign = roll;
+        }
         if cx.on_terrain {
             self.ts_run = 0;
             self.ts_done = false;
-        } else if cx.tainted {
-            // Rotation subie (choc, toucher simultané) : ne compte ni maintenant ni plus tard dans ce vol.
+        } else if cx.tainted || car.world_contact {
+            // Rotation subie (choc, toucher simultané, cadre du but) : ne compte ni maintenant ni plus tard.
             self.ts_run = 0;
             self.ts_done = true;
         } else if cx.air_ticks >= TORNADO_MIN_AIR_TICKS {
@@ -255,7 +319,10 @@ impl Group {
             let spin = (w[0] * car.up[0] + w[1] * car.up[1] + w[2] * car.up[2]).abs();
             if spin > TORNADO_MIN_SPIN {
                 self.ts_run += 1;
-                if self.ts_run >= TORNADO_MIN_TICKS && !self.ts_done {
+                if self.ts_run >= TORNADO_V6_MIN_TICKS
+                    && self.ts_roll_run >= TORNADO_HOLD_ROLL_TICKS
+                    && !self.ts_done
+                {
                     out.emit(Mechanic::TornadoSpin, 0.0, Support::None);
                     self.ts_done = true;
                 }
@@ -274,6 +341,8 @@ impl Group {
                         && car.wheels_contact >= 3
                         && cx.hspeed >= RECOVERY_MIN_SPEED
                         && cx.hspeed >= RECOVERY_MIN_KEEP * start
+                        && self.rc_input >= RECOVERY_MIN_INPUT_TICKS
+                        && self.rc_jump
                         && !self.rc_hit
                     {
                         out.emit(Mechanic::Recovery, 0.0, Support::Ground);
@@ -282,8 +351,21 @@ impl Group {
             }
             self.rc_start = None;
             self.rc_air = 0;
+            self.rc_input = 0;
+            // Un saut pressé au sol (dernier tick avant le décollage) compte pour le vol qui suit.
+            self.rc_jump = cx.ev.has(Events::JUMP);
             self.rc_hit = false;
         } else {
+            // Détecteur 6 : la reprise est VOULUE si le bot a donné du roulis ou du tangage en l'air.
+            if cx.ev.has(Events::JUMP) || cx.ev.has(Events::DOUBLE_JUMP) || cx.ev.has(Events::DODGE)
+            {
+                self.rc_jump = true;
+            }
+            if car.up[2] < RECOVERY_FLIPPED_UP_Z
+                && (car.roll_input.abs() >= 0.3 || car.pitch_input.abs() >= 0.3)
+            {
+                self.rc_input += 1;
+            }
             // Retournée par un choc : le vol ne compte pas comme recovery.
             self.rc_hit |= cx.tainted;
             if self.rc_start.is_none() {

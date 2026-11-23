@@ -35,7 +35,7 @@ fn turning_carry(vx: f32, total: f32) -> Vec<Frame> {
             vel: [vx, 0.0, 0.0],
         },
     );
-    let n = 100;
+    let n = 130;
     s.run(n, |i, c, b| {
         let yaw = total * (i + 1) as f32 / n as f32;
         let (sn, cs) = yaw.sin_cos();
@@ -44,7 +44,7 @@ fn turning_carry(vx: f32, total: f32) -> Vec<Frame> {
         c.vel = [vx * cs, vx * sn, 0.0];
         b.pos = [c.pos[0], c.pos[1], 157.0];
         b.vel = c.vel;
-        if i % 15 == 0 {
+        if i % 22 == 0 {
             hit(c);
         }
     });
@@ -122,27 +122,27 @@ fn ceiling_dribble(ticks: usize) -> Vec<Frame> {
 
 /// Voiture au sol à `vx`, balle 160 uu devant qui rebondit au sol : chaque toucher (tous les `period` ticks)
 /// la renvoie vers le sol, elle rebondit puis remonte. `hard` : chaque toucher l'envoie à ≈ 1 750 uu/s.
-fn bounce_dribble(vx: f32, period: usize, touches: usize, hard: bool) -> Vec<Frame> {
+fn bounce_dribble(vx: f32, period: usize, touches: usize, hard: bool, vz: f32) -> Vec<Frame> {
     let mut car = car_on_ground();
     car.vel = [vx, 0.0, 0.0];
     let mut s = Script::new(
         car,
         BallTick {
             pos: [160.0, 0.0, 93.0],
-            vel: [vx, 0.0, 400.0],
+            vel: [vx, 0.0, vz],
         },
     );
     let half = period / 2;
     s.run(period * touches, |i, c, b| {
         if i % period == half {
             hit(c);
-            b.vel = [if hard { 1700.0 } else { vx }, 0.0, -400.0];
+            b.vel = [if hard { 1700.0 } else { vx }, 0.0, -vz];
         } else if b.vel[0] != vx {
             b.vel[0] = vx;
         }
         if b.pos[2] <= 93.5 && b.vel[2] < 0.0 {
             b.pos[2] = 93.0;
-            b.vel[2] = 400.0;
+            b.vel[2] = vz;
         }
     });
     s.hold(10);
@@ -219,7 +219,7 @@ pub fn cases() -> Vec<Case> {
     let with = |extra: &[(Mechanic, u64)]| -> Vec<(Mechanic, u64)> {
         flick.iter().chain(extra.iter()).copied().collect()
     };
-    let dribble = [(Touch, 6), (Dribble, 1)];
+    let dribble = [(Touch, 5), (Dribble, 1)];
     vec![
         // --- Dribble turn.
         case(
@@ -227,7 +227,7 @@ pub fn cases() -> Vec<Case> {
             DribbleTurn,
             true,
             turning_carry(800.0, 1.4),
-            &[(Touch, 6), (Dribble, 1), (DribbleTurn, 1)],
+            &[(Touch, 5), (Dribble, 1), (DribbleTurn, 1)],
         ),
         case(
             "dribble_turn_negative_straight",
@@ -343,29 +343,36 @@ pub fn cases() -> Vec<Case> {
             "bounce_dribble",
             BounceDribble,
             true,
-            bounce_dribble(800.0, 30, 4, false),
+            bounce_dribble(800.0, 40, 4, false, 800.0),
             &[(Touch, 4), (BounceDribble, 1)],
+        ),
+        case(
+            "bounce_dribble_negative_push_on_ground",
+            BounceDribble,
+            false,
+            bounce_dribble(800.0, 40, 4, false, 400.0),
+            &[(Touch, 4)],
         ),
         case(
             "bounce_dribble_negative_slow_car",
             BounceDribble,
             false,
-            bounce_dribble(250.0, 30, 4, false),
+            bounce_dribble(250.0, 40, 4, false, 800.0),
             &[(Touch, 4)],
         ),
         case(
             "bounce_dribble_negative_hard_touches",
             BounceDribble,
             false,
-            bounce_dribble(800.0, 30, 4, true),
+            bounce_dribble(800.0, 40, 4, true, 800.0),
             &[(Touch, 4)],
         ),
         case(
             "bounce_dribble_negative_spaced",
             BounceDribble,
             false,
-            bounce_dribble(800.0, 64, 3, false),
-            &[(Touch, 3)],
+            bounce_dribble(800.0, 64, 4, false, 800.0),
+            &[(Touch, 4)],
         ),
         // --- Flicks : direction du dodge.
         case(

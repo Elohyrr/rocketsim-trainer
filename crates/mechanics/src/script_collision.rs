@@ -26,7 +26,7 @@ fn other(pos: [f32; 3]) -> OtherCar {
 
 /// Choc subi en l'air à côté d'une autre voiture (`near`) ou loin d'elle, suivi d'une rotation rapide de 0,4 s :
 /// un vrai tornado spin si `contact` est faux, une rotation subie sinon.
-fn spin_after(contact: bool) -> Vec<Frame> {
+fn spin_after(contact: bool, roll: f32) -> Vec<Frame> {
     let mut s = Script::new(air_car(), ball_far());
     s.car.other = Some(other([3000.0, 0.0, 800.0]));
     s.hold(45);
@@ -38,9 +38,11 @@ fn spin_after(contact: bool) -> Vec<Frame> {
             c.vel = [200.0, 0.0, 0.0];
         }
         c.ang_vel = [0.0, 0.0, 6.0];
+        c.roll_input = roll;
     });
-    s.run(50, |_, c, _| {
+    s.run(80, |_, c, _| {
         c.ang_vel = [0.0, 0.0, 6.0];
+        c.roll_input = roll;
         if contact {
             c.other = Some(other([c.pos[0] + 120.0, 0.0, c.pos[2]]));
         }
@@ -114,12 +116,12 @@ fn save_seq(
 ) -> Vec<Frame> {
     let mut car = if aerial { air_car() } else { car_on_ground() };
     car.vel = [0.0; 3];
-    car.pos = [0.0, -3000.0, car_z];
-    // La balle file déjà depuis 12 ticks (tir stable) et arrive en y = −3000 au toucher.
+    car.pos = [0.0, -4000.0, car_z];
+    // La balle file déjà depuis 12 ticks (tir stable) et arrive en y = −4000 (< 1 800 uu de la ligne) au toucher.
     let mut s = Script::new(
         car,
         BallTick {
-            pos: [0.0, -3000.0 - v_before_y * 0.1, ball_z],
+            pos: [0.0, -4000.0 - v_before_y * 0.1, ball_z],
             vel: [0.0, v_before_y, 0.0],
         },
     );
@@ -129,6 +131,15 @@ fn save_seq(
     });
     s.hold(20);
     s.frames()
+}
+
+/// Aérien sans saut : la voiture tombe d'un mur à z = 150 (aucun saut vu), la balle est arrêtée : un save, pas un aerial save.
+fn fall_save() -> Vec<Frame> {
+    let mut f = save_seq(300.0, 150.0, true, -2000.0, [0.0, 1200.0, 200.0]);
+    for (c, _) in f.iter_mut() {
+        c.has_jumped = false;
+    }
+    f
 }
 
 /// Coup d'envoi simultané (clip de prod 1795095498-save-2038) : balle posée au centre, l'autre voiture la touche
@@ -267,7 +278,7 @@ fn squish_net(start: &NetStart, air: usize) -> Vec<Frame> {
     let mut s = Script::new(
         car,
         BallTick {
-            pos: [0.0, -3000.0 - 2000.0 * total / 120.0, 300.0],
+            pos: [0.0, -4000.0 - 2000.0 * total / 120.0, 300.0],
             vel: [0.0, -2000.0, 0.0],
         },
     );
@@ -278,7 +289,7 @@ fn squish_net(start: &NetStart, air: usize) -> Vec<Frame> {
     });
     s.hold(air).once(|c, _| dodge(c, 1.0, 0.0));
     s.hold(10).once(|c, b| {
-        c.pos = [0.0, -3000.0, 400.0];
+        c.pos = [0.0, -4000.0, 400.0];
         hit(c);
         b.vel = [0.0, 1200.0, 200.0];
     });
@@ -302,7 +313,7 @@ fn clear_seq(vy_before: f32, after: f32) -> Vec<Frame> {
         hit(c);
         b.vel = [0.0, after, 0.0];
     });
-    s.hold(20);
+    s.hold(130);
     s.frames()
 }
 
@@ -313,22 +324,29 @@ pub(crate) fn cases() -> Vec<Case> {
             "tornado_spin_sans_collision",
             TornadoSpin,
             true,
-            spin_after(false),
+            spin_after(false, 1.0),
             &[(TornadoSpin, 1)],
+        ),
+        case(
+            "tornado_spin_negatif_sans_roulis_en_entree",
+            TornadoSpin,
+            false,
+            spin_after(false, 0.0),
+            &[],
         ),
         case(
             "tornado_spin_apres_collision",
             TornadoSpin,
             false,
-            spin_after(true),
+            spin_after(true, 1.0),
             &[],
         ),
         case(
-            "car_pinch_kickoff",
+            "pinch_negatif_50_50_voiture_adverse",
             Pinch,
-            true,
+            false,
             two_hit([0.0, 0.0, 2400.0], 200.0, true),
-            &[(Touch, 1), (Pinch, 1)],
+            &[(Touch, 1)],
         ),
         case(
             "car_pinch_negatif_un_seul_toucheur",
@@ -373,6 +391,13 @@ pub(crate) fn cases() -> Vec<Case> {
             &[(Touch, 1), (Save, 1), (AerialSave, 1)],
         ),
         case(
+            "aerial_save_negatif_chute_du_mur",
+            AerialSave,
+            false,
+            fall_save(),
+            &[(Touch, 1), (Save, 1)],
+        ),
+        case(
             "aerial_save_negatif_au_sol",
             AerialSave,
             false,
@@ -384,13 +409,7 @@ pub(crate) fn cases() -> Vec<Case> {
             SquishySave,
             true,
             squish_net(&NetStart::BACK_NET, 30),
-            &[
-                (Touch, 1),
-                (WallShot, 1),
-                (Save, 1),
-                (AerialSave, 1),
-                (SquishySave, 1),
-            ],
+            &[(Touch, 1), (Save, 1), (AerialSave, 1), (SquishySave, 1)],
         ),
         case(
             "squishy_save_plafond_du_but",
@@ -404,7 +423,7 @@ pub(crate) fn cases() -> Vec<Case> {
             SquishySave,
             false,
             squish_net(&NetStart::BACK_WALL_OUTSIDE, 30),
-            &[(Touch, 1), (WallShot, 1), (Save, 1), (AerialSave, 1)],
+            &[(Touch, 1), (Save, 1), (AerialSave, 1)],
         ),
         case(
             "squishy_save_negatif_depart_du_sol_du_but",
@@ -447,6 +466,13 @@ pub(crate) fn cases() -> Vec<Case> {
             true,
             clear_seq(-200.0, 2400.0),
             &[(Touch, 1), (Clear, 1)],
+        ),
+        case(
+            "clear_negatif_reste_dans_le_tiers_defensif",
+            Clear,
+            false,
+            clear_seq(-200.0, 1500.0),
+            &[(Touch, 1)],
         ),
         case(
             "clear_negatif_balle_deja_partie",

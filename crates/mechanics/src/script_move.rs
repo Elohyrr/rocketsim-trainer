@@ -253,7 +253,19 @@ fn wall_dash(delay: usize, land_vz: f32) -> Vec<Frame> {
 
 /// Saut avec tangage `pitch` (+1 = nez vers le haut), second saut `gap` ticks après, boost ou non.
 fn fast_aerial(boost: bool, gap: usize, pitch: f32) -> Vec<Frame> {
-    let mut car = car_on_ground();
+    fast_aerial_v6(boost, gap, pitch, 0.8, 600.0, false)
+}
+
+/// `nose_z` : composante verticale du nez au 2ᵉ saut ; `vz` : vitesse verticale après ; `wall` : départ d'un mur.
+fn fast_aerial_v6(
+    boost: bool,
+    gap: usize,
+    pitch: f32,
+    nose_z: f32,
+    vz: f32,
+    wall: bool,
+) -> Vec<Frame> {
+    let mut car = if wall { wall_car() } else { car_on_ground() };
     car.boosting = boost;
     let mut s = Script::new(car, ball_far());
     s.hold(5).once(|c, _| {
@@ -263,9 +275,11 @@ fn fast_aerial(boost: bool, gap: usize, pitch: f32) -> Vec<Frame> {
     });
     s.hold(gap - 1).once(|c, _| {
         c.has_double_jumped = true;
-        c.vel = [0.0, 0.0, 600.0];
+        c.vel = [0.0, 0.0, vz];
+        c.forward = [(1.0 - nose_z * nose_z).sqrt(), 0.0, nose_z];
+        c.up = [-nose_z, 0.0, (1.0 - nose_z * nose_z).sqrt()];
     });
-    s.hold(60);
+    s.hold(140);
     s.frames()
 }
 
@@ -309,9 +323,12 @@ fn real_stall() -> StallSpec {
 }
 
 /// En l'air, rotation autour de l'axe `up` à `spin` rad/s pendant `ticks`, puis plus de rotation.
-fn tornado(ticks: usize, spin: f32) -> Vec<Frame> {
+fn tornado(ticks: usize, spin: f32, roll: f32) -> Vec<Frame> {
     let mut s = Script::new(car_in_air([500.0, 0.0, 0.0]), ball_far());
-    s.run(ticks, |_, c, _| c.ang_vel = [0.0, 0.0, spin]);
+    s.run(ticks, |_, c, _| {
+        c.ang_vel = [0.0, 0.0, spin];
+        c.roll_input = roll;
+    });
     s.run(20, |_, c, _| c.ang_vel = [0.0; 3]);
     s.frames()
 }
@@ -331,6 +348,7 @@ fn recovery(ticks: usize, flip: bool, land_speed: f32) -> Vec<Frame> {
         } else {
             0.0
         };
+        c.roll_input = if flip { 1.0 } else { 0.0 };
         c.up = [0.0, -a.sin(), a.cos()];
         c.right = [0.0, a.cos(), a.sin()];
         c.vel = [1100.0, 0.0, 400.0];
@@ -344,6 +362,16 @@ fn recovery(ticks: usize, flip: bool, land_speed: f32) -> Vec<Frame> {
     });
     s.hold(10);
     s.frames()
+}
+
+/// Chute passive : la même séquence que `recovery`, sans aucune entrée de roulis ni de tangage.
+fn recovery_passive() -> Vec<Frame> {
+    let mut f = recovery(90, true, 1000.0);
+    for (c, _) in f.iter_mut() {
+        c.roll_input = 0.0;
+        c.pitch_input = 0.0;
+    }
+    f
 }
 
 pub fn cases() -> Vec<Case> {
@@ -502,6 +530,27 @@ pub fn cases() -> Vec<Case> {
             &[],
         ),
         case(
+            "fast_aerial_negative_nose_flat",
+            FastAerial,
+            false,
+            fast_aerial_v6(true, 10, 1.0, 0.1, 600.0, false),
+            &[],
+        ),
+        case(
+            "fast_aerial_negative_no_altitude_gain",
+            FastAerial,
+            false,
+            fast_aerial_v6(true, 10, 1.0, 0.8, 100.0, false),
+            &[],
+        ),
+        case(
+            "fast_aerial_negative_wall_jump",
+            FastAerial,
+            false,
+            fast_aerial_v6(true, 10, 1.0, 0.8, 600.0, true),
+            &[],
+        ),
+        case(
             "fast_aerial_negative_nose_down",
             FastAerial,
             false,
@@ -589,21 +638,28 @@ pub fn cases() -> Vec<Case> {
             "tornado_spin",
             TornadoSpin,
             true,
-            tornado(50, 6.0),
+            tornado(80, 6.0, 1.0),
             &[(TornadoSpin, 1)],
         ),
         case(
             "tornado_spin_negative_short",
             TornadoSpin,
             false,
-            tornado(30, 6.0),
+            tornado(30, 6.0, 1.0),
             &[],
         ),
         case(
             "tornado_spin_negative_slow",
             TornadoSpin,
             false,
-            tornado(50, 3.0),
+            tornado(80, 3.0, 1.0),
+            &[],
+        ),
+        case(
+            "tornado_spin_negative_no_roll_input",
+            TornadoSpin,
+            false,
+            tornado(80, 6.0, 0.0),
             &[],
         ),
         // Recovery.
@@ -613,6 +669,13 @@ pub fn cases() -> Vec<Case> {
             true,
             recovery(90, true, 1000.0),
             &[(Recovery, 1)],
+        ),
+        case(
+            "recovery_negative_passive_fall",
+            Recovery,
+            false,
+            recovery_passive(),
+            &[],
         ),
         case(
             "recovery_negative_slow",
